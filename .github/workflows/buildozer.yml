@@ -16,25 +16,37 @@ jobs:
         with:
           python-version: "3.10"
           
-      - name: Install dependencies
+      - name: Install system dependencies
         run: |
           sudo apt update
           sudo apt install -y git zip unzip openjdk-17-jdk python3-pip \
-            autoconf automake libtool pkg-config ccache
+            autoconf automake libtool pkg-config ccache curl
           pip install --upgrade pip buildozer cython "kivy==2.2.1"
           
-      - name: Accept Android SDK licenses
+      - name: Set up Android SDK manually
         run: |
           export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))
-          yes | sdkmanager --licenses || true
+          export ANDROID_HOME=$HOME/.buildozer/android/platform/android-sdk
+          mkdir -p $ANDROID_HOME/cmdline-tools
+          cd $ANDROID_HOME/cmdline-tools
+          curl -sSL -o commandlinetools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q commandlinetools.zip
+          mv cmdline-tools latest
+          export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin
+          yes | sdkmanager --licenses
+          sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_ENV
           
       - name: Build with Buildozer
         run: |
           export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))
+          export ANDROID_HOME=$HOME/.buildozer/android/platform/android-sdk
           export BUILDOZER_WARN_ON_ROOT=0
           buildozer android debug
         env:
           BUILDOZER_WARN_ON_ROOT: 0
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
           
       - name: Upload APK
         uses: actions/upload-artifact@v4
