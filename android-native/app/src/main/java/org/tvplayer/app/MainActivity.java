@@ -101,6 +101,14 @@ public class MainActivity extends AppCompatActivity {
                 WindowManager.LayoutParams.FLAG_FULLSCREEN);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            WindowManager.LayoutParams lp = getWindow().getAttributes();
+            lp.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            getWindow().setAttributes(lp);
+        }
+
         setContentView(R.layout.activity_main);
 
         storage = new StorageHelper(this);
@@ -136,11 +144,16 @@ public class MainActivity extends AppCompatActivity {
     private void setupPlayer() {
         player = new ExoPlayer.Builder(this).build();
         playerView.setPlayer(player);
-        player.setPlayWhenReady(true);
         player.addListener(new Player.Listener() {
             @Override
             public void onPlaybackStateChanged(int state) {
                 // no-op
+            }
+
+            @Override
+            public void onPlayerError(com.google.android.exoplayer2.PlaybackException error) {
+                runOnUiThread(() -> Toast.makeText(MainActivity.this,
+                        "播放出错: " + error.getLocalizedMessage(), Toast.LENGTH_SHORT).show());
             }
         });
     }
@@ -539,8 +552,15 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void hideSystemUI() {
-        View decor = getWindow().getDecorView();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            getWindow().setDecorFitsSystemWindows(false);
+            getWindow().getInsetsController().hide(
+                    android.view.WindowInsets.Type.statusBars()
+                            | android.view.WindowInsets.Type.navigationBars());
+            getWindow().getInsetsController().setSystemBarsBehavior(
+                    android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        } else {
+            View decor = getWindow().getDecorView();
             decor.setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                             | View.SYSTEM_UI_FLAG_FULLSCREEN
