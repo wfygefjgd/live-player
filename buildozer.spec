@@ -16,7 +16,7 @@ android.api = 33
 android.ndk = 25b
 android.sdk = 33
 android.build_tools = 33.0.2
-android.minapi = 19
+android.minapi = 21
 android.gradle_dependencies = 
 android.permissions = INTERNET
 android.add_src = 
@@ -24,7 +24,7 @@ android.arch = arm64-v8a,armeabi-v7a
 android.private_storage_path = 
 android.ndk_path = 
 android.sdk_path = 
-android.ndk_api = 19
+android.ndk_api = 21
 android.enable_apk_aab = apk
 android.allow_download_prebuilts = True
 

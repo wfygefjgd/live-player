@@ -21,7 +21,8 @@ jobs:
           sudo apt update
           sudo apt install -y git zip unzip openjdk-17-jdk python3-pip \
             autoconf automake libtool pkg-config ccache curl
-          pip install --upgrade pip buildozer cython "kivy==2.2.1"
+          pip install --upgrade pip
+          pip install "buildozer==1.4.0" "cython==0.29.33" "kivy==2.2.1"
           
       - name: Set up Android SDK manually
         run: |
