@@ -20,7 +20,7 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y git zip unzip openjdk-17-jdk python3-pip \
-            autoconf automake libtool pkg-config ccache curl
+            autoconf automake libtool libltdl-dev pkg-config ccache curl
           pip install --upgrade pip
           pip install "buildozer==1.5.0" "cython==0.29.33" "kivy==2.2.1"
           
@@ -52,11 +52,13 @@ jobs:
         run: |
           export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))
           export ANDROID_HOME=$HOME/.buildozer/android/platform/android-sdk
+          export ACLOCAL_PATH=/usr/share/aclocal
           export BUILDOZER_WARN_ON_ROOT=0
           buildozer android debug
         env:
           BUILDOZER_WARN_ON_ROOT: 0
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          ACLOCAL_PATH: /usr/share/aclocal
           
       - name: Upload APK
         uses: actions/upload-artifact@v4
