@@ -35,6 +35,10 @@ jobs:
           export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin
           yes | sdkmanager --licenses
           sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+          # Symlink for buildozer compatibility (old tools/bin layout)
+          mkdir -p $ANDROID_HOME/tools/bin
+          ln -sf $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager $ANDROID_HOME/tools/bin/sdkmanager
+          ln -sf $ANDROID_HOME/cmdline-tools/latest/bin/avdmanager $ANDROID_HOME/tools/bin/avdmanager
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_ENV
           
