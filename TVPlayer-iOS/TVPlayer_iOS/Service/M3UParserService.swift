@@ -46,9 +46,9 @@ class M3UParserService {
 
     static func normalizeName(_ name: String) -> String {
         var w = name.trimmingCharacters(in: .whitespaces).lowercased()
-        if let m = cctvPattern.firstMatch(in: w) {
-            let suffix = m.count > 2 ? m[2].uppercased() : ""
-            return "cctv\(Int(m[1])!)\(suffix)"
+        if let m = cctvPattern.firstMatch(in: w), m.count > 1, let num = Int(m[1]) {
+            let suffix = m.count > 2 && !m[2].isEmpty ? m[2].uppercased() : ""
+            return "cctv\(num)\(suffix)"
         }
         w = w.replacingOccurrences(of: "[\\s\\-—_\u{00B7}\u{002E}\u{FF0C}\u{3001}\u{3002}/\\\\|()（）\\[\\]【】:+]+", with: "", options: .regularExpression)
         for (a, b) in [("中央", "cctv"), ("央视", "cctv"), ("高清", ""), ("超清", ""), ("蓝光", ""), ("流畅", ""), ("频道", ""), ("直播", ""), ("在线", "")] {
@@ -62,9 +62,9 @@ class M3UParserService {
 
     static func normalizeDisplayName(_ rawName: String) -> String {
         var clean = rawName.trimmingCharacters(in: .whitespaces)
-        if let m = cctvPattern.firstMatch(in: clean) {
-            let suffix = m.count > 2 ? m[2].uppercased() : ""
-            return "CCTV-\(Int(m[1])!)\(suffix)"
+        if let m = cctvPattern.firstMatch(in: clean), m.count > 1, let num = Int(m[1]) {
+            let suffix = m.count > 2 && !m[2].isEmpty ? m[2].uppercased() : ""
+            return "CCTV-\(num)\(suffix)"
         }
         clean = clean.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
         clean = clean.replacingOccurrences(of: "(?i)(高清|超清|蓝光|流畅|频道|直播|在线|测试|备用\\d*|线路\\d+|源\\d+)$", with: "", options: .regularExpression)
@@ -91,9 +91,13 @@ private extension NSRegularExpression {
     func firstMatch(in string: String) -> [String]? {
         let range = NSRange(location: 0, length: string.utf16.count)
         guard let m = firstMatch(in: string, range: range) else { return nil }
-        return (0..<m.numberOfRanges).map { i in
-            (string as NSString).substring(with: m.range(at: i))
+        var result: [String] = []
+        for i in 0..<m.numberOfRanges {
+            let r = m.range(at: i)
+            if r.location == NSNotFound { result.append(""); continue }
+            result.append((string as NSString).substring(with: r))
         }
+        return result
     }
     func matchResult(in string: String) -> NSTextCheckingResult? {
         let range = NSRange(location: 0, length: string.utf16.count)
