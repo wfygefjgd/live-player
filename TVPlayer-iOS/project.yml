@@ -1,0 +1,44 @@
+name: TVPlayer
+options:
+  bundleIdPrefix: org.tvplayer
+  deploymentTarget:
+    iOS: "15.0"
+  xcodeVersion: "15.0"
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: ""
+    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+
+targets:
+  TVPlayer_iOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: TVPlayer_iOS
+    info:
+      path: TVPlayer_iOS/Info.plist
+      properties:
+        UIRequiredDeviceCapabilities: ["arm64"]
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: false
+        UIApplicationSupportsIndirectInputEvents: true
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+    settings:
+      base:
+        INFOPLIST_FILE: TVPlayer_iOS/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: org.tvplayer.ios
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    dependencies: []
