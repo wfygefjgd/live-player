@@ -112,10 +112,10 @@ final class PlayerEngine: ObservableObject {
         guard bufferTask == nil else { return }
         bufferTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 4_000_000_000)
-            guard !Task.isCancelled, let self else { return }
-            let stillSlow = await MainActor.run { self.isBufferingSlow }
+            guard !Task.isCancelled else { return }
+            let stillSlow = await MainActor.run { self?.isBufferingSlow ?? false }
             guard stillSlow, !Task.isCancelled else {
-                await MainActor.run { self.cancelBufferTask() }
+                await MainActor.run { self?.cancelBufferTask() }
                 return
             }
             try? await Task.sleep(nanoseconds: 4_000_000_000)
