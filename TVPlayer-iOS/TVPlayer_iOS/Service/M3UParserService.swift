@@ -21,11 +21,11 @@ class M3UParserService {
         for raw in lines {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.hasPrefix("#EXTINF:") {
-                if let g = groupPattern.firstMatch(in: line) {
-                    pendingGroup = g
+                if let g = groupPattern.firstMatch(in: line), g.count > 1 {
+                    pendingGroup = g[1]
                 }
-                if let n = namePattern.firstMatch(in: line) {
-                    pendingName = n
+                if let n = namePattern.firstMatch(in: line), n.count > 1 {
+                    pendingName = n[1]
                 }
             } else if !line.isEmpty, !line.hasPrefix("#"), let name = pendingName {
                 let display = normalizeDisplayName(name)
@@ -76,10 +76,10 @@ class M3UParserService {
     private static func stripTrailingNoise(_ value: String) -> String {
         var w = value
         while true {
-            guard let m = trailingPattern.firstMatchResult(in: w) else { break }
+            guard let m = trailingPattern.matchResult(in: w) else { break }
             let nsRange = m.range(at: 0)
             guard nsRange.location != NSNotFound else { break }
-            let start = w.index(w.startIndex, offsetBy: nsRange.location)
+            guard let start = Range(nsRange, in: w)?.lowerBound else { break }
             w = String(w[..<start])
         }
         return w
@@ -88,12 +88,14 @@ class M3UParserService {
 
 // MARK: - Regex helpers
 private extension NSRegularExpression {
-    func firstMatch(in string: String) -> String? {
+    func firstMatch(in string: String) -> [String]? {
         let range = NSRange(location: 0, length: string.utf16.count)
         guard let m = firstMatch(in: string, range: range) else { return nil }
-        return (string as NSString).substring(with: m.range(at: 1))
+        return (0..<m.numberOfRanges).map { i in
+            (string as NSString).substring(with: m.range(at: i))
+        }
     }
-    func firstMatchResult(in string: String) -> NSTextCheckingResult? {
+    func matchResult(in string: String) -> NSTextCheckingResult? {
         let range = NSRange(location: 0, length: string.utf16.count)
         return firstMatch(in: string, range: range)
     }
