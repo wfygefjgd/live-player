@@ -32,5 +32,3 @@ struct VideoPlayerView: UIViewRepresentable {
         }
     }
 }
-</parameter>
-<parameter name="arguments" string="false">{"filePath": "C:\\\\Users\\\\96335\\\\Desktop\\\\TVPlayer\\\\TVPlayer-iOS\\\\TVPlayer_iOS\\\\View\\\\VideoPlayerView.swift"}
