@@ -12,6 +12,8 @@ struct VideoPlayerView: UIViewControllerRepresentable {
         c.allowsPictureInPicturePlayback = false
         c.updatesNowPlayingInfoCenter = false
         c.view.backgroundColor = .black
+        c.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        c.view.clipsToBounds = true
         return c
     }
 

@@ -87,7 +87,6 @@ struct ContentView: View {
                 guard !vm.locked else { return }
                 let w = UIScreen.main.bounds.width
                 let sx = value.startLocation.x
-                guard value.translation.width.magnitude < value.translation.height.magnitude else { return }
                 if sx < w * 0.35 {
                     vm.adjustBrightness(delta: Float(-value.translation.height) / 300)
                 } else if sx > w * 0.65 {
@@ -102,8 +101,8 @@ struct ContentView: View {
                 let sx = value.startLocation.x
                 if abs(dx) > abs(dy), abs(dx) > 40 {
                     if sx < w * 0.35 || sx > w * 0.65 {
-                        if dx > 0 { vm.switchSource(direction: 1) }
-                        else { vm.switchSource(direction: -1) }
+                        if dx > 0 { vm.switchSource(direction: -1) }
+                        else { vm.switchSource(direction: 1) }
                     }
                 }
                 if abs(dy) > abs(dx), abs(dy) > 40 {

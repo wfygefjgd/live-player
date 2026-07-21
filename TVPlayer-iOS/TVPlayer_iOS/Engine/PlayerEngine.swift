@@ -3,12 +3,11 @@ import Combine
 
 class PlayerEngine: ObservableObject {
     let player = AVPlayer()
-    private var timeObserver: Any?
     private var cancellables = Set<AnyCancellable>()
+    private var statusObserver: NSKeyValueObservation?
 
     @Published var isReady = false
     @Published var isPlaying = false
-    @Published var error: Error? = nil
 
     var onError: (() -> Void)?
     var onReady: (() -> Void)?
@@ -20,14 +19,18 @@ class PlayerEngine: ObservableObject {
 
     func play(url: URL) {
         pause()
+        statusObserver?.invalidate()
         let item = AVPlayerItem(url: url)
         player.replaceCurrentItem(with: item)
+        statusObserver = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+            if item.status == .failed {
+                DispatchQueue.main.async { self?.onError?() }
+            }
+        }
         player.play()
         isPlaying = true
         isReady = false
-        error = nil
 
-        // 1.5s mark ready
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: 1_800_000_000)
             await MainActor.run {
@@ -50,11 +53,9 @@ class PlayerEngine: ObservableObject {
         isPlaying = true
     }
 
-    func toggle() {
-        if isPlaying { pause() } else { resume() }
-    }
-
     func stop() {
+        statusObserver?.invalidate()
+        statusObserver = nil
         player.replaceCurrentItem(with: nil)
         isPlaying = false
         isReady = false

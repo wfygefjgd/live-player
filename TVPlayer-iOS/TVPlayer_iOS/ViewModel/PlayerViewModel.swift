@@ -373,6 +373,7 @@ class PlayerViewModel: ObservableObject {
     }
 
     func adjustVolume(delta: Float) {
+        player.volume = max(0, min(1, player.volume + delta))
         showFloat()
     }
 
