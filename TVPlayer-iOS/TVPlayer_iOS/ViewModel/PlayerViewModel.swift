@@ -417,7 +417,7 @@ struct OrderedDictionary<Key: Hashable, Value> {
     private var keys: [Key] = []
     private var dict: [Key: Value] = [:]
     var values: [Value] { keys.compactMap { dict[$0] } }
-    mutating subscript(key: Key) -> Value? {
+    subscript(key: Key) -> Value? {
         get { dict[key] }
         set {
             if newValue == nil { dict.removeValue(forKey: key); keys.removeAll { $0 == key } }

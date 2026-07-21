@@ -97,16 +97,4 @@ private extension NSRegularExpression {
     }
 }
 
-// MARK: - Ordered Dictionary
-struct OrderedDictionary<Key: Hashable, Value> {
-    private var keys: [Key] = []
-    private var dict: [Key: Value] = [:]
-    subscript(key: Key) -> Value? {
-        get { dict[key] }
-        set {
-            if dict[key] == nil { keys.append(key) }
-            dict[key] = newValue
-        }
-    }
-    var values: [Value] { keys.compactMap { dict[$0] } }
-}
+
