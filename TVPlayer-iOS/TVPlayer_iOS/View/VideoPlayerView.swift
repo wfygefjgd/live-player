@@ -1,7 +1,7 @@
 import SwiftUI
 import AVKit
 
-/// 全屏铺满：layer 贴满容器，resizeAspectFill 消除上下左右黑边
+/// 播放层铺满屏幕；videoGravity = resizeAspect 保证整帧可见（台标不裁切）
 final class PlayerContainerView: UIView {
     override class var layerClass: AnyClass { AVPlayerLayer.self }
 
@@ -9,7 +9,10 @@ final class PlayerContainerView: UIView {
 
     var player: AVPlayer? {
         get { playerLayer.player }
-        set { playerLayer.player = newValue }
+        set {
+            playerLayer.player = newValue
+            playerLayer.videoGravity = .resizeAspect
+        }
     }
 
     override init(frame: CGRect) {
@@ -17,7 +20,8 @@ final class PlayerContainerView: UIView {
         backgroundColor = .black
         clipsToBounds = true
         isUserInteractionEnabled = false
-        playerLayer.videoGravity = .resizeAspectFill
+        contentMode = .scaleAspectFit
+        playerLayer.videoGravity = .resizeAspect
         playerLayer.backgroundColor = UIColor.black.cgColor
     }
 
@@ -27,8 +31,9 @@ final class PlayerContainerView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        // layer 与 view 同尺寸，由 videoGravity 决定画面如何适配
         playerLayer.frame = bounds
-        playerLayer.videoGravity = .resizeAspectFill
+        playerLayer.videoGravity = .resizeAspect
     }
 }
 
@@ -45,7 +50,7 @@ struct VideoPlayerView: UIViewRepresentable {
         if uiView.player !== vm.player.player {
             uiView.player = vm.player.player
         }
-        uiView.playerLayer.videoGravity = .resizeAspectFill
-        uiView.playerLayer.frame = uiView.bounds
+        uiView.playerLayer.videoGravity = .resizeAspect
+        uiView.setNeedsLayout()
     }
 }

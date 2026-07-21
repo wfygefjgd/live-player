@@ -6,12 +6,14 @@ struct ContentView: View {
 
     var body: some View {
         GeometryReader { geo in
-            let w = geo.size.width
-            let h = geo.size.height
+            let w = max(geo.size.width, 1)
+            let h = max(geo.size.height, 1)
             ZStack {
                 Color.black
+                // 播放器占满可用区域，画面完整显示（可能有黑边，但不裁切台标）
                 VideoPlayerView()
                     .frame(width: w, height: h)
+                    .background(Color.black)
                     .onTapGesture { vm.showFloat() }
 
                 if vm.panelVisible && !vm.locked {
@@ -31,7 +33,7 @@ struct ContentView: View {
             }
             .frame(width: w, height: h)
             .contentShape(Rectangle())
-            .gesture(dragGesture(screenWidth: max(w, 1)))
+            .gesture(dragGesture(screenWidth: w))
             .onAppear { vm.startup() }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
                 vm.pause()
