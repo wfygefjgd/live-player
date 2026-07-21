@@ -53,6 +53,7 @@ struct ChannelListPanel: View {
             guard ci >= 0 else { return }
             vm.currentIndex = ci
             vm.currentSourceIndex = 0
+            vm.panelVisible = false
             vm.playCurrent()
         } label: {
             HStack {

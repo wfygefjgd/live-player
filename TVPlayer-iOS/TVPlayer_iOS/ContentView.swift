@@ -21,9 +21,7 @@ struct ContentView: View {
             .ignoresSafeArea()
             .contentShape(Rectangle())
             .gesture(tapGesture)
-            .gesture(channelDrag)
-            .gesture(brightnessDrag)
-            .gesture(volumeDrag)
+            .gesture(dragGesture)
             .onAppear { vm.startup() }
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
                 vm.pause()
@@ -88,46 +86,37 @@ struct ContentView: View {
             .onEnded { vm.onTap() }
     }
 
-    private var channelDrag: some Gesture {
-        DragGesture(minimumDistance: 30)
+    // Unified drag: brightness left, volume right, channel switch middle
+    private var dragGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                guard !vm.locked else { return }
+                let w = UIScreen.main.bounds.width
+                let sx = value.startLocation.x
+                guard value.translation.width.magnitude < value.translation.height.magnitude else { return }
+                if sx < w * 0.35 {
+                    vm.adjustBrightness(delta: Float(-value.translation.height) / 300)
+                } else if sx > w * 0.65 {
+                    vm.adjustVolume(delta: Float(-value.translation.height) / 80)
+                }
+            }
             .onEnded { value in
                 guard !vm.locked else { return }
                 let dx = value.translation.width
                 let dy = value.translation.height
-                let x = value.location.x
                 let w = UIScreen.main.bounds.width
-                if abs(dx) > abs(dy) {
-                    guard abs(dx) > 40 else { return }
-                    if x < w * 0.35 || x > w * 0.65 {
-                        if dx > 0 { vm.switchSource(direction: 1) }
-                        else { vm.switchSource(direction: -1) }
+                let sx = value.startLocation.x
+                if abs(dx) > abs(dy), abs(dx) > 40 {
+                    if sx < w * 0.35 || sx > w * 0.65 {
+                        if dx > 0 { vm.switchSource(direction: -1) }
+                        else { vm.switchSource(direction: 1) }
                     }
-                } else {
-                    guard abs(dy) > 40 else { return }
-                    if x >= w * 0.35 && x <= w * 0.65 {
+                }
+                if abs(dy) > abs(dx), abs(dy) > 40 {
+                    if sx >= w * 0.35 && sx <= w * 0.65 {
                         if dy < 0 { vm.nextChannel() }
                         else { vm.prevChannel() }
                     }
-                }
-            }
-    }
-
-    private var brightnessDrag: some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                guard !vm.locked, value.translation.width.magnitude < value.translation.height.magnitude else { return }
-                if value.startLocation.x < UIScreen.main.bounds.width * 0.35 {
-                    vm.adjustBrightness(delta: Float(-value.translation.height) / 300)
-                }
-            }
-    }
-
-    private var volumeDrag: some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                guard !vm.locked, value.translation.width.magnitude < value.translation.height.magnitude else { return }
-                if value.startLocation.x > UIScreen.main.bounds.width * 0.65 {
-                    vm.adjustVolume(delta: Float(-value.translation.height) / 80)
                 }
             }
     }
