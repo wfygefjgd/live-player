@@ -1,34 +1,39 @@
 import SwiftUI
 import AVKit
 
-class PlayerContainerView: UIView {
+final class PlayerContainerView: UIView {
+    let playerLayer = AVPlayerLayer()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .black
+        clipsToBounds = true
+        playerLayer.videoGravity = .resizeAspect
+        layer.addSublayer(playerLayer)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
-        if let layer = layer.sublayers?.first as? AVPlayerLayer {
-            layer.frame = bounds
-        }
+        playerLayer.frame = bounds
     }
 }
 
 struct VideoPlayerView: UIViewRepresentable {
     @EnvironmentObject private var vm: PlayerViewModel
 
-    func makeUIView(context: Context) -> UIView {
+    func makeUIView(context: Context) -> PlayerContainerView {
         let view = PlayerContainerView()
-        view.backgroundColor = .black
-        view.clipsToBounds = true
-        view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        let layer = AVPlayerLayer(player: vm.player.player)
-        layer.videoGravity = .resizeAspectFill
-        layer.frame = view.bounds
-        view.layer.addSublayer(layer)
+        view.playerLayer.player = vm.player.player
         return view
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
-        guard let view = uiView as? PlayerContainerView,
-              let layer = view.layer.sublayers?.first as? AVPlayerLayer else { return }
-        layer.player = vm.player.player
-        layer.frame = view.bounds
+    func updateUIView(_ uiView: PlayerContainerView, context: Context) {
+        uiView.playerLayer.player = vm.player.player
+        uiView.playerLayer.frame = uiView.bounds
+        uiView.playerLayer.videoGravity = .resizeAspect
     }
 }

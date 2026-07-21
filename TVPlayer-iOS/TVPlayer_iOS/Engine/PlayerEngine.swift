@@ -52,16 +52,6 @@ class PlayerEngine: ObservableObject {
         player.play()
         isPlaying = true
         isReady = false
-
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 10_000_000_000)
-            await MainActor.run {
-                guard let self, self.playToken == token, !self.isReady,
-                      self.player.currentItem?.status == .readyToPlay else { return }
-                self.isReady = true
-                self.onReady?()
-            }
-        }
     }
 
     func pause() {
@@ -91,6 +81,11 @@ class PlayerEngine: ObservableObject {
         set { player.volume = max(0, min(1, newValue)) }
     }
 
+    var isBufferingSlow: Bool {
+        guard let item = player.currentItem else { return true }
+        return !item.isPlaybackLikelyToKeepUp || item.isPlaybackBufferEmpty
+    }
+
     private func observeStatus() {
         player.publisher(for: \.timeControlStatus)
             .sink { [weak self] status in
@@ -99,12 +94,25 @@ class PlayerEngine: ObservableObject {
             .store(in: &cancellables)
     }
 
+    // Detect slow once, wait 4s, re-check; only switch if still slow
     private func startBufferTask() {
-        cancelBufferTask()
+        guard bufferTask == nil else { return }
         bufferTask = Task {
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
             guard !Task.isCancelled else { return }
-            await MainActor.run { onSlowNetwork?() }
+            await MainActor.run {
+                guard isBufferingSlow else {
+                    cancelBufferTask()
+                    return
+                }
+            }
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                defer { cancelBufferTask() }
+                guard isBufferingSlow else { return }
+                onSlowNetwork?()
+            }
         }
     }
 

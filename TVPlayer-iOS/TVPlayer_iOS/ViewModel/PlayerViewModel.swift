@@ -205,7 +205,7 @@ class PlayerViewModel: ObservableObject {
     }
 
     private func onPlayerError() {
-        showIndicator("播放失败")
+        // 隐藏播放错误提示
     }
 
     func onSlowNetwork() {

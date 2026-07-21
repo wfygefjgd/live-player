@@ -7,7 +7,7 @@ struct ContentView: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                Color.black.ignoresSafeArea()
+                Color.black
                 videoLayer
                 if vm.panelVisible && !vm.locked {
                     channelPanel(width: min(300, geo.size.width * 0.32))
@@ -18,7 +18,8 @@ struct ContentView: View {
                     floatingButtons
                 }
             }
-            .ignoresSafeArea()
+            .frame(width: geo.size.width, height: geo.size.height)
+            .ignoresSafeArea(.all)
             .contentShape(Rectangle())
             .gesture(dragGesture)
             .onAppear { vm.startup() }
@@ -33,13 +34,14 @@ struct ContentView: View {
                     .environmentObject(vm)
             }
         }
+        .ignoresSafeArea(.all)
     }
 
     // MARK: - Video Layer
-private var videoLayer: some View {
+    private var videoLayer: some View {
         VideoPlayerView()
-            .ignoresSafeArea()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea(.all)
             .onTapGesture { vm.showFloat() }
     }
 
