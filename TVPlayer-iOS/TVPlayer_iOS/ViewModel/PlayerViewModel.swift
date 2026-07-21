@@ -43,6 +43,11 @@ class PlayerViewModel: ObservableObject {
     private var stallTask: Task<Void, Never>?
     private var floatTask: Task<Void, Never>?
         func startup() {
+        player.onSlowNetwork = { [weak self] in
+            Task { @MainActor in
+                self?.onSlowNetwork()
+            }
+        }
         player.onReady = { [weak self] in
             Task { @MainActor in
                 self?.onPlayerReady()
@@ -183,7 +188,7 @@ class PlayerViewModel: ObservableObject {
     // MARK: - Play
     func playCurrent(showOSD: Bool = true, timeoutMs: UInt64 = STALL_TIMEOUT_MS) {
         guard let ch = currentChannel, let url = currentUrl, let u = URL(string: url) else {
-            indicatorText = "当前频道地址无效"
+            showIndicator("当前频道地址无效")
             return
         }
         playbackToken += 1
@@ -202,12 +207,18 @@ class PlayerViewModel: ObservableObject {
         autoSwitching = false
         cancelStall()
         scheduleHideFloat()
+        showIndicator("")
     }
 
     private func onPlayerError() {
         waitingForReady = false
         cancelStall()
         switchNextLine(hint: "播放失败，切换下一线路")
+    }
+
+    func onSlowNetwork() {
+        guard !autoSwitching else { return }
+        switchNextLine(hint: "网络缓慢，切换下一线路")
     }
 
     // MARK: - Navigation
@@ -230,7 +241,7 @@ class PlayerViewModel: ObservableObject {
     func switchSource(direction: Int) {
         guard !locked, let ch = currentChannel, ch.sourceCount > 1 else {
             if let ch = currentChannel, ch.sourceCount <= 1 {
-                indicatorText = "当前频道只有一个来源"
+                showIndicator("当前频道只有一个来源")
                 showChannelOSD()
             }
             return
@@ -239,21 +250,21 @@ class PlayerViewModel: ObservableObject {
         playCurrent(timeoutMs: STALL_TIMEOUT_MS)
     }
 
-    func switchNextLine(hint: String) {
+func switchNextLine(hint: String) {
         guard let ch = currentChannel, ch.sourceCount > 1, !autoSwitching else {
             autoSwitching = false
-            indicatorText = hint
+            showIndicator(hint)
             return
         }
         autoSwitching = true
         let nxt = (currentSourceIndex + 1) % ch.sourceCount
         guard nxt != currentSourceIndex else {
             autoSwitching = false
-            indicatorText = hint
+            showIndicator(hint)
             return
         }
         currentSourceIndex = nxt
-        indicatorText = hint
+        showIndicator(hint)
         playCurrent(timeoutMs: STALL_TIMEOUT_MS)
     }
 

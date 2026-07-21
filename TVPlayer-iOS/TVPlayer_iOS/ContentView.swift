@@ -36,9 +36,10 @@ struct ContentView: View {
     }
 
     // MARK: - Video Layer
-    private var videoLayer: some View {
+private var videoLayer: some View {
         VideoPlayerView()
             .ignoresSafeArea()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onTapGesture { vm.showFloat() }
     }
 
