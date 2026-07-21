@@ -8,7 +8,7 @@ final class PlayerContainerView: UIView {
         super.init(frame: frame)
         backgroundColor = .black
         clipsToBounds = true
-        playerLayer.videoGravity = .resizeAspect
+        playerLayer.videoGravity = .resizeAspectFill
         layer.addSublayer(playerLayer)
     }
 
@@ -34,6 +34,6 @@ struct VideoPlayerView: UIViewRepresentable {
     func updateUIView(_ uiView: PlayerContainerView, context: Context) {
         uiView.playerLayer.player = vm.player.player
         uiView.playerLayer.frame = uiView.bounds
-        uiView.playerLayer.videoGravity = .resizeAspect
+        uiView.playerLayer.videoGravity = .resizeAspectFill
     }
 }
