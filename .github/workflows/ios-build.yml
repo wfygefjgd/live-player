@@ -16,20 +16,34 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 15
 
+    defaults:
+      run:
+        working-directory: TVPlayer-iOS
+
     steps:
       - uses: actions/checkout@v4
 
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Select latest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | grep -v "Xcode_15" | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then
+            XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          fi
+          echo "Using: $XCODE"
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          xcodebuild -version
+
       - name: Generate Xcode project
-        run: cd TVPlayer-iOS && xcodegen generate
+        run: xcodegen generate
 
       - name: Build Release
         run: |
           xcodebuild \
-            -project "TVPlayer-iOS/TVPlayer.xcodeproj" \
-            -scheme "TVPlayer_iOS" \
+            -project TVPlayer.xcodeproj \
+            -scheme TVPlayer_iOS \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath "${{ github.workspace }}/Build" \
