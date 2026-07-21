@@ -122,20 +122,20 @@ class PlayerViewModel: ObservableObject {
     private func onChannelsLoaded(_ loaded: [Channel]) {
         guard !loaded.isEmpty else {
             if channels.isEmpty {
-                indicatorText = "加载失败"
+                showIndicator("加载失败")
             } else {
-                indicatorText = "刷新失败"
+                showIndicator("刷新失败")
             }
             return
         }
         rawChannels = loaded.map { Channel(name: $0.name, group: $0.group, key: $0.key, urls: $0.urls) }
         channels = applyRules(rawChannels)
         guard !channels.isEmpty else {
-            indicatorText = "加载失败"
+            showIndicator("加载失败")
             return
         }
         storage.saveChannels(loaded)
-        indicatorText = "已加载 \(channels.count) 个频道"
+        showIndicator("已加载 \(channels.count) 个频道")
         currentIndex = 0
         currentSourceIndex = 0
         playCurrent(showOSD: false, timeoutMs: STALL_TIMEOUT_MS)
@@ -252,6 +252,17 @@ class PlayerViewModel: ObservableObject {
         currentSourceIndex = nxt
         indicatorText = hint
         playCurrent(timeoutMs: STALL_TIMEOUT_MS)
+    }
+
+    func switchToNextSource() {
+        guard sourceUrls.count > 1 else { return }
+        let current = activeSourceUrl
+        if let idx = sourceUrls.firstIndex(of: current) {
+            let next = (idx + 1) % sourceUrls.count
+            selectSource(sourceUrls[next])
+        } else {
+            selectSource(sourceUrls[0])
+        }
     }
 
     // MARK: - Stall

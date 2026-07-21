@@ -19,7 +19,7 @@ struct ContentView: View {
             .ignoresSafeArea()
             .contentShape(Rectangle())
             .gesture(tapGesture)
-            .gesture(horizontalDrag)
+            .gesture(channelDrag)
             .gesture(brightnessDrag)
             .gesture(volumeDrag)
             .onAppear { vm.startup() }
@@ -36,7 +36,6 @@ struct ContentView: View {
     private var videoLayer: some View {
         VideoPlayerView()
             .ignoresSafeArea()
-            .onTapGesture { vm.onTap() }
     }
 
     // MARK: - Channel Panel
@@ -64,7 +63,7 @@ struct ContentView: View {
             panelVisible: vm.panelVisible,
             locked: vm.locked,
             onTogglePanel: { vm.togglePanel() },
-            onLongPanel: { vm.switchNextLine(hint: "切换线路") },
+            onLongPanel: { vm.switchToNextSource() },
             onToggleLock: { vm.toggleLock() },
             onLongLock: { vm.confirmDeleteLine() }
         )
@@ -78,21 +77,30 @@ struct ContentView: View {
 
     // MARK: - Gestures
     private var tapGesture: some Gesture {
-        TapGesture(count: 1)
+        TapGesture(count: 2)
             .onEnded { vm.onTap() }
     }
 
-    private var horizontalDrag: some Gesture {
+    private var channelDrag: some Gesture {
         DragGesture(minimumDistance: 30)
             .onEnded { value in
                 guard !vm.locked else { return }
                 let dx = value.translation.width
                 let dy = value.translation.height
-                guard abs(dx) > abs(dy), abs(dx) > 40 else { return }
-                if dx > 0 {
-                    vm.switchSource(direction: -1)
+                let x = value.location.x
+                let w = UIScreen.main.bounds.width
+                if abs(dx) > abs(dy) {
+                    guard abs(dx) > 40 else { return }
+                    if x < w * 0.35 || x > w * 0.65 {
+                        if dx > 0 { vm.switchSource(direction: -1) }
+                        else { vm.switchSource(direction: 1) }
+                    }
                 } else {
-                    vm.switchSource(direction: 1)
+                    guard abs(dy) > 40 else { return }
+                    if x >= w * 0.35 && x <= w * 0.65 {
+                        if dy > 0 { vm.nextChannel() }
+                        else { vm.prevChannel() }
+                    }
                 }
             }
     }

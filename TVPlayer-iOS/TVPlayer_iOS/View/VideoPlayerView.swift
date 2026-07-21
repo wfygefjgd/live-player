@@ -8,7 +8,7 @@ struct VideoPlayerView: UIViewControllerRepresentable {
         let c = AVPlayerViewController()
         c.player = vm.player.player
         c.showsPlaybackControls = false
-        c.videoGravity = .resizeAspectFill
+        c.videoGravity = .resizeAspect
         c.allowsPictureInPicturePlayback = false
         c.updatesNowPlayingInfoCenter = false
         c.view.backgroundColor = .black
