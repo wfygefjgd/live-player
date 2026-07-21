@@ -119,8 +119,9 @@ final class PlayerEngine: ObservableObject {
                 return
             }
             try? await Task.sleep(nanoseconds: 4_000_000_000)
-            guard !Task.isCancelled, let self else { return }
+            guard !Task.isCancelled else { return }
             await MainActor.run {
+                guard let self else { return }
                 defer { self.cancelBufferTask() }
                 guard self.isBufferingSlow else { return }
                 self.onSlowNetwork?()

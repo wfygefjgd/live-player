@@ -413,6 +413,7 @@ struct OrderedDictionary<Key: Hashable, Value> {
     private var dict: [Key: Value] = [:]
 
     var keys: [Key] { _keys }
+    var values: [Value] { _keys.compactMap { dict[$0] } }
 
     subscript(key: Key) -> Value? {
         get { dict[key] }
