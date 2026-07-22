@@ -1,8 +1,7 @@
 import SwiftUI
 import AVKit
 
-/// 全屏容器 + 完整显示画面（不裁切）。
-/// 黑边由片源与屏幕比例自然产生：比例不同时可能上下或左右留黑，绝不裁切台标/画面。
+/// 全屏铺满，可轻微裁切（对齐安卓 ExoPlayer ZOOM 观感）
 final class PlayerContainerView: UIView {
     override class var layerClass: AnyClass { AVPlayerLayer.self }
 
@@ -12,7 +11,7 @@ final class PlayerContainerView: UIView {
         get { playerLayer.player }
         set {
             playerLayer.player = newValue
-            playerLayer.videoGravity = .resizeAspect
+            playerLayer.videoGravity = .resizeAspectFill
         }
     }
 
@@ -21,7 +20,7 @@ final class PlayerContainerView: UIView {
         backgroundColor = .black
         clipsToBounds = true
         isUserInteractionEnabled = false
-        playerLayer.videoGravity = .resizeAspect
+        playerLayer.videoGravity = .resizeAspectFill
         playerLayer.backgroundColor = UIColor.black.cgColor
     }
 
@@ -32,7 +31,7 @@ final class PlayerContainerView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         playerLayer.frame = bounds
-        playerLayer.videoGravity = .resizeAspect
+        playerLayer.videoGravity = .resizeAspectFill
     }
 }
 
@@ -49,7 +48,7 @@ struct VideoPlayerView: UIViewRepresentable {
         if uiView.player !== vm.player.player {
             uiView.player = vm.player.player
         }
-        uiView.playerLayer.videoGravity = .resizeAspect
+        uiView.playerLayer.videoGravity = .resizeAspectFill
         uiView.playerLayer.frame = uiView.bounds
     }
 }
