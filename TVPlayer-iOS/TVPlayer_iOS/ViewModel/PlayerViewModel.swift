@@ -297,9 +297,16 @@ final class PlayerViewModel: ObservableObject {
             showIndicator("当前频道地址无效")
             return
         }
-        if resetTried { triedLineIndices.removeAll() }
+        if resetTried {
+            triedLineIndices.removeAll()
+            cooldownTask?.cancel()
+            autoSwitchState = .idle
+        }
         triedLineIndices.insert(currentSourceIndex)
-        if autoSwitchState != .cooldown { autoSwitchState = .idle }
+        // 切换播放时允许后续失败继续试下一条（不要卡在 cooldown）
+        if autoSwitchState == .cooldown {
+            autoSwitchState = .idle
+        }
         player.play(url: u)
         persistLastChannel()
         if showOSD { showChannelOSD() }
@@ -307,7 +314,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func onPlayerReady() {
-        if autoSwitchState == .switching { autoSwitchState = .idle }
+        autoSwitchState = .idle
         scheduleHideFloat()
         if !indicatorText.isEmpty { showIndicator("") }
     }
@@ -316,28 +323,53 @@ final class PlayerViewModel: ObservableObject {
     private func onStartupTimeout() { autoSwitchLine(hint: "线路超时，切换下一线路") }
     private func onPlaybackStall() { autoSwitchLine(hint: "网络卡顿，切换下一线路") }
 
+    /// 自动切线：同频道内连续试完所有线路；仅整轮失败后才进入冷却
     private func autoSwitchLine(hint: String) {
-        guard !locked, autoSwitchState == .idle else { return }
+        guard !locked else { return }
+        // switching 中忽略重复回调；cooldown 仅用于整轮试完之后
+        if autoSwitchState == .switching { return }
+        if autoSwitchState == .cooldown { return }
+
         guard let ch = currentChannel, ch.sourceCount > 1 else {
-            showIndicator(hint)
+            showIndicator(ch == nil ? hint : "当前频道只有一条线路")
             return
         }
+
         var nxt = (currentSourceIndex + 1) % ch.sourceCount
         var scanned = 0
         while triedLineIndices.contains(nxt), scanned < ch.sourceCount {
             nxt = (nxt + 1) % ch.sourceCount
             scanned += 1
         }
-        if scanned >= ch.sourceCount || triedLineIndices.count >= ch.sourceCount {
+        // 所有线路都试过
+        if triedLineIndices.count >= ch.sourceCount || scanned >= ch.sourceCount {
             autoSwitchState = .idle
             showIndicator("当前频道线路均不可用")
+            beginCooldown()
+            return
+        }
+
+        guard let u = URL(string: ch.urls[nxt]) else {
+            triedLineIndices.insert(nxt)
+            autoSwitchState = .idle
+            autoSwitchLine(hint: hint)
             return
         }
         autoSwitchState = .switching
         currentSourceIndex = nxt
-        showIndicator(hint)
-        playCurrent(showOSD: true, resetTried: false)
-        beginCooldown()
+        triedLineIndices.insert(nxt)
+        showIndicator("\(hint) (\(nxt + 1)/\(ch.sourceCount))")
+        // 不在这里 beginCooldown，保证下一条失败还能继续切
+        player.play(url: u)
+        persistLastChannel()
+        showChannelOSD()
+        // 短暂标记后恢复 idle，便于下一次失败继续
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            if autoSwitchState == .switching {
+                autoSwitchState = .idle
+            }
+        }
     }
 
     private func beginCooldown() {

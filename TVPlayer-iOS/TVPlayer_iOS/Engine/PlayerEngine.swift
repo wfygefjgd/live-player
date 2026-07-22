@@ -3,12 +3,14 @@ import Combine
 
 /// 方案 A：起播超时 + 播放中连续卡顿 + 开播保护
 final class PlayerEngine: ObservableObject {
-    /// 起播超时
-    static let startupTimeoutNs: UInt64 = 8_000_000_000
+    /// 起播超时：给线路足够握手时间，避免一切就失败
+    static let startupTimeoutNs: UInt64 = 12_000_000_000
     /// 播放中连续卡顿阈值
     static let stallTimeoutNs: UInt64 = 6_000_000_000
-    /// ready 后保护期，避免刚起播误切
+    /// ready 后保护期
     static let readyProtectNs: UInt64 = 2_000_000_000
+    /// 起播后至少等待再响应 error（避免秒切）
+    static let errorGraceNs: UInt64 = 3_000_000_000
 
     let player = AVPlayer()
     private var cancellables = Set<AnyCancellable>()
@@ -17,17 +19,17 @@ final class PlayerEngine: ObservableObject {
     private var startupTask: Task<Void, Never>?
     private var stallTask: Task<Void, Never>?
     private var protectTask: Task<Void, Never>?
+    private var errorGraceTask: Task<Void, Never>?
     private var stallWatchEnabled = false
     private var continuousStall = false
+    private var playStartedAt: Date?
 
     @Published var isReady = false
     @Published var isPlaying = false
 
     var onError: (() -> Void)?
     var onReady: (() -> Void)?
-    /// 起播超时（未 ready）
     var onStartupTimeout: (() -> Void)?
-    /// 正常播放后连续卡顿
     var onPlaybackStall: (() -> Void)?
 
     init() {
@@ -44,18 +46,15 @@ final class PlayerEngine: ObservableObject {
         statusObserver?.invalidate()
         stallWatchEnabled = false
         continuousStall = false
+        playStartedAt = Date()
 
-        // 直播：减小前向缓冲，加快出首帧
         let asset = AVURLAsset(url: url, options: [
             AVURLAssetPreferPreciseDurationAndTimingKey: false
         ])
         let item = AVPlayerItem(asset: asset)
-        item.preferredForwardBufferDuration = 2
+        item.preferredForwardBufferDuration = 3
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
-        if #available(iOS 15.0, *) {
-            item.preferredPeakBitRate = 0
-        }
-        player.automaticallyWaitsToMinimizeStalling = false
+        player.automaticallyWaitsToMinimizeStalling = true
         player.replaceCurrentItem(with: item)
         isReady = false
         isPlaying = true
@@ -70,14 +69,12 @@ final class PlayerEngine: ObservableObject {
             } else if item.status == .failed {
                 DispatchQueue.main.async {
                     guard self.playToken == token else { return }
-                    self.cancelAllWatchers()
-                    self.onError?()
+                    self.scheduleErrorAfterGrace(token: token)
                 }
             }
         }
 
         scheduleStartupTimeout(token: token)
-        // 不等 ready 再 play，尽早拉流
         player.playImmediately(atRate: 1.0)
     }
 
@@ -114,13 +111,14 @@ final class PlayerEngine: ObservableObject {
     private func handleReady(token: Int) {
         guard playToken == token else { return }
         cancelStartup()
+        errorGraceTask?.cancel()
+        errorGraceTask = nil
         isReady = true
         if player.rate == 0 {
             player.playImmediately(atRate: 1.0)
         }
         isPlaying = true
         onReady?()
-        // 开播保护后再允许卡顿检测
         stallWatchEnabled = false
         protectTask?.cancel()
         protectTask = Task { [weak self] in
@@ -129,6 +127,24 @@ final class PlayerEngine: ObservableObject {
             await MainActor.run {
                 guard let self, self.playToken == token else { return }
                 self.stallWatchEnabled = true
+            }
+        }
+    }
+
+    /// error 至少等 grace 秒，避免一切台就秒切线路
+    private func scheduleErrorAfterGrace(token: Int) {
+        errorGraceTask?.cancel()
+        let elapsed = playStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+        let remain = max(0, Double(Self.errorGraceNs) / 1e9 - elapsed)
+        errorGraceTask = Task { [weak self] in
+            if remain > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(remain * 1e9))
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, self.playToken == token, !self.isReady else { return }
+                self.cancelAllWatchers()
+                self.onError?()
             }
         }
     }
@@ -223,5 +239,7 @@ final class PlayerEngine: ObservableObject {
         stopStallTimer()
         protectTask?.cancel()
         protectTask = nil
+        errorGraceTask?.cancel()
+        errorGraceTask = nil
     }
 }
