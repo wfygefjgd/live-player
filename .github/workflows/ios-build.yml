@@ -50,8 +50,8 @@ jobs:
             CODE_SIGNING_ALLOWED="NO" \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            MARKETING_VERSION=1.4.1 \
-            CURRENT_PROJECT_VERSION=27 \
+            MARKETING_VERSION=1.4.2 \
+            CURRENT_PROJECT_VERSION=28 \
             build
 
       - name: Verify app version in Info.plist
@@ -60,7 +60,7 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist"
           VER=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
-          test "$VER" = "1.4.1"
+          test "$VER" = "1.4.2"
 
       - name: Package .ipa
         run: |
