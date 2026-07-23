@@ -9,8 +9,8 @@ settings:
   base:
     DEVELOPMENT_TEAM: ""
     SWIFT_VERSION: "5.9"
-    MARKETING_VERSION: "1.1.4"
-    CURRENT_PROJECT_VERSION: "6"
+    MARKETING_VERSION: "1.2.0"
+    CURRENT_PROJECT_VERSION: "7"
     ENABLE_USER_SCRIPT_SANDBOXING: "NO"
 
 targets:
@@ -32,6 +32,7 @@ targets:
         UIStatusBarHidden: true
         UIViewControllerBasedStatusBarAppearance: false
         UIApplicationSupportsIndirectInputEvents: true
+        NSLocalNetworkUsageDescription: "用于加载直播源与频道列表"
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
     settings:

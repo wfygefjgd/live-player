@@ -3,14 +3,14 @@ import Combine
 
 /// 起播给足时间；只有真正长时间无画面/卡死才回调切换
 final class PlayerEngine: ObservableObject {
-    /// 起播超时（比 1.1.2 快 2s+，仍给一般频道加载时间）
-    static let startupTimeoutNs: UInt64 = 15_000_000_000
+    /// 起播超时：一般频道有时间加载
+    static let startupTimeoutNs: UInt64 = 20_000_000_000
     /// 播放中连续卡顿才切
-    static let stallTimeoutNs: UInt64 = 10_000_000_000
-    /// ready 后保护期
-    static let readyProtectNs: UInt64 = 5_000_000_000
+    static let stallTimeoutNs: UInt64 = 12_000_000_000
+    /// ready 后保护期：刚出画面不要因缓冲误切
+    static let readyProtectNs: UInt64 = 8_000_000_000
     /// error 至少等这么久再报失败
-    static let errorGraceNs: UInt64 = 6_000_000_000
+    static let errorGraceNs: UInt64 = 10_000_000_000
 
     let player = AVPlayer()
     private var cancellables = Set<AnyCancellable>()
@@ -72,7 +72,6 @@ final class PlayerEngine: ObservableObject {
             } else if item.status == .failed {
                 DispatchQueue.main.async {
                     guard self.playToken == token else { return }
-                    // 不立刻回调，给直播握手时间；由 grace + startup 超时兜底
                     self.scheduleErrorAfterGrace(token: token)
                 }
             }

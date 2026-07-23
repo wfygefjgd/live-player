@@ -35,6 +35,8 @@ final class PlayerViewModel: ObservableObject {
     @Published var indicatorText: String = ""
     @Published var showFloatOverlay = false
     @Published var favorites: Set<String> = []
+    @Published var isBootstrapping = false
+    @Published var bootstrapMessage = "正在连接网络..."
 
     let player = PlayerEngine()
     private let storage = StorageService()
@@ -48,7 +50,9 @@ final class PlayerViewModel: ObservableObject {
     private var indTask: Task<Void, Never>?
     private var floatTask: Task<Void, Never>?
     private var cooldownTask: Task<Void, Never>?
+    private var retryTask: Task<Void, Never>?
     private var lastVolumeTranslation: CGFloat = 0
+    private var loadGeneration = 0
 
     func startup() {
         guard !started else { return }
@@ -68,18 +72,93 @@ final class PlayerViewModel: ObservableObject {
             Task { @MainActor in self?.onPlaybackStall() }
         }
 
+        // 网络从无到有 / 首次点「允许」后自动再拉源
+        NetworkMonitor.shared.onSatisfied = { [weak self] in
+            Task { @MainActor in
+                self?.onNetworkBecameAvailable()
+            }
+        }
+
         restoreSources()
-        // 尽快出画面：有缓存立刻播，无缓存只拉当前源（不串行试全部源）
         let cached = applyRules(storage.loadChannels())
         if !cached.isEmpty {
             channels = cached
             restoreLastChannelPosition()
+            isBootstrapping = false
             playCurrent(showOSD: false, resetTried: true)
             loadChannels(force: true, silent: true, preferActiveOnly: false)
         } else {
+            isBootstrapping = true
+            bootstrapMessage = "正在加载频道列表..."
             showIndicator("加载中...")
-            loadChannels(force: true, silent: false, preferActiveOnly: true)
+            // 先等网络可用再拉，避免未授权就报错卡住
+            beginBootstrapLoad()
         }
+    }
+
+    /// 首次无缓存：等待网络 → 拉源 → 失败自动重试
+    private func beginBootstrapLoad() {
+        retryTask?.cancel()
+        if NetworkMonitor.shared.isSatisfied {
+            loadChannels(force: true, silent: false, preferActiveOnly: true)
+            return
+        }
+        bootstrapMessage = "等待网络连接（请允许访问网络）..."
+        showIndicator("等待网络...")
+        // 同时尝试拉一次（部分机型 path 报告滞后）
+        loadChannels(force: true, silent: false, preferActiveOnly: true)
+        scheduleRetryLoads()
+    }
+
+    private func scheduleRetryLoads() {
+        // 已有重试任务在跑则不叠加
+        if let t = retryTask, !t.isCancelled { return }
+        retryTask = Task { @MainActor in
+            // 授权后 1s / 3s / 6s 再试，之后每 5s 直到有频道
+            for sec in [1, 3, 6] as [UInt64] {
+                try? await Task.sleep(nanoseconds: sec * 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                if !channels.isEmpty {
+                    isBootstrapping = false
+                    return
+                }
+                bootstrapMessage = "正在重新加载频道..."
+                loadChannels(force: true, silent: false, preferActiveOnly: false)
+            }
+            while !Task.isCancelled {
+                if !channels.isEmpty {
+                    isBootstrapping = false
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard !Task.isCancelled else { return }
+                bootstrapMessage = "仍无频道，继续刷新..."
+                loadChannels(force: true, silent: false, preferActiveOnly: false)
+            }
+        }
+    }
+
+    func onNetworkBecameAvailable() {
+        if channels.isEmpty {
+            bootstrapMessage = "网络已连接，加载频道..."
+            isBootstrapping = true
+            loadChannels(force: true, silent: false, preferActiveOnly: false)
+        }
+    }
+
+    func onAppBecameActive() {
+        if channels.isEmpty {
+            retryLoadSources()
+        }
+    }
+
+    /// 无频道时用户点「重新加载」或自动触发
+    func retryLoadSources() {
+        isBootstrapping = true
+        bootstrapMessage = "正在加载频道列表..."
+        showIndicator("加载中...")
+        loadChannels(force: true, silent: false, preferActiveOnly: false)
+        scheduleRetryLoads()
     }
 
     func restoreSources() {
@@ -162,8 +241,15 @@ final class PlayerViewModel: ObservableObject {
 
     private func onChannelsLoaded(_ loaded: [Channel], errorMessage: String?, silent: Bool) {
         guard !loaded.isEmpty else {
-            if !silent {
-                showIndicator(errorMessage ?? (channels.isEmpty ? "加载失败" : "刷新失败"))
+            if channels.isEmpty {
+                isBootstrapping = true
+                bootstrapMessage = (errorMessage ?? "加载失败") + "，正在重试..."
+                if !silent {
+                    showIndicator(bootstrapMessage)
+                }
+                scheduleRetryLoads()
+            } else if !silent {
+                showIndicator(errorMessage ?? "刷新失败")
             }
             return
         }
@@ -172,9 +258,13 @@ final class PlayerViewModel: ObservableObject {
         channels = applyRules(rawChannels)
         guard !channels.isEmpty else {
             if !silent { showIndicator("加载失败") }
+            if channels.isEmpty { scheduleRetryLoads() }
             return
         }
         storage.saveChannels(loaded)
+        isBootstrapping = false
+        retryTask?.cancel()
+        retryTask = nil
 
         if let prevKey, let idx = channels.firstIndex(where: { $0.key == prevKey }) {
             currentIndex = idx

@@ -1,8 +1,9 @@
 import SwiftUI
 import AVKit
+import UIKit
 
-/// 纯 AVPlayerLayer，不使用 AVPlayerViewController，避免系统「禁止播放」占位图。
-/// 全屏 + resizeAspect：横屏 16:9 一般为上下顶满、左右黑边，不裁切。
+/// 真正全屏：layer 永远等于 window.bounds，videoGravity = resizeAspectFill
+/// 解决「中间一小块、四边黑框」——那是容器没铺满，不是直播天生如此。
 final class PlayerContainerView: UIView {
     override class var layerClass: AnyClass { AVPlayerLayer.self }
 
@@ -12,32 +13,47 @@ final class PlayerContainerView: UIView {
         get { playerLayer.player }
         set {
             playerLayer.player = newValue
-            playerLayer.videoGravity = .resizeAspect
+            applyFill()
         }
     }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .black
+        isOpaque = true
         clipsToBounds = true
         isUserInteractionEnabled = false
-        isOpaque = true
-        playerLayer.videoGravity = .resizeAspect
-        playerLayer.backgroundColor = UIColor.black.cgColor
-        playerLayer.masksToBounds = true
+        autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        applyFill()
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
+    private func applyFill() {
+        playerLayer.videoGravity = .resizeAspectFill
+        playerLayer.backgroundColor = UIColor.black.cgColor
+        playerLayer.masksToBounds = true
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
+        // 强制与父视图同大，禁止系统动画导致短暂缩在中间
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        if playerLayer.superlayer !== layer {
+            layer.addSublayer(playerLayer)
+        }
         playerLayer.frame = bounds
-        playerLayer.videoGravity = .resizeAspect
+        playerLayer.videoGravity = .resizeAspectFill
         CATransaction.commit()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        setNeedsLayout()
+        layoutIfNeeded()
     }
 }
 
@@ -54,7 +70,11 @@ struct VideoPlayerView: UIViewRepresentable {
         if uiView.player !== vm.player.player {
             uiView.player = vm.player.player
         }
-        uiView.playerLayer.videoGravity = .resizeAspect
         uiView.setNeedsLayout()
+        uiView.layoutIfNeeded()
+    }
+
+    static func dismantleUIView(_ uiView: PlayerContainerView, coordinator: ()) {
+        uiView.player = nil
     }
 }
