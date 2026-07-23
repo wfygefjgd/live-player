@@ -17,7 +17,6 @@ struct TVPlayerApp: App {
                 .preferredColorScheme(.dark)
                 .statusBarHidden(true)
                 .persistentSystemOverlays(.hidden)
-                .ignoresSafeArea(.all, edges: .all)
         }
     }
 }

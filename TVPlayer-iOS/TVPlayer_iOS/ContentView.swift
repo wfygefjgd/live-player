@@ -6,7 +6,7 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            // 1.3.4 基准：最底层是播放器（保证有画面）
+            // 1.3.4：最底层必须是播放器
             VideoPlayerView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .allowsHitTesting(false)
@@ -25,8 +25,7 @@ struct ContentView: View {
                         ChannelListPanel()
                             .frame(width: min(300, w * 0.32))
                             .frame(maxHeight: .infinity)
-                            .background(Color(white: 0.12).opacity(0.96))
-                        Color.black.opacity(0.25)
+                        Color.black.opacity(0.001)
                             .contentShape(Rectangle())
                             .onTapGesture { vm.panelVisible = false }
                     }
@@ -45,7 +44,7 @@ struct ContentView: View {
                         .multilineTextAlignment(.center)
                 }
                 .padding(20)
-                .background(Color.black.opacity(0.55))
+                .background(Color.black.opacity(0.5))
                 .cornerRadius(12)
                 .zIndex(9)
             } else if vm.channels.isEmpty {
@@ -73,20 +72,14 @@ struct ContentView: View {
             if vm.showFloatOverlay || vm.locked {
                 floatingButtons
                     .padding(.top, 12)
-                    .padding(.bottom, 20)
+                    .padding(.bottom, 12)
                     .zIndex(60)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
         .ignoresSafeArea(.all, edges: .all)
-        .onAppear {
-            vm.startup()
-            // 与回前台相同：通知播放层按最终屏幕（含/不含 Home 条后的状态）重铺
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
-            }
-        }
+        .onAppear { vm.startup() }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             vm.pause()
         }
