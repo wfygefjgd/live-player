@@ -6,10 +6,7 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            // 透明：视频在 UIWindow 底层，不能用 Color.black 盖住
-            Color.clear
-
-            // 占位 + 驱动 window 级播放层安装
+            // 最底层：播放器（必须可见，不要用纯黑盖住）
             VideoPlayerView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .allowsHitTesting(false)
@@ -81,11 +78,10 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.clear)
+        .background(Color.black)
         .ignoresSafeArea(.all, edges: .all)
         .onAppear {
             vm.startup()
-            // 首帧就装 window 播放层
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
             }
@@ -96,7 +92,6 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             vm.resume()
             vm.onAppBecameActive()
-            NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
         }
         .sheet(isPresented: $vm.showSourceSheet) {
             SourceManagementSheet()
