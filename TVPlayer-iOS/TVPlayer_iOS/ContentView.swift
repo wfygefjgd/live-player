@@ -6,7 +6,10 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            // 底层必须是播放器，不能只有 Color.black（否则盖住画面只剩声音）
+            // 透明：视频在 UIWindow 底层，不能用 Color.black 盖住
+            Color.clear
+
+            // 占位 + 驱动 window 级播放层安装
             VideoPlayerView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .allowsHitTesting(false)
@@ -25,7 +28,8 @@ struct ContentView: View {
                         ChannelListPanel()
                             .frame(width: min(300, w * 0.32))
                             .frame(maxHeight: .infinity)
-                        Color.black.opacity(0.001)
+                            .background(Color(white: 0.12).opacity(0.96))
+                        Color.black.opacity(0.25)
                             .contentShape(Rectangle())
                             .onTapGesture { vm.panelVisible = false }
                     }
@@ -44,7 +48,7 @@ struct ContentView: View {
                         .multilineTextAlignment(.center)
                 }
                 .padding(20)
-                .background(Color.black.opacity(0.5))
+                .background(Color.black.opacity(0.55))
                 .cornerRadius(12)
                 .zIndex(9)
             } else if vm.channels.isEmpty {
@@ -72,20 +76,27 @@ struct ContentView: View {
             if vm.showFloatOverlay || vm.locked {
                 floatingButtons
                     .padding(.top, 12)
-                    .padding(.bottom, 12)
+                    .padding(.bottom, 20)
                     .zIndex(60)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black)
+        .background(Color.clear)
         .ignoresSafeArea(.all, edges: .all)
-        .onAppear { vm.startup() }
+        .onAppear {
+            vm.startup()
+            // 首帧就装 window 播放层
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             vm.pause()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             vm.resume()
             vm.onAppBecameActive()
+            NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
         }
         .sheet(isPresented: $vm.showSourceSheet) {
             SourceManagementSheet()
