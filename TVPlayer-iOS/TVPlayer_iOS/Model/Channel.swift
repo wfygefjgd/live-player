@@ -1,11 +1,16 @@
 import Foundation
 
 class Channel: Codable, Identifiable, Equatable {
-    let id = UUID()
+    /// 用 key 做稳定 id，避免缓存编解码后列表闪烁
+    var id: String { key }
     let name: String
     let group: String
     let key: String
     private(set) var urls: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case name, group, key, urls
+    }
 
     init(name: String, group: String = "未分组", key: String? = nil, urls: [String]? = nil) {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
