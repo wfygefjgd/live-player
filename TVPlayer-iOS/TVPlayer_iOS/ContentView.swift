@@ -8,7 +8,6 @@ struct ContentView: View {
         ZStack {
             Color.black
 
-            // 播放层：吃满整窗（含安全区），由内部 layer 对齐 window
             VideoPlayerView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .allowsHitTesting(false)
@@ -35,7 +34,6 @@ struct ContentView: View {
                 .zIndex(50)
             }
 
-            // 启动/无频道：只保留一层中文引导，避免与 Indicator 叠字
             if vm.isBootstrapping {
                 VStack(spacing: 10) {
                     ProgressView()
@@ -66,23 +64,20 @@ struct ContentView: View {
             ChannelOSDView(text: vm.channelOSD)
                 .allowsHitTesting(false)
                 .zIndex(5)
-            // 启动引导期间不显示底部 Indicator，防止双层文字
             if !vm.isBootstrapping {
                 IndicatorView(text: vm.indicatorText)
                     .allowsHitTesting(false)
                     .zIndex(5)
             }
 
-            // 按钮仍可避开危险区，用 safeArea 内边距即可
             if vm.showFloatOverlay || vm.locked {
                 floatingButtons
-                    .padding(.top, 8)
-                    .padding(.bottom, 8)
+                    .padding(.top, 12)
+                    .padding(.bottom, 12)
                     .zIndex(60)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // 关键：整页忽略全部安全区，播放区域可画进 Home 条 / 顶部
         .ignoresSafeArea(.all, edges: .all)
         .background(Color.black.ignoresSafeArea(.all, edges: .all))
         .onAppear { vm.startup() }
