@@ -128,7 +128,8 @@ final class PlayerEngine: ObservableObject {
         protectTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: Self.readyProtectNs)
             guard !Task.isCancelled else { return }
-            await MainActor.run {
+            guard let self else { return }
+            await MainActor.run { [weak self] in
                 guard let self, self.playToken == token else { return }
                 self.stallWatchEnabled = true
             }
@@ -144,9 +145,9 @@ final class PlayerEngine: ObservableObject {
                 try? await Task.sleep(nanoseconds: UInt64(remain * 1_000_000_000))
             }
             guard !Task.isCancelled else { return }
-            await MainActor.run {
+            guard let self else { return }
+            await MainActor.run { [weak self] in
                 guard let self, self.playToken == token else { return }
-                // 已经出过画面则交给卡顿逻辑，不因瞬时 error 秒切
                 if self.hasRendered || self.isReady { return }
                 self.cancelAllWatchers()
                 self.onError?()
@@ -159,9 +160,9 @@ final class PlayerEngine: ObservableObject {
         startupTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: Self.startupTimeoutNs)
             guard !Task.isCancelled else { return }
-            await MainActor.run {
+            guard let self else { return }
+            await MainActor.run { [weak self] in
                 guard let self, self.playToken == token else { return }
-                // 已 ready / 已出画：不因超时切
                 if self.isReady || self.hasRendered { return }
                 self.cancelAllWatchers()
                 self.onStartupTimeout?()
@@ -210,11 +211,11 @@ final class PlayerEngine: ObservableObject {
         stallTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: Self.stallTimeoutNs)
             guard !Task.isCancelled else { return }
-            await MainActor.run {
+            guard let self else { return }
+            await MainActor.run { [weak self] in
                 guard let self, self.playToken == token, self.stallWatchEnabled else { return }
                 let waiting = self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate
                 let rateZero = self.player.rate == 0
-                // 必须仍在 waiting 且 rate=0，避免「能播但缓冲中」误切
                 guard waiting, rateZero else {
                     self.continuousStall = false
                     return

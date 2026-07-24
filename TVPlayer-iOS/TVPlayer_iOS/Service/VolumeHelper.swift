@@ -2,7 +2,7 @@ import AVFoundation
 import MediaPlayer
 import UIKit
 
-/// 常驻隐藏 MPVolumeView，系统音量调节更稳
+/// Persistent hidden MPVolumeView for system volume
 enum VolumeHelper {
     private static var volumeView: MPVolumeView?
     private static var slider: UISlider?
@@ -16,14 +16,12 @@ enum VolumeHelper {
         let v = MPVolumeView(frame: CGRect(x: -2000, y: -2000, width: 1, height: 1))
         v.alpha = 0.0001
         v.isUserInteractionEnabled = false
-        v.showsRouteButton = false
         volumeView = v
         slider = v.subviews.compactMap { $0 as? UISlider }.first
 
         if let window = keyWindow() {
             window.addSubview(v)
         } else {
-            // 稍后再挂
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 if let w = keyWindow(), let vv = volumeView, vv.superview == nil {
                     w.addSubview(vv)
@@ -53,7 +51,6 @@ enum VolumeHelper {
         if let slider {
             slider.value = v
         } else {
-            // 再试一次找 slider
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
                 if slider == nil {
                     slider = volumeView?.subviews.compactMap { $0 as? UISlider }.first
