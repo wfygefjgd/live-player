@@ -81,7 +81,7 @@ struct ContentView: View {
             if vm.showFloatOverlay || vm.locked {
                 floatingButtons
                     .padding(.top, 12)
-                    .safeAreaPadding(.bottom, 8)
+                    .padding(.bottom, 24)
                     .zIndex(60)
             }
         }

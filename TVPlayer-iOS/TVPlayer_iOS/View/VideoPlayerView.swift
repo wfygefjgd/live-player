@@ -167,7 +167,7 @@ final class FullScreenPlayerViewController: UIViewController {
 }
 
 /// Forwards home-indicator preference to SwiftUI hosting controller chain.
-private final class HomeIndicatorForwarder: UIViewController {
+final class HomeIndicatorForwarder: UIViewController {
     override var prefersHomeIndicatorAutoHidden: Bool { true }
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
     override var prefersStatusBarHidden: Bool { true }
