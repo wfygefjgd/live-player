@@ -29,34 +29,34 @@
     },
     {
       "id": "burningc4-github",
-      "name": "BurningC4 中国源 (GitHub)",
-      "url": "https://raw.githubusercontent.com/BurningC4/Chinese-IPTV/master/TV-IPV4.m3u",
+      "name": "BurningC4 中国源 (镜像)",
+      "url": "https://wfygefjgd.github.io/live-player/iptv-mirrors/burningc4-chinese-iptv.m3u",
       "type": "m3u",
       "priority": 3,
       "region": "cn",
-      "description": "中国移动 IPTV 源，包含 CCTV 全套频道",
+      "description": "中国移动 IPTV 源，包含 CCTV 全套频道（无需代理）",
       "verified": true,
       "mirrors": []
     },
     {
       "id": "zbefine-2026",
-      "name": "zbefine 2026 维护源",
-      "url": "https://raw.githubusercontent.com/zbefine/iptv/main/iptv.m3u",
+      "name": "zbefine 2026 维护源 (镜像)",
+      "url": "https://wfygefjgd.github.io/live-player/iptv-mirrors/zbefine-iptv.m3u",
       "type": "m3u",
       "priority": 4,
       "region": "cn",
-      "description": "2026年活跃维护，电信/联通多线路",
+      "description": "2026年活跃维护，电信/联通多线路（无需代理）",
       "verified": true,
       "mirrors": []
     },
     {
       "id": "suxuang-ysp",
-      "name": "suxuang IPv6 源",
-      "url": "https://raw.githubusercontent.com/suxuang/myIPTV/main/ipv6.m3u",
+      "name": "suxuang IPv6 源 (镜像)",
+      "url": "https://wfygefjgd.github.io/live-player/iptv-mirrors/suxuang-myiptv.m3u",
       "type": "m3u",
       "priority": 5,
       "region": "cn",
-      "description": "支持 IPv4/IPv6 双栈，带 EPG 节目单",
+      "description": "支持 IPv4/IPv6 双栈，带 EPG 节目单（无需代理）",
       "verified": true,
       "mirrors": []
     },
@@ -85,6 +85,7 @@
     "multi_source_fusion": "App 会自动融合多个源的频道，单个源失效不影响整体"
   },
   "removed_sources_reason": {
+    "github_raw_replaced": "已替换为 GitHub Pages 镜像，无需代理访问",
     "dongyubin": "仓库已删除 (404)",
     "fanmingming": "连接超时，镜像失效",
     "ghfast_mirrors": "所有 ghfast.top 镜像均已失效",
