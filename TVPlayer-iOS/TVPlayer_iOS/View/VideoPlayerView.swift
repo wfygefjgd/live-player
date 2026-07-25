@@ -290,21 +290,29 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
     override var childForScreenEdgesDeferringSystemGestures: UIViewController? { nil }
     override var childForStatusBarHidden: UIViewController? { nil }
 
-    // 🆕 最强硬方法：直接设置 view.frame 覆盖整个屏幕
+    // 强制扩展视图边界，覆盖 Home Indicator 区域
     override func viewWillLayoutSubviews() {
         super.viewWillLayoutSubviews()
 
         // 强制 view 占据整个屏幕，忽略安全区域
         if let window = view.window {
             let screenBounds = window.screen.bounds
-            if view.frame != screenBounds {
-                view.frame = screenBounds
-            }
 
-            // 强制设置 additionalSafeAreaInsets 为负值，抵消系统的安全区域
+            // 使用负的 additionalSafeAreaInsets 强制视图延伸到安全区域之外
             let bottomInset = view.safeAreaInsets.bottom
             if bottomInset > 0 {
-                additionalSafeAreaInsets = UIEdgeInsets(top: 0, left: 0, bottom: -bottomInset, right: 0)
+                // 设置为 -bottomInset 来抵消系统安全区域，再额外减去 20pt 确保完全覆盖
+                additionalSafeAreaInsets = UIEdgeInsets(
+                    top: 0,
+                    left: 0,
+                    bottom: -(bottomInset + 20),
+                    right: 0
+                )
+            }
+
+            // 强制 frame 覆盖整个屏幕边界
+            if view.frame != screenBounds {
+                view.frame = screenBounds
             }
         }
     }

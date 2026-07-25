@@ -200,10 +200,10 @@ struct ContentView: View {
 
                 // 左右滑动切换线路（全屏幕有效）
                 if abs(dx) > abs(dy) && abs(dx) > 50 {
-                    // 手指向右滑（dx>0）= 下一个线路
-                    // 手指向左滑（dx<0）= 上一个线路
-                    if dx > 0 { vm.switchSource(direction: 1) }
-                    else { vm.switchSource(direction: -1) }
+                    // 手指向右滑（dx>0）= 上一个线路
+                    // 手指向左滑（dx<0）= 下一个线路
+                    if dx > 0 { vm.switchSource(direction: -1) }
+                    else { vm.switchSource(direction: 1) }
                     return
                 }
 

@@ -1,7 +1,7 @@
 import SwiftUI
 import AVKit
 
-let DEFAULT_SOURCE_URL = "https://ghproxy.net/https://raw.githubusercontent.com/best-fan/iptv-sources/master/cn_all_status.m3u8"
+let DEFAULT_SOURCE_URL = "https://iptv.burningc4.com/TV-IPV4.m3u"
 
 private let CHANNEL_OSD_MS: UInt64 = 2_500_000_000
 private let FLOAT_HIDE_MS: UInt64 = 2_500_000_000
@@ -650,14 +650,14 @@ final class PlayerViewModel: ObservableObject {
 
     /// 自动切线：同频道内连续试完所有线路，如果都失败则切下一频道
     private func autoSwitchLine(hint: String) {
-        guard !locked else { return }
-        if autoSwitchState == .switching { return }
-        if autoSwitchState == .cooldown { return }
-
         guard let ch = currentChannel else {
             showIndicator(hint)
             return
         }
+
+        // 如果正在切换中或处于冷却期，不重复触发
+        if autoSwitchState == .switching { return }
+        if autoSwitchState == .cooldown { return }
 
         // 单线路频道：标记已尝试，进入冷却期
         if ch.sourceCount <= 1 {
@@ -665,7 +665,8 @@ final class PlayerViewModel: ObservableObject {
 
             // 判断是否通过健康度检查确认有问题
             let isHealthIssue = hint.contains("黑屏") || hint.contains("冻结") || hint.contains("卡顿") ||
-                               hint.contains("网络") || hint.contains("无声音") || hint.contains("综合健康度")
+                               hint.contains("网络") || hint.contains("无声音") || hint.contains("综合健康度") ||
+                               hint.contains("失败") || hint.contains("超时")
 
             if isHealthIssue && triedLineIndices.count >= ch.sourceCount {
                 // 通过健康度检查 + 已试过唯一线路 → 切换到下一频道
@@ -717,7 +718,7 @@ final class PlayerViewModel: ObservableObject {
         autoSwitchState = .switching
         currentSourceIndex = nxt
         triedLineIndices.insert(nxt)
-        showIndicator("\(hint) (\(nxt + 1)/\(ch.sourceCount))")
+        showIndicator("\(hint) - 线路 \(nxt + 1)/\(ch.sourceCount)")
         player.play(url: u)
         persistLastChannel()
         showChannelOSD()
@@ -788,7 +789,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func switchSource(direction: Int) {
-        guard !locked, let ch = currentChannel, ch.sourceCount > 1 else {
+        guard let ch = currentChannel, ch.sourceCount > 1 else {
             if let ch = currentChannel, ch.sourceCount <= 1 {
                 showIndicator("当前频道只有一个来源")
                 showChannelOSD()
@@ -797,6 +798,7 @@ final class PlayerViewModel: ObservableObject {
         }
         autoSwitchState = .idle
         currentSourceIndex = (currentSourceIndex + direction + ch.sourceCount) % ch.sourceCount
+        showIndicator("切换线路 \(currentSourceIndex + 1)/\(ch.sourceCount)")
         playCurrent(resetTried: true)
     }
 
