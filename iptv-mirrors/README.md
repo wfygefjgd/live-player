@@ -23,4 +23,4 @@ https://wfygefjgd.github.io/live-player/iptv-mirrors/zbefine-iptv.m3u
 https://wfygefjgd.github.io/live-player/iptv-mirrors/suxuang-myiptv.m3u
 ```
 
-镜像由 GitHub Actions 自动维护。
+最后更新时间：$(date -u +"%Y-%m-%d %H:%M:%S UTC")
