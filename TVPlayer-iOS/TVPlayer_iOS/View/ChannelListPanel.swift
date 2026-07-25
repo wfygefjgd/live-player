@@ -8,55 +8,60 @@ struct ChannelListPanel: View {
     var onShowSettings: (() -> Void)?
 
     var body: some View {
-        VStack(spacing: 0) {
-            // 顶部工具栏：设置按钮 + 搜索框
-            HStack(spacing: 12) {
-                // 设置按钮
-                Button {
-                    onShowSettings?()
-                    haptic(.light)
-                } label: {
-                    Image(systemName: "gearshape.fill")
-                        .font(.system(size: 18))
-                        .foregroundColor(.white.opacity(0.8))
-                        .frame(width: 32, height: 32)
-                }
-                .buttonStyle(.plain)
+        GeometryReader { geo in
+            VStack(spacing: 0) {
+                // 🆕 安全区域顶部占位，确保工具栏不被遮挡
+                Color.clear
+                    .frame(height: geo.safeAreaInsets.top > 0 ? geo.safeAreaInsets.top : 0)
 
-                // 搜索框
-                HStack {
-                Image(systemName: "magnifyingglass")
-                    .foregroundColor(.gray)
-                    .font(.caption)
-
-                TextField("搜索频道", text: $searchText)
-                    .textFieldStyle(.plain)
-                    .foregroundColor(.white)
-                    .focused($searchFocused)
-                    .submitLabel(.search)
-                    .onSubmit {
-                        // 提交搜索后可以收起键盘
-                        searchFocused = false
-                    }
-
-                if !searchText.isEmpty {
+                // 顶部工具栏：设置按钮 + 搜索框
+                HStack(spacing: 12) {
+                    // 设置按钮
                     Button {
-                        searchText = ""
+                        onShowSettings?()
+                        haptic(.light)
                     } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.gray)
+                        Image(systemName: "gearshape.fill")
+                            .font(.system(size: 18))
+                            .foregroundColor(.white.opacity(0.8))
+                            .frame(width: 32, height: 32)
+                    }
+                    .buttonStyle(.plain)
+
+                    // 搜索框
+                    HStack {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.gray)
+                        .font(.caption)
+
+                    TextField("搜索频道", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .foregroundColor(.white)
+                        .focused($searchFocused)
+                        .submitLabel(.search)
+                        .onSubmit {
+                            // 提交搜索后可以收起键盘
+                            searchFocused = false
+                        }
+
+                    if !searchText.isEmpty {
+                        Button {
+                            searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.gray)
+                        }
                     }
                 }
-            }
-            .padding(8)
-            .background(Color(white: 0.16))
-            .cornerRadius(6)
-            .padding(.horizontal, 8)
-            .padding(.top, 8)
-        }
-        .background(Color(white: 0.12))
+                .padding(8)
+                .background(Color(white: 0.16))
+                .cornerRadius(6)
+                .padding(.horizontal, 8)
+                .padding(.top, 8)
+                }
+                .background(Color(white: 0.12))
 
-            // 频道列表
+                // 频道列表
             ScrollViewReader { proxy in
                 List {
                     ForEach(vm.sections(search: searchText)) { section in
@@ -95,8 +100,9 @@ struct ChannelListPanel: View {
                 .font(.caption2)
                 .foregroundColor(.gray)
                 .padding(4)
+            }
+            .background(Color(white: 0.12))
         }
-        .background(Color(white: 0.12))
     }
 
     private func scrollToCurrent(_ proxy: ScrollViewProxy) {

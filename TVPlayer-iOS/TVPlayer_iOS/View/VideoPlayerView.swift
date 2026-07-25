@@ -290,7 +290,10 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
     override var childForScreenEdgesDeferringSystemGestures: UIViewController? { nil }
     override var childForStatusBarHidden: UIViewController? { nil }
 
-    // 强制扩展视图到屏幕之外，覆盖 Home Indicator 区域
+    private var hideIndicatorTimer: Timer?
+    private var maskLayer: CALayer?
+
+    // 🔥 暴力方法：使用超出屏幕的 frame + 遮罩层 + 持续强制
     override func viewWillLayoutSubviews() {
         super.viewWillLayoutSubviews()
 
@@ -298,55 +301,68 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
             let screen = window.screen.bounds
             let bottomInset = view.safeAreaInsets.bottom
 
-            // 方法1: 设置超大负边距，彻底突破安全区域
+            // 方法1: 设置超大负边距
             additionalSafeAreaInsets = UIEdgeInsets(
-                top: -50,
-                left: -50,
-                bottom: -(bottomInset + 50),
-                right: -50
+                top: -100,
+                left: -100,
+                bottom: -(bottomInset + 100),
+                right: -100
             )
 
-            // 方法2: 强制 frame 扩展到屏幕外
+            // 方法2: 强制扩展 frame
             let extendedFrame = CGRect(
-                x: -50,
-                y: -50,
-                width: screen.width + 100,
-                height: screen.height + 100
+                x: -100,
+                y: -100,
+                width: screen.width + 200,
+                height: screen.height + 200
             )
             if view.frame != extendedFrame {
                 view.frame = extendedFrame
             }
 
-            // 方法3: 修改 view 的 bounds 和 center
-            view.bounds = CGRect(origin: .zero, size: CGSize(width: screen.width + 100, height: screen.height + 100))
+            // 方法3: 修改 bounds
+            view.bounds = CGRect(origin: .zero, size: CGSize(width: screen.width + 200, height: screen.height + 200))
             view.center = CGPoint(x: screen.midX, y: screen.midY)
+
+            // 🆕 方法4: 使用黑色 CALayer 遮罩底部区域（更底层，不影响 SwiftUI 视图）
+            if maskLayer == nil {
+                let mask = CALayer()
+                mask.backgroundColor = UIColor.black.cgColor
+                mask.zPosition = -1000  // 放到最底层
+                view.window?.layer.insertSublayer(mask, at: 0)
+                maskLayer = mask
+            }
+            if let mask = maskLayer {
+                mask.frame = CGRect(
+                    x: 0,
+                    y: screen.height - bottomInset - 10,
+                    width: screen.width,
+                    height: bottomInset + 10
+                )
+            }
         }
     }
-
-    private var hideIndicatorTimer: Timer?
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .clear
         view.isOpaque = false
-        view.clipsToBounds = false  // 🔥 关键：允许子视图超出边界
+        view.clipsToBounds = false
 
-        // 禁用安全区域布局
         if #available(iOS 11.0, *) {
             view.insetsLayoutMarginsFromSafeArea = false
         }
 
-        // 立即强制隐藏
+        // 🔥 极端方法：持续高频隐藏（0.05秒一次，比之前更频繁）
         forceHideHomeIndicator()
-
-        // 启动持续隐藏定时器（每 0.1 秒强制一次，更频繁）
-        hideIndicatorTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        hideIndicatorTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             self?.forceHideHomeIndicator()
         }
     }
 
     deinit {
         hideIndicatorTimer?.invalidate()
+        maskLayer?.removeFromSuperlayer()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -390,18 +406,26 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         setNeedsStatusBarAppearanceUpdate()
 
-        // 🔥 暴力方法4：多次连续调用，确保生效
+        // 🆕 方法5: 强制修改 window 的 rootViewController 层级
+        if let window = view.window {
+            window.rootViewController?.setNeedsUpdateOfHomeIndicatorAutoHidden()
+            window.rootViewController?.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+
+            // 🆕 方法6: 尝试隐藏系统手势识别器
+            if let gestureRecognizers = window.gestureRecognizers {
+                for gesture in gestureRecognizers {
+                    gesture.isEnabled = false
+                }
+            }
+        }
+
+        // 🔥 多次连续调用确保生效
         DispatchQueue.main.async { [weak self] in
             self?.setNeedsUpdateOfHomeIndicatorAutoHidden()
             self?.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self] in
-            self?.setNeedsUpdateOfHomeIndicatorAutoHidden()
-            self?.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             self?.setNeedsUpdateOfHomeIndicatorAutoHidden()
             self?.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         }
