@@ -968,6 +968,7 @@ final class PlayerViewModel: ObservableObject {
 
         let modeName: String
         switch mode {
+        case .off: modeName = "关闭融合"
         case .fast: modeName = "快速"
         case .balanced: modeName = "平衡"
         case .complete: modeName = "完整"

@@ -141,6 +141,7 @@ struct SourceManagementSheet: View {
 
     private var fusionModeText: String {
         switch vm.fusionMode {
+        case .off: return "关闭融合"
         case .fast: return "快速"
         case .balanced: return "平衡"
         case .complete: return "完整"
