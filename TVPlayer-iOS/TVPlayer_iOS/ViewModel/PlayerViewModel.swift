@@ -650,16 +650,10 @@ final class PlayerViewModel: ObservableObject {
             return
         }
 
-        // 如果只有一条线路，直接切下一个频道
+        // 如果只有一条线路，不自动切换频道，避免疯狂切换
         if ch.sourceCount <= 1 {
-            showIndicator("当前频道只有一条线路，切换下一频道")
+            showIndicator(hint)
             beginCooldown()
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                try? await Task.sleep(nanoseconds: 800_000_000)  // 0.8秒后切换
-                guard !Task.isCancelled else { return }
-                self.nextChannel()
-            }
             return
         }
 
