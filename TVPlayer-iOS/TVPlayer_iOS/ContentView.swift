@@ -29,22 +29,28 @@ struct ContentView: View {
             }
 
             if vm.panelVisible {
-                GeometryReader { geo in
-                    let w = max(geo.size.width, 1)
-                    HStack(spacing: 0) {
-                        ChannelListPanel(onShowSettings: {
-                            showSettingsMenu = true
-                        })
-                        .frame(width: min(300, w * 0.32))
-                        .frame(maxHeight: .infinity)
-                        .background(Color(white: 0.12).opacity(0.96))
-                        Color.black.opacity(0.25)
-                            .contentShape(Rectangle())
-                            .onTapGesture { vm.panelVisible = false }
-                    }
+                ZStack(alignment: .leading) {
+                    // 半透明遮罩层
+                    Color.black.opacity(0.5)
+                        .ignoresSafeArea(.all, edges: .all)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                                vm.panelVisible = false
+                            }
+                        }
+
+                    // 侧边栏面板
+                    ChannelListPanel(onShowSettings: {
+                        showSettingsMenu = true
+                    })
+                    .frame(width: 320)
+                    .frame(maxHeight: .infinity)
+                    .background(Color(white: 0.12).opacity(0.98))
+                    .ignoresSafeArea(.all, edges: .all)
                 }
                 .transition(.move(edge: .leading))
-                .zIndex(50)
+                .zIndex(100)
             }
 
             if vm.isBootstrapping {
