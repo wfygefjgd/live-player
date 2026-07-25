@@ -266,23 +266,52 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
     override var prefersStatusBarHidden: Bool { true }
 
+    // 强制忽略所有安全区域，防止 Home Indicator 挤压画面
+    override var additionalSafeAreaInsets: UIEdgeInsets {
+        get { UIEdgeInsets(top: 0, left: 0, bottom: 0, right: 0) }
+        set { }
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .clear
         view.isOpaque = false
         view.clipsToBounds = false
+
+        // 立即隐藏 Home Indicator
+        setNeedsUpdateOfHomeIndicatorAutoHidden()
+        setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // 再次确保 Home Indicator 隐藏
+        setNeedsUpdateOfHomeIndicatorAutoHidden()
+        setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        // 多次调用确保生效
         setNeedsUpdateOfHomeIndicatorAutoHidden()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+
+        // 延迟再次调用，确保布局完成后仍然隐藏
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.setNeedsUpdateOfHomeIndicatorAutoHidden()
+            self?.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+        }
+
         WindowVideoSurface.shared.install(reason: "host-appear")
         NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
     }
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
+        // 每次安全区域变化时都重新隐藏 Home Indicator
+        setNeedsUpdateOfHomeIndicatorAutoHidden()
+        setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+
         WindowVideoSurface.shared.install(reason: "safeArea")
         WindowVideoSurface.shared.schedulePasses()
         WindowVideoSurface.shared.startBriefDisplayLink()

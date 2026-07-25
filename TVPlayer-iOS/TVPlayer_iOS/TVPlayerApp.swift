@@ -111,8 +111,15 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 if let root = window.rootViewController {
                     root.view.backgroundColor = .clear
                     root.view.isOpaque = false
+                    // 强制隐藏 Home Indicator
                     root.setNeedsUpdateOfHomeIndicatorAutoHidden()
                     root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+
+                    // 延迟再次调用，确保生效
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        root.setNeedsUpdateOfHomeIndicatorAutoHidden()
+                        root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+                    }
                 }
             }
         }

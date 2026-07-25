@@ -116,6 +116,16 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             vm.resume()
             vm.onAppBecameActive()
+
+            // 确保 Home Indicator 隐藏
+            DispatchQueue.main.async {
+                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                   let root = windowScene.windows.first?.rootViewController {
+                    root.setNeedsUpdateOfHomeIndicatorAutoHidden()
+                    root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+                }
+            }
+
             NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
         }
         .sheet(isPresented: $vm.showSourceSheet) {
