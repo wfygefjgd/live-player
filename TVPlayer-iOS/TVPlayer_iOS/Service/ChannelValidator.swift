@@ -19,34 +19,35 @@ final class ChannelValidator: ObservableObject {
 
     private var validationTask: Task<Void, Never>?
 
-    // 验证超时时间（秒）- 缩短到3秒快速失败
-    private let validationTimeout: TimeInterval = 3.0
+    // 验证超时时间（秒）- 缩短到2秒快速失败
+    private let validationTimeout: TimeInterval = 2.0
 
-    // 并发验证数量 - 提高到50并发
-    private let concurrentValidations = 50
+    // 并发验证数量 - 降低到20，平衡速度和稳定性
+    private let concurrentValidations = 20
 
     func validateAllChannels(_ channels: [Channel]) async -> ValidationResult {
         isValidating = true
-        totalCount = channels.reduce(0) { $0 + $1.urls.count }
+
+        // 🆕 采样验证：每个频道只验证前2个线路
+        var sampledValidations: [(Channel, String)] = []
+        for channel in channels {
+            let urlsToCheck = Array(channel.urls.prefix(2))  // 只取前2个
+            for url in urlsToCheck {
+                sampledValidations.append((channel, url))
+            }
+        }
+
+        totalCount = sampledValidations.count
         testedCount = 0
         progress = 0.0
 
         var validChannels: [String: [String]] = [:]
         var validCount = 0
 
-        // 并发验证所有频道的所有线路
+        // 并发验证采样的线路
         await withTaskGroup(of: (String, String, Bool).self) { group in
-            var pendingValidations: [(Channel, String)] = []
-
-            // 收集所有待验证的频道-URL对
-            for channel in channels {
-                for url in channel.urls {
-                    pendingValidations.append((channel, url))
-                }
-            }
-
             // 分批并发验证
-            for (channel, url) in pendingValidations {
+            for (channel, url) in sampledValidations {
                 group.addTask {
                     let isValid = await self.validateURL(url)
                     await MainActor.run {
@@ -57,7 +58,7 @@ final class ChannelValidator: ObservableObject {
                 }
 
                 // 控制并发数
-                if group.isEmpty == false && pendingValidations.count > self.concurrentValidations {
+                if group.isEmpty == false && sampledValidations.count > self.concurrentValidations {
                     if let result = await group.next() {
                         if result.2 {
                             validChannels[result.0, default: []].append(result.1)
