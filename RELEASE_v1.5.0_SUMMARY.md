@@ -16,9 +16,9 @@
 | Git 标签 | ✅ 完成 | v1.5.0-ios (已更新) |
 | GitHub 推送 | ✅ 完成 | https://github.com/wfygefjgd/live-player |
 | GitHub Release | ✅ 完成 | https://github.com/wfygefjgd/live-player/releases/tag/v1.5.0-ios |
-| GitHub Actions | 🔄 构建中 | https://github.com/wfygefjgd/live-player/actions/runs/30136912426 |
-| IPA 文件 | ⏳ 等待构建 | 将自动上传到 Release |
-| 编译错误修复 | ✅ 完成 | 已修复 MainActor、Channel.urls 和 toolbar 问题 |
+| GitHub Actions | ✅ 完成 | https://github.com/wfygefjgd/live-player/actions/runs/30136912426 |
+| IPA 文件 | ✅ 已上传 | TVPlayer-v1.5.0-ios.ipa (250KB) |
+| 编译错误修复 | ✅ 完成 | 已修复 6 个编译错误 |
 
 ### ✅ Android v1.5.0 - 版本号同步
 
@@ -351,8 +351,11 @@ v1.5.0-android - Android v1.5.0 版本号同步
 - ✅ 文档编写完成（4 份完整文档）
 - ✅ 版本号更新完成
 - ✅ Git 提交推送完成
-- ✅ GitHub Release 创建完成
-- 🔄 GitHub Actions 构建中（预计 5-10 分钟）
+- ✅ 编译错误全部修复（6 个错误，4 次提交）
+- ✅ GitHub Actions 构建成功（46 秒）
+- ✅ IPA 文件已编译（250KB）
+- ✅ GitHub Release 正式发布
+- ✅ IPA 已上传到 Release
 
 ### Android v1.5.0 ✅ 100% 完成
 
@@ -370,8 +373,9 @@ v1.5.0-android - Android v1.5.0 版本号同步
 ### 立即执行
 
 1. ✅ 监控 iOS GitHub Actions 构建
-2. ⏳ 等待 IPA 文件自动上传（5-10 分钟）
-3. ⏳ 构建完成后测试 IPA 安装
+2. ✅ IPA 文件已成功编译（250KB）
+3. ✅ IPA 已上传到 Release
+4. ✅ Release 已正式发布
 
 ### 用户通知
 
