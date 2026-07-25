@@ -81,8 +81,11 @@ struct ChannelValidationView: View {
     }
 
     private func performValidation() async {
-        // 🆕 延迟 3 秒启动验证，等待 iOS 弹出网络权限请求
-        try? await Task.sleep(nanoseconds: 3_000_000_000)
+        // 🆕 第一步：发起简单的网络请求触发 iOS 权限弹窗
+        await triggerNetworkPermission()
+
+        // 🆕 延迟 2 秒等待用户点击"允许"
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
 
         // 加载所有频道
         let channels = vm.channels
@@ -106,5 +109,18 @@ struct ChannelValidationView: View {
 
         // 结束验证，进入播放界面
         isValidating = false
+    }
+
+    // 🆕 触发网络权限请求
+    private func triggerNetworkPermission() async {
+        // 发起一个简单的网络请求来触发 iOS 的网络权限弹窗
+        guard let url = URL(string: "https://www.apple.com") else { return }
+        var request = URLRequest(url: url, timeoutInterval: 3.0)
+        request.httpMethod = "HEAD"
+        do {
+            _ = try await URLSession.shared.data(for: request)
+        } catch {
+            // 忽略错误，我们只是为了触发权限弹窗
+        }
     }
 }
