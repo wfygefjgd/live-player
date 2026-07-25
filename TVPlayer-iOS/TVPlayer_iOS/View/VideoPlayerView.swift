@@ -338,7 +338,6 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
         super.viewWillDisappear(animated)
         hideIndicatorTimer?.invalidate()
     }
-    }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)

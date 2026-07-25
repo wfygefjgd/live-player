@@ -405,10 +405,6 @@ final class PlayerEngine: ObservableObject {
         return !audioTracks.isEmpty
     }
 
-    // MARK: - Private — Stall Polling
-        consecutiveStallCount = 0
-    }
-
     // MARK: - Private — Health Monitoring
 
     /// 🆕 启动综合健康度检查（在 ready 后启动）
