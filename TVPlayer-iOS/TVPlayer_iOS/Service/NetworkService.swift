@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import UIKit
 
 enum NetworkFetchError: LocalizedError {
     case invalidURL

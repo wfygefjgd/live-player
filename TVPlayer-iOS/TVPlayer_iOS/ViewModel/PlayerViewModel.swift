@@ -129,7 +129,7 @@ final class PlayerViewModel: ObservableObject {
 
     private func scheduleRetryLoads() {
         if let t = retryTask, !t.isCancelled { return }
-        retryTask = Task { [weak self] @MainActor in
+        retryTask = Task { @MainActor [weak self] in
             guard let self else { return }
             for sec in [1, 3, 6] as [UInt64] {
                 try? await Task.sleep(nanoseconds: sec * 1_000_000_000)
@@ -585,7 +585,7 @@ final class PlayerViewModel: ObservableObject {
         if ch.sourceCount <= 1 {
             showIndicator("当前频道只有一条线路，切换下一频道")
             beginCooldown()
-            Task { [weak self] @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 try? await Task.sleep(nanoseconds: 800_000_000)  // 0.8秒后切换
                 guard !Task.isCancelled else { return }
@@ -606,7 +606,7 @@ final class PlayerViewModel: ObservableObject {
             autoSwitchState = .idle
             showIndicator("当前频道所有线路不可用，切换下一频道")
             beginCooldown()
-            Task { [weak self] @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 try? await Task.sleep(nanoseconds: 800_000_000)  // 0.8秒后切换
                 guard !Task.isCancelled else { return }
@@ -628,7 +628,7 @@ final class PlayerViewModel: ObservableObject {
         player.play(url: u)
         persistLastChannel()
         showChannelOSD()
-        Task { [weak self] @MainActor in
+        Task { @MainActor [weak self] in
             guard let self else { return }
             try? await Task.sleep(nanoseconds: 300_000_000)
             if self.autoSwitchState == .switching {

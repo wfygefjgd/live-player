@@ -278,11 +278,11 @@ struct ContentView: View {
     private func appendNumber(_ digit: Character) {
         numberInput.append(digit)
         numberInputTask?.cancel()
-        numberInputTask = Task { [weak self] in
+        numberInputTask = Task {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard !Task.isCancelled else { return }
-            await MainActor.run { [weak self] in
-                self?.confirmNumberInput()
+            await MainActor.run {
+                confirmNumberInput()
             }
         }
         if numberInput.count >= 4 {
