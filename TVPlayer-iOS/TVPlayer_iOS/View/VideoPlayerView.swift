@@ -339,17 +339,6 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
             self?.setNeedsStatusBarAppearanceUpdate()
         }
     }
-
-        WindowVideoSurface.shared.install(reason: "safeArea")
-        WindowVideoSurface.shared.schedulePasses()
-        WindowVideoSurface.shared.startBriefDisplayLink()
-        NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
-    }
-
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        WindowVideoSurface.shared.install(reason: "host-layout")
-    }
 }
 
 // MARK: - Now Playing Info (锁屏控件)
