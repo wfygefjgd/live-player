@@ -83,4 +83,11 @@ final class NetworkMonitor {
             }
         }
     }
+
+    // 🆕 停止监听（供清理使用）
+    func stop() {
+        monitor.cancel()
+        onSatisfied = nil
+        onConnectionTypeChanged = nil
+    }
 }

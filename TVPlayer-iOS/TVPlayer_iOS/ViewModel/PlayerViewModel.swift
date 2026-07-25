@@ -42,6 +42,7 @@ final class PlayerViewModel: ObservableObject {
     @Published var isBootstrapping = false
     @Published var bootstrapMessage = "正在连接网络..."
     @Published var playerLayoutEpoch: Int = 0
+    @Published var needsValidation = false  // 🆕 手动触发验证标志
 
     // 🆕 智能融合相关
     @Published var fusionMode: FusionMode = .smart
@@ -63,6 +64,9 @@ final class PlayerViewModel: ObservableObject {
     private var cooldownTask: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
     private var silentAudioTask: Task<Void, Never>?
+
+    // 🆕 NotificationCenter观察者引用
+    private var fusionObserver: NSObjectProtocol?
 
     private var lastVolumeTranslation: CGFloat = 0
     private var lastSilentSwitchAt: Date = .distantPast
@@ -125,26 +129,27 @@ final class PlayerViewModel: ObservableObject {
 
     private func scheduleRetryLoads() {
         if let t = retryTask, !t.isCancelled { return }
-        retryTask = Task { @MainActor in
+        retryTask = Task { [weak self] @MainActor in
+            guard let self else { return }
             for sec in [1, 3, 6] as [UInt64] {
                 try? await Task.sleep(nanoseconds: sec * 1_000_000_000)
                 guard !Task.isCancelled else { return }
-                if !channels.isEmpty {
-                    isBootstrapping = false
+                if !self.channels.isEmpty {
+                    self.isBootstrapping = false
                     return
                 }
-                bootstrapMessage = "正在重新加载频道..."
-                loadChannels(force: true, silent: false, preferActiveOnly: false)
+                self.bootstrapMessage = "正在重新加载频道..."
+                self.loadChannels(force: true, silent: false, preferActiveOnly: false)
             }
             while !Task.isCancelled {
-                if !channels.isEmpty {
-                    isBootstrapping = false
+                if !self.channels.isEmpty {
+                    self.isBootstrapping = false
                     return
                 }
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 guard !Task.isCancelled else { return }
-                bootstrapMessage = "仍无频道，继续刷新..."
-                loadChannels(force: true, silent: false, preferActiveOnly: false)
+                self.bootstrapMessage = "仍无频道，继续刷新..."
+                self.loadChannels(force: true, silent: false, preferActiveOnly: false)
             }
         }
     }
@@ -262,7 +267,8 @@ final class PlayerViewModel: ObservableObject {
         }
         let urls = preferActiveOnly ? [activeSourceUrl] : buildCandidates()
 
-        Task {
+        Task { [weak self] in
+            guard let self else { return }
             // 🆕 使用智能融合引擎
             fusionEngine.onProgress = { [weak self] message in
                 self?.bootstrapMessage = message
@@ -273,8 +279,8 @@ final class PlayerViewModel: ObservableObject {
                 mode: fusionMode
             )
 
-            await MainActor.run {
-                onChannelsLoaded(loaded, errorMessage: errMsg, silent: silent)
+            await MainActor.run { [weak self] in
+                self?.onChannelsLoaded(loaded, errorMessage: errMsg, silent: silent)
             }
         }
     }
@@ -325,6 +331,39 @@ final class PlayerViewModel: ObservableObject {
             }
             playCurrent(showOSD: false, resetTried: true)
         }
+    }
+
+    // MARK: - 应用频道验证结果
+    func applyValidationResult(_ result: ValidationResult) {
+        var filteredChannels: [Channel] = []
+
+        for channel in rawChannels {
+            if let validURLs = result.validChannels[channel.name], !validURLs.isEmpty {
+                // 只保留验证通过的URL
+                let filtered = Channel(
+                    name: channel.name,
+                    group: channel.group,
+                    key: channel.key,
+                    urls: validURLs
+                )
+                filteredChannels.append(filtered)
+            }
+        }
+
+        channels = filteredChannels
+
+        if !channels.isEmpty {
+            currentIndex = 0
+            currentSourceIndex = 0
+        }
+    }
+
+    // MARK: - 手动触发重新验证
+    func triggerManualValidation() {
+        // 清除验证记录
+        ValidationStorage.shared.clear()
+        // 设置标志，让RootView重新显示验证界面
+        needsValidation = true
     }
 
     func buildCandidates() -> [String] {
@@ -546,10 +585,11 @@ final class PlayerViewModel: ObservableObject {
         if ch.sourceCount <= 1 {
             showIndicator("当前频道只有一条线路，切换下一频道")
             beginCooldown()
-            Task { @MainActor in
+            Task { [weak self] @MainActor in
+                guard let self else { return }
                 try? await Task.sleep(nanoseconds: 800_000_000)  // 0.8秒后切换
                 guard !Task.isCancelled else { return }
-                nextChannel()
+                self.nextChannel()
             }
             return
         }
@@ -566,10 +606,11 @@ final class PlayerViewModel: ObservableObject {
             autoSwitchState = .idle
             showIndicator("当前频道所有线路不可用，切换下一频道")
             beginCooldown()
-            Task { @MainActor in
+            Task { [weak self] @MainActor in
+                guard let self else { return }
                 try? await Task.sleep(nanoseconds: 800_000_000)  // 0.8秒后切换
                 guard !Task.isCancelled else { return }
-                nextChannel()
+                self.nextChannel()
             }
             return
         }
@@ -587,10 +628,11 @@ final class PlayerViewModel: ObservableObject {
         player.play(url: u)
         persistLastChannel()
         showChannelOSD()
-        Task { @MainActor in
+        Task { [weak self] @MainActor in
+            guard let self else { return }
             try? await Task.sleep(nanoseconds: 300_000_000)
-            if autoSwitchState == .switching {
-                autoSwitchState = .idle
+            if self.autoSwitchState == .switching {
+                self.autoSwitchState = .idle
             }
         }
     }
@@ -598,11 +640,12 @@ final class PlayerViewModel: ObservableObject {
     private func beginCooldown() {
         autoSwitchState = .cooldown
         cooldownTask?.cancel()
-        cooldownTask = Task {
+        cooldownTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: AUTO_SWITCH_COOLDOWN_NS)
             guard !Task.isCancelled else { return }
-            await MainActor.run {
-                if autoSwitchState == .cooldown { autoSwitchState = .idle }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if self.autoSwitchState == .cooldown { self.autoSwitchState = .idle }
             }
         }
     }
@@ -660,10 +703,12 @@ final class PlayerViewModel: ObservableObject {
         }
         channelOSD = text
         osdTask?.cancel()
-        osdTask = Task {
+        osdTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: CHANNEL_OSD_MS)
             guard !Task.isCancelled else { return }
-            await MainActor.run { channelOSD = "" }
+            await MainActor.run { [weak self] in
+                self?.channelOSD = ""
+            }
         }
     }
 
@@ -671,10 +716,12 @@ final class PlayerViewModel: ObservableObject {
         indicatorText = text
         indTask?.cancel()
         guard !text.isEmpty else { return }
-        indTask = Task {
+        indTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: INDICATOR_MS)
             guard !Task.isCancelled else { return }
-            await MainActor.run { indicatorText = "" }
+            await MainActor.run { [weak self] in
+                self?.indicatorText = ""
+            }
         }
     }
 
@@ -687,10 +734,12 @@ final class PlayerViewModel: ObservableObject {
     func scheduleHideFloat() {
         cancelHideFloat()
         guard player.isReady else { return }
-        floatTask = Task {
+        floatTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: FLOAT_HIDE_MS)
             guard !Task.isCancelled else { return }
-            await MainActor.run { hideFloat() }
+            await MainActor.run { [weak self] in
+                self?.hideFloat()
+            }
         }
     }
 
@@ -775,7 +824,7 @@ final class PlayerViewModel: ObservableObject {
 
     /// 监听后台优化完成的通知
     private func setupFusionObserver() {
-        NotificationCenter.default.addObserver(
+        fusionObserver = NotificationCenter.default.addObserver(
             forName: .channelsOptimized,
             object: nil,
             queue: .main
@@ -787,6 +836,20 @@ final class PlayerViewModel: ObservableObject {
                 self.showIndicator("✨ 线路优化完成！\(optimized.count) 个频道，\(totalLines) 条线路")
             }
         }
+    }
+
+    deinit {
+        // 🆕 移除NotificationCenter观察者
+        if let observer = fusionObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        // 取消所有任务
+        osdTask?.cancel()
+        indTask?.cancel()
+        floatTask?.cancel()
+        cooldownTask?.cancel()
+        retryTask?.cancel()
+        silentAudioTask?.cancel()
     }
 
     /// 切换融合模式

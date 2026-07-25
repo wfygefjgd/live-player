@@ -32,11 +32,11 @@ final class NetworkService {
         cfg.timeoutIntervalForRequest = timeout
         cfg.timeoutIntervalForResource = timeout + 2
         cfg.waitsForConnectivity = true
-        cfg.requestCachePolicy = .returnCacheDataElseLoad
+        cfg.requestCachePolicy = .reloadIgnoringLocalCacheData  // 🆕 强制不使用缓存
         cfg.urlCache = URLCache(
-            memoryCapacity: 4 * 1024 * 1024,
-            diskCapacity: 32 * 1024 * 1024,
-            diskPath: "tvplayer_url_cache"
+            memoryCapacity: 2 * 1024 * 1024,    // 🆕 减小内存缓存到2MB
+            diskCapacity: 0,                     // 🆕 禁用磁盘缓存
+            diskPath: nil
         )
         cfg.httpAdditionalHeaders = ["User-Agent": ua]
         return URLSession(configuration: cfg)
@@ -51,6 +51,39 @@ final class NetworkService {
 
     private init() {
         startNetworkMonitor()
+        setupCacheCleanup()  // 🆕 设置缓存清理
+    }
+
+    // 🆕 定时清理缓存机制
+    private func setupCacheCleanup() {
+        // App进入后台时清理缓存
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.clearCache()
+        }
+
+        // App收到内存警告时清理缓存
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.clearCache()
+        }
+    }
+
+    // 🆕 清理缓存
+    func clearCache() {
+        URLCache.shared.removeAllCachedResponses()
+        session.configuration.urlCache?.removeAllCachedResponses()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        monitor.cancel()
     }
 
     private func startNetworkMonitor() {

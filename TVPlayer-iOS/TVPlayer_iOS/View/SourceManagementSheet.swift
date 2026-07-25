@@ -64,6 +64,23 @@ struct SourceManagementSheet: View {
                                     .foregroundColor(.secondary)
                             }
                         }
+
+                        // 🆕 重新验证按钮
+                        Button(action: {
+                            vm.triggerManualValidation()
+                            dismiss()
+                        }) {
+                            HStack {
+                                Image(systemName: "checkmark.circle")
+                                    .foregroundColor(.green)
+                                Text("重新验证频道")
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
                     }
 
                     Section {

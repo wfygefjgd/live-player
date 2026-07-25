@@ -54,6 +54,42 @@ final class PlayerEngine: ObservableObject {
         player.actionAtItemEnd = .none
         player.automaticallyWaitsToMinimizeStalling = true
         observeTimeControl()
+        setupCacheCleanup()  // 🆕 设置AVPlayer缓存清理
+    }
+
+    // 🆕 设置AVPlayer缓存清理
+    private func setupCacheCleanup() {
+        // App进入后台时清理播放器缓存
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.clearPlayerCache()
+            }
+        }
+    }
+
+    // 🆕 清理AVPlayer缓存
+    private func clearPlayerCache() {
+        // 清理AVAssetCache
+        if let item = player.currentItem,
+           let asset = item.asset as? AVURLAsset {
+            asset.resourceLoader.setDelegate(nil, queue: nil)
+        }
+
+        // 清理旧的播放项
+        player.replaceCurrentItem(with: nil)
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        statusObserver?.invalidate()
+        if let obs = timeObserver {
+            player.removeTimeObserver(obs)
+        }
+        cancellables.removeAll()
     }
 
     // MARK: - Public API
@@ -123,6 +159,7 @@ final class PlayerEngine: ObservableObject {
         }
         cancelAllTasks()
         stopStallPolling()
+        cancellables.removeAll()  // 🆕 清理Combine订阅
         player.replaceCurrentItem(with: nil)
         isPlaying = false
         isReady = false

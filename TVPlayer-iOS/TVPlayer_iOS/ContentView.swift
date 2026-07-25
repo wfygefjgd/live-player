@@ -148,7 +148,8 @@ struct ContentView: View {
             onTogglePanel: { vm.togglePanel() },
             onLongPanel: { vm.showSourceSheet = true },
             onToggleLock: { vm.toggleLock() },
-            onLongLock: { vm.confirmDeleteLine() }
+            onLongLock: { vm.confirmDeleteLine() },
+            onValidation: { vm.triggerManualValidation() }  // 🆕 触发手动验证
         )
         .alert("删除线路", isPresented: $vm.showDeleteAlert) {
             Button("取消", role: .cancel) { }
@@ -277,10 +278,12 @@ struct ContentView: View {
     private func appendNumber(_ digit: Character) {
         numberInput.append(digit)
         numberInputTask?.cancel()
-        numberInputTask = Task {
+        numberInputTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard !Task.isCancelled else { return }
-            await MainActor.run { confirmNumberInput() }
+            await MainActor.run { [weak self] in
+                self?.confirmNumberInput()
+            }
         }
         if numberInput.count >= 4 {
             confirmNumberInput()

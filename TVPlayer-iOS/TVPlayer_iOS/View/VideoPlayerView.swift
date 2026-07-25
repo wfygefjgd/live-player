@@ -106,12 +106,29 @@ final class WindowVideoSurface {
     // MARK: - Player
 
     func setPlayer(_ player: AVPlayer?) {
+        if player == nil {
+            cleanup()
+        }
         boundPlayer = player
         playerLayer.player = player
         playerLayer.videoGravity = .resize
         install(reason: "setPlayer")
         schedulePasses()
         startBriefDisplayLink()
+    }
+
+    // 🆕 清理资源
+    func cleanup() {
+        cancellables.removeAll()
+        delayItems.forEach { $0.cancel() }
+        delayItems.removeAll()
+        displayLink?.invalidate()
+        displayLink = nil
+        displayLinkTicks = 0
+    }
+
+    deinit {
+        cleanup()
     }
 
     func install(reason: String = "") {
@@ -168,6 +185,7 @@ final class WindowVideoSurface {
     /// First ~6s: layout every frame (Home Indicator inset settles after first frames)
     func startBriefDisplayLink() {
         displayLink?.invalidate()
+        displayLink = nil  // 🆕 清空引用
         displayLinkTicks = 0
         let link = CADisplayLink(target: DisplayLinkProxy(owner: self), selector: #selector(DisplayLinkProxy.tick))
         link.add(to: .main, forMode: .common)
@@ -179,7 +197,7 @@ final class WindowVideoSurface {
         install(reason: "displayLink")
         if displayLinkTicks >= 360 {
             displayLink?.invalidate()
-            displayLink = nil
+            displayLink = nil  // 🆕 清空引用
         }
     }
 
@@ -272,10 +290,17 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
     override var childForScreenEdgesDeferringSystemGestures: UIViewController? { nil }
     override var childForStatusBarHidden: UIViewController? { nil }
 
-    // 强制负值安全区域，完全消除 Home Indicator 影响
-    override var additionalSafeAreaInsets: UIEdgeInsets {
-        get { UIEdgeInsets(top: -200, left: -200, bottom: -200, right: -200) }
-        set { }
+    // 🆕 最强硬方法：直接设置 view.frame 覆盖整个屏幕
+    override func viewWillLayoutSubviews() {
+        super.viewWillLayoutSubviews()
+
+        // 强制 view 占据整个屏幕，忽略安全区域
+        if let window = view.window {
+            let screenBounds = window.screen.bounds
+            if view.frame != screenBounds {
+                view.frame = screenBounds
+            }
+        }
     }
 
     private var hideIndicatorTimer: Timer?
@@ -285,6 +310,11 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
         view.backgroundColor = .clear
         view.isOpaque = false
         view.clipsToBounds = false
+
+        // 🆕 禁用安全区域布局
+        if #available(iOS 11.0, *) {
+            view.insetsLayoutMarginsFromSafeArea = false
+        }
 
         // 立即强制隐藏
         forceHideHomeIndicator()
