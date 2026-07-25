@@ -5,10 +5,26 @@ struct ChannelListPanel: View {
     @State private var searchText = ""
     @FocusState private var searchFocused: Bool
 
+    var onShowSettings: (() -> Void)?
+
     var body: some View {
         VStack(spacing: 0) {
-            // 搜索框
-            HStack {
+            // 顶部工具栏：设置按钮 + 搜索框
+            HStack(spacing: 12) {
+                // 设置按钮
+                Button {
+                    onShowSettings?()
+                    haptic(.light)
+                } label: {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 18))
+                        .foregroundColor(.white.opacity(0.8))
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(.plain)
+
+                // 搜索框
+                HStack {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.gray)
                     .font(.caption)
@@ -37,6 +53,8 @@ struct ChannelListPanel: View {
             .cornerRadius(6)
             .padding(.horizontal, 8)
             .padding(.top, 8)
+        }
+        .background(Color(white: 0.12))
 
             // 频道列表
             ScrollViewReader { proxy in
@@ -125,5 +143,10 @@ struct ChannelListPanel: View {
             .buttonStyle(.plain)
         }
         .padding(.vertical, 2)
+    }
+
+    private func haptic(_ style: UIImpactFeedbackGenerator.FeedbackStyle) {
+        let generator = UIImpactFeedbackGenerator(style: style)
+        generator.impactOccurred()
     }
 }

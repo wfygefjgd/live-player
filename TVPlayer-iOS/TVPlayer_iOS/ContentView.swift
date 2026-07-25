@@ -8,6 +8,9 @@ struct ContentView: View {
     @State private var numberInput = ""
     @State private var numberInputTask: Task<Void, Never>?
 
+    // 设置菜单
+    @State private var showSettingsMenu = false
+
     var body: some View {
         ZStack {
             Color.clear
@@ -22,21 +25,25 @@ struct ContentView: View {
                     .onTapGesture { vm.showFloat() }
                     .simultaneousGesture(playerDragGesture())
                     .simultaneousGesture(doubleTapGesture())
+                    .simultaneousGesture(edgeSwipeGesture())
             }
 
-            if vm.panelVisible && !vm.locked {
+            if vm.panelVisible {
                 GeometryReader { geo in
                     let w = max(geo.size.width, 1)
                     HStack(spacing: 0) {
-                        ChannelListPanel()
-                            .frame(width: min(300, w * 0.32))
-                            .frame(maxHeight: .infinity)
-                            .background(Color(white: 0.12).opacity(0.96))
+                        ChannelListPanel(onShowSettings: {
+                            showSettingsMenu = true
+                        })
+                        .frame(width: min(300, w * 0.32))
+                        .frame(maxHeight: .infinity)
+                        .background(Color(white: 0.12).opacity(0.96))
                         Color.black.opacity(0.25)
                             .contentShape(Rectangle())
                             .onTapGesture { vm.panelVisible = false }
                     }
                 }
+                .transition(.move(edge: .leading))
                 .zIndex(50)
             }
 
@@ -93,12 +100,6 @@ struct ContentView: View {
                 .zIndex(70)
             }
 
-            if vm.showFloatOverlay || vm.locked {
-                floatingButtons
-                    .padding(.top, 12)
-                    .padding(.bottom, 28)
-                    .zIndex(60)
-            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.clear)
@@ -132,6 +133,21 @@ struct ContentView: View {
             SourceManagementSheet()
                 .environmentObject(vm)
         }
+        .confirmationDialog("功能菜单", isPresented: $showSettingsMenu, titleVisibility: .visible) {
+            Button("切换来源") {
+                vm.showSourceSheet = true
+            }
+            Button("删除线路", role: .destructive) {
+                vm.confirmDeleteLine()
+            }
+            Button("取消", role: .cancel) {}
+        }
+        .alert("删除线路", isPresented: $vm.showDeleteAlert) {
+            Button("取消", role: .cancel) { }
+            Button("删除", role: .destructive) { vm.doDeleteLine() }
+        } message: {
+            Text("确定删除当前线路？")
+        }
         .then { base in
             if #available(iOS 17.0, *) {
                 return AnyView(base.onKeyPress { press in handleKeyPress(press) })
@@ -141,27 +157,26 @@ struct ContentView: View {
         }
     }
 
-    private var floatingButtons: some View {
-        FloatingButtons(
-            panelVisible: vm.panelVisible,
-            locked: vm.locked,
-            onTogglePanel: { vm.togglePanel() },
-            onLongPanel: { vm.showSourceSheet = true },
-            onToggleLock: { vm.toggleLock() },
-            onLongLock: { vm.confirmDeleteLine() }
-        )
-        .alert("删除线路", isPresented: $vm.showDeleteAlert) {
-            Button("取消", role: .cancel) { }
-            Button("删除", role: .destructive) { vm.doDeleteLine() }
-        } message: {
-            Text("确定删除当前线路？")
-        }
+    private func edgeSwipeGesture() -> some Gesture {
+        DragGesture(minimumDistance: 20)
+            .onEnded { value in
+                guard !vm.panelVisible else { return }
+                let sx = value.startLocation.x
+                let dx = value.translation.width
+
+                // 从左边缘向右滑动打开侧边栏
+                if sx < 50 && dx > 80 {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                        vm.panelVisible = true
+                    }
+                }
+            }
     }
 
     private func playerDragGesture() -> some Gesture {
         DragGesture(minimumDistance: 20)
             .onChanged { value in
-                guard !vm.locked, !vm.panelVisible else { return }
+                guard !vm.panelVisible else { return }
                 let w = max(UIScreen.main.bounds.width, UIScreen.main.bounds.height, 1)
                 let sx = value.startLocation.x
                 let dy = value.translation.height
@@ -169,7 +184,7 @@ struct ContentView: View {
                 vm.handleVolumeDrag(translationHeight: dy, ended: false)
             }
             .onEnded { value in
-                guard !vm.locked, !vm.panelVisible else { return }
+                guard !vm.panelVisible else { return }
                 let w = max(UIScreen.main.bounds.width, UIScreen.main.bounds.height, 1)
                 let h = max(UIScreen.main.bounds.height, 1)
                 let sx = value.startLocation.x
@@ -211,8 +226,9 @@ struct ContentView: View {
     private func doubleTapGesture() -> some Gesture {
         TapGesture(count: 2)
             .onEnded {
-                guard !vm.locked else { return }
-                vm.togglePanel()
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                    vm.togglePanel()
+                }
             }
     }
 
