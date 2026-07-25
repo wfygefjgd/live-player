@@ -270,7 +270,8 @@ final class PlayerViewModel: ObservableObject {
         player.stop()
         showIndicator("正在切换源...")
         showFloat()
-        loadChannels(force: true, silent: false)
+        // 🔥 强制使用当前选中的源，不使用融合模式
+        loadChannels(force: true, silent: false, preferActiveOnly: true)
     }
 
     func deleteSourceUrl(_ url: String) {
