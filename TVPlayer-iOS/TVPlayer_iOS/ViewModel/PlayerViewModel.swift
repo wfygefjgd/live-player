@@ -658,28 +658,34 @@ final class PlayerViewModel: ObservableObject {
             return
         }
 
-        // 判断是否为网络/画面问题（需要切换频道的情况）
-        let isCriticalIssue = hint.contains("黑屏") || hint.contains("冻结") || hint.contains("卡顿") || hint.contains("网络")
-
-        // 如果只有一条线路且是网络/画面问题，直接切换到下一频道
+        // 单线路频道：标记已尝试，进入冷却期
         if ch.sourceCount <= 1 {
-            if isCriticalIssue {
+            triedLineIndices.insert(currentSourceIndex)
+
+            // 判断是否通过健康度检查确认有问题
+            let isHealthIssue = hint.contains("黑屏") || hint.contains("冻结") || hint.contains("卡顿") ||
+                               hint.contains("网络") || hint.contains("无声音") || hint.contains("综合健康度")
+
+            if isHealthIssue && triedLineIndices.count >= ch.sourceCount {
+                // 通过健康度检查 + 已试过唯一线路 → 切换到下一频道
+                autoSwitchState = .idle
                 showIndicator("\(hint)，切换下一频道")
                 beginCooldown()
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    try? await Task.sleep(nanoseconds: 800_000_000)  // 0.8秒后切换
+                    try? await Task.sleep(nanoseconds: 800_000_000)
                     guard !Task.isCancelled else { return }
                     self.nextChannel()
                 }
             } else {
-                // 非网络/画面问题（如线路失败、超时），只显示提示，不切换
+                // 未通过健康度检查或其他原因，只显示提示
                 showIndicator(hint)
                 beginCooldown()
             }
             return
         }
 
+        // 多线路频道：查找下一个未试过的线路
         var nxt = (currentSourceIndex + 1) % ch.sourceCount
         var scanned = 0
         while triedLineIndices.contains(nxt), scanned < ch.sourceCount {
@@ -687,14 +693,14 @@ final class PlayerViewModel: ObservableObject {
             scanned += 1
         }
 
-        // 所有线路都试过了，切下一个频道
+        // 所有线路都试过了 → 切下一个频道
         if triedLineIndices.count >= ch.sourceCount || scanned >= ch.sourceCount {
             autoSwitchState = .idle
             showIndicator("当前频道所有线路不可用，切换下一频道")
             beginCooldown()
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                try? await Task.sleep(nanoseconds: 800_000_000)  // 0.8秒后切换
+                try? await Task.sleep(nanoseconds: 800_000_000)
                 guard !Task.isCancelled else { return }
                 self.nextChannel()
             }
