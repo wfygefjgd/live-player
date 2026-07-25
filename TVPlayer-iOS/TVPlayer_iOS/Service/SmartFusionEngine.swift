@@ -2,7 +2,8 @@ import Foundation
 
 /// 融合模式
 enum FusionMode: String, Codable {
-    case fast       // 快速模式：只用最快的源（当前模式）
+    case off        // 关闭融合：仅使用单一源
+    case fast       // 快速模式：只用最快的源
     case balanced   // 平衡模式：融合前3个源
     case complete   // 完整模式：融合所有源
     case smart      // 智能模式：渐进式融合 + 后台测速（推荐）
@@ -28,6 +29,8 @@ final class SmartFusionEngine {
         let actualMode = mode ?? fusionMode
 
         switch actualMode {
+        case .off:
+            return await offMode(sourceUrls: sourceUrls)
         case .fast:
             return await fastMode(sourceUrls: sourceUrls)
         case .balanced:
@@ -40,6 +43,17 @@ final class SmartFusionEngine {
     }
 
     // MARK: - 不同模式实现
+
+    /// 关闭模式：仅使用第一个源
+    private func offMode(sourceUrls: [String]) async -> ([Channel], String?) {
+        onProgress?("关闭融合：加载单一源...")
+
+        guard let firstUrl = sourceUrls.first else {
+            return ([], "没有可用的源")
+        }
+
+        return await NetworkService.shared.fetchWithCandidates(urls: [firstUrl])
+    }
 
     /// 快速模式：只用最快的源（竞速）
     private func fastMode(sourceUrls: [String]) async -> ([Channel], String?) {

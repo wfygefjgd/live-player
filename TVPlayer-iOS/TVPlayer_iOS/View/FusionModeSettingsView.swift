@@ -18,6 +18,16 @@ struct FusionModeSettingsView: View {
 
                 Section {
                     FusionModeRow(
+                        mode: .off,
+                        title: "🚫 关闭融合",
+                        description: "仅使用单一源\n不进行多源融合",
+                        isSelected: viewModel.fusionMode == .off
+                    )
+                    .onTapGesture {
+                        viewModel.switchFusionMode(.off)
+                    }
+
+                    FusionModeRow(
                         mode: .fast,
                         title: "⚡️ 快速模式",
                         description: "只使用最快响应的源\n启动最快，频道数量较少",
@@ -101,6 +111,7 @@ struct FusionModeSettingsView: View {
 
     private var modeDisplayName: String {
         switch viewModel.fusionMode {
+        case .off: return "关闭融合"
         case .fast: return "快速模式"
         case .balanced: return "平衡模式"
         case .complete: return "完整模式"

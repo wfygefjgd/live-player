@@ -194,8 +194,9 @@ struct ContentView: View {
                 if abs(dy) > abs(dx) && abs(dy) > 30 {
                     // 放宽识别条件：只要不是在最右侧音量区，都可以切换频道
                     if sx <= w * 0.65 {
-                        // 反转滑动方向：向下滑=下一个（符合列表视觉），向上滑=上一个
-                        if dy > 0 {
+                        // 手指向上滑（dy<0）= 下一个频道
+                        // 手指向下滑（dy>0）= 上一个频道
+                        if dy < 0 {
                             vm.nextChannel()
                         } else {
                             vm.prevChannel()
