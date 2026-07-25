@@ -290,7 +290,7 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
     override var childForScreenEdgesDeferringSystemGestures: UIViewController? { nil }
     override var childForStatusBarHidden: UIViewController? { nil }
 
-    // 🔥 暴力方法1：强制扩展视图到屏幕之外 + 黑色遮罩
+    // 强制扩展视图到屏幕之外，覆盖 Home Indicator 区域
     override func viewWillLayoutSubviews() {
         super.viewWillLayoutSubviews()
 
@@ -320,32 +320,7 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
             // 方法3: 修改 view 的 bounds 和 center
             view.bounds = CGRect(origin: .zero, size: CGSize(width: screen.width + 100, height: screen.height + 100))
             view.center = CGPoint(x: screen.midX, y: screen.midY)
-
-            // 🔥 方法4: 添加黑色遮罩视图覆盖底部区域
-            addBlackMaskIfNeeded(screenBounds: screen, bottomInset: bottomInset)
         }
-    }
-
-    private var blackMask: UIView?
-
-    private func addBlackMaskIfNeeded(screenBounds: CGRect, bottomInset: CGFloat) {
-        if blackMask == nil {
-            let mask = UIView()
-            mask.backgroundColor = .black
-            mask.isUserInteractionEnabled = false
-            mask.tag = 9999
-            view.addSubview(mask)
-            blackMask = mask
-        }
-
-        // 遮罩覆盖底部 Home Indicator 区域
-        blackMask?.frame = CGRect(
-            x: 0,
-            y: screenBounds.height - bottomInset - 10,
-            width: screenBounds.width,
-            height: bottomInset + 60  // 超出屏幕范围
-        )
-        view.bringSubviewToFront(blackMask!)
     }
 
     private var hideIndicatorTimer: Timer?

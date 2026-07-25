@@ -1,7 +1,7 @@
 import SwiftUI
 import AVKit
 
-let DEFAULT_SOURCE_URL = "https://ghfast.top/raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u"
+let DEFAULT_SOURCE_URL = "https://iptv.burningc4.com/TV-IPV4.m3u"
 
 private let CHANNEL_OSD_MS: UInt64 = 2_500_000_000
 private let FLOAT_HIDE_MS: UInt64 = 2_500_000_000
