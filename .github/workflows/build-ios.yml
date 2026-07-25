@@ -72,29 +72,6 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: TVPlayer-iOS/build/TVPlayer-v${{ steps.get_version.outputs.version }}-ios.ipa
-          body: |
-            # TVPlayer iOS v${{ steps.get_version.outputs.version }}
-
-            ## 🎉 主要功能
-
-            - ✅ 完善的播放引擎 (PlayerEngine)
-            - ✅ 静音检测与自动切换
-            - ✅ 网络并发竞速加载
-            - ✅ 智能卡顿检测
-            - ✅ 键盘快捷键支持 (iPad)
-            - ✅ 后台音频播放
-            - ✅ 锁屏控制
-
-            ## 📦 安装说明
-
-            1. 下载 TVPlayer-v${{ steps.get_version.outputs.version }}-ios.ipa
-            2. 使用 Sideloadly 或 AltStore 侧载安装
-            3. 系统要求: iOS 16.0+
-
-            ## ⚠️ 注意
-
-            免费 Apple ID 签名每 7 天需重签一次
-
-            详见: RELEASE_NOTES_iOS_v${{ steps.get_version.outputs.version }}.md
+          body_path: RELEASE_NOTES_iOS_v${{ steps.get_version.outputs.version }}.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
