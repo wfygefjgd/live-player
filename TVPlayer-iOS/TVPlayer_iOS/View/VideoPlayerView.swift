@@ -300,6 +300,12 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
             if view.frame != screenBounds {
                 view.frame = screenBounds
             }
+
+            // 强制设置 additionalSafeAreaInsets 为负值，抵消系统的安全区域
+            let bottomInset = view.safeAreaInsets.bottom
+            if bottomInset > 0 {
+                additionalSafeAreaInsets = UIEdgeInsets(top: 0, left: 0, bottom: -bottomInset, right: 0)
+            }
         }
     }
 
