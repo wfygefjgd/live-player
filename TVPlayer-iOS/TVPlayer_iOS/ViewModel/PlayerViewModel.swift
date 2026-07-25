@@ -44,7 +44,7 @@ final class PlayerViewModel: ObservableObject {
     @Published var playerLayoutEpoch: Int = 0
 
     // 🆕 智能融合相关
-    @Published var fusionMode: FusionMode = .off
+    @Published var fusionMode: FusionMode = .fast
     private let fusionEngine = SmartFusionEngine.shared
 
     let player = PlayerEngine()
