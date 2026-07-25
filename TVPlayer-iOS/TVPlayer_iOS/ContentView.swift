@@ -25,7 +25,7 @@ struct ContentView: View {
                     .onTapGesture { vm.showFloat() }
                     .simultaneousGesture(playerDragGesture())
                     .simultaneousGesture(doubleTapGesture())
-                    .simultaneousGesture(edgeSwipeGesture())
+                    .simultaneousGesture(longPressGesture())
             }
 
             if vm.panelVisible {
@@ -157,18 +157,12 @@ struct ContentView: View {
         }
     }
 
-    private func edgeSwipeGesture() -> some Gesture {
-        DragGesture(minimumDistance: 20)
-            .onEnded { value in
+    private func longPressGesture() -> some Gesture {
+        LongPressGesture(minimumDuration: 0.5)
+            .onEnded { _ in
                 guard !vm.panelVisible else { return }
-                let sx = value.startLocation.x
-                let dx = value.translation.width
-
-                // 从左边缘向右滑动打开侧边栏
-                if sx < 50 && dx > 80 {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                        vm.panelVisible = true
-                    }
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                    vm.panelVisible = true
                 }
             }
     }
@@ -198,12 +192,12 @@ struct ContentView: View {
                     return
                 }
 
-                // 左右滑动切换线路（全屏幕有效）
+                // 左右滑动切换线路（全屏幕有效，不再有边缘限制）
                 if abs(dx) > abs(dy) && abs(dx) > 50 {
-                    // 手指向右滑（dx>0）= 上一个线路
-                    // 手指向左滑（dx<0）= 下一个线路
-                    if dx > 0 { vm.switchSource(direction: -1) }
-                    else { vm.switchSource(direction: 1) }
+                    // 手指向右滑（dx>0）= 下一个线路
+                    // 手指向左滑（dx<0）= 上一个线路
+                    if dx > 0 { vm.switchSource(direction: 1) }
+                    else { vm.switchSource(direction: -1) }
                     return
                 }
 

@@ -11,9 +11,9 @@ final class PlayerEngine: ObservableObject {
     static let silentAudioCheckNs: UInt64 = 3_000_000_000     // 3s 后检测静音
     static let silentAudioPollIntervalNs: UInt64 = 500_000_000 // 500ms 轮询间隔
 
-    // 根据网络类型动态调整卡顿阈值 - 更激进的超时
+    // 根据网络类型动态调整卡顿阈值 - 更宽松的超时，避免误判
     static var stallTimeoutNs: UInt64 {
-        NetworkMonitor.shared.isWiFi ? 1_500_000_000 : 2_500_000_000  // WiFi: 1.5s, 蜂窝: 2.5s
+        NetworkMonitor.shared.isWiFi ? 5_000_000_000 : 8_000_000_000  // WiFi: 5s, 蜂窝: 8s
     }
 
     let player = AVPlayer()
@@ -412,11 +412,11 @@ final class PlayerEngine: ObservableObject {
         stopHealthCheck()
         healthCheckTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_500_000_000)  // 1.5秒检查一次
+                try? await Task.sleep(nanoseconds: 2_000_000_000)  // 2秒检查一次
                 guard let self, self.playToken == token, !Task.isCancelled else { return }
                 guard self.isReady else { continue }
 
-                // 检查是否需要立即切换
+                // 检查是否需要立即切换（严重问题：黑屏+无声音）
                 if let monitor = self.healthMonitor {
                     let result = monitor.shouldSwitchImmediately()
                     if result.should {
@@ -430,11 +430,11 @@ final class PlayerEngine: ObservableObject {
                     self.healthMonitor?.recordBufferEmpty()
                 }
 
-                // 保持原有的卡顿检测逻辑
+                // 更严格的卡顿检测：连续3次检测到卡顿才触发
                 if self.isStalled() {
                     self.healthMonitor?.recordStall()
                     self.consecutiveStallCount += 1
-                    if self.consecutiveStallCount >= 2 {
+                    if self.consecutiveStallCount >= 3 {  // 改为3次，约6秒
                         self.consecutiveStallCount = 0
                         self.onExtendedStall?()
                     }

@@ -87,7 +87,8 @@ final class PlayerViewModel: ObservableObject {
         player.onReady = { [weak self] in self?.onPlayerReady() }
         player.onError = { [weak self] in self?.onPlayerError() }
         player.onStartupTimeout = { [weak self] in self?.onStartupTimeout() }
-        player.onPlaybackStall = { [weak self] in self?.onPlaybackStall() }
+        // 移除快速卡顿检测，只保留扩展卡顿和健康度检测
+        // player.onPlaybackStall = { [weak self] in self?.onPlaybackStall() }
         player.onSilentAudio = { [weak self] in self?.onSilentAudio() }
         player.onExtendedStall = { [weak self] in self?.onExtendedStall() }
         player.onHealthCritical = { [weak self] reason in self?.onHealthCritical(reason) }  // 🆕 健康度危急回调
@@ -629,12 +630,12 @@ final class PlayerViewModel: ObservableObject {
 
     private func onPlayerError() { autoSwitchLine(hint: "线路失败，切换下一线路") }
     private func onStartupTimeout() { autoSwitchLine(hint: "线路超时，切换下一线路") }
-    private func onPlaybackStall() { autoSwitchLine(hint: "网络卡顿，切换下一线路") }
-    private func onExtendedStall() { autoSwitchLine(hint: "画面冻结，切换下一线路") }
+    // 移除了 onPlaybackStall（太快），只保留智能检测
+    private func onExtendedStall() { autoSwitchLine(hint: "画面持续冻结，切换下一线路") }
 
-    /// 🆕 综合健康度危急处理
+    /// 🆕 综合健康度危急处理（黑屏、无声音、网络卡顿等严重问题）
     private func onHealthCritical(_ reason: String) {
-        autoSwitchLine(hint: reason)
+        autoSwitchLine(hint: "检测到\(reason)，切换下一线路")
     }
 
     // MARK: - 静音检测
