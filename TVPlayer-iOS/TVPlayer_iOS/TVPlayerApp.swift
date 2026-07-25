@@ -21,22 +21,11 @@ struct RootView: UIViewControllerRepresentable {
     @ObservedObject var vm: PlayerViewModel
 
     func makeUIViewController(context: Context) -> RootHostingController<AnyView> {
-        // 检查是否需要首次验证
-        let needsValidation = !ValidationStorage.shared.hasValidation()
-        context.coordinator.isValidating = needsValidation
-
-        let rootContent: AnyView
-        if needsValidation {
-            rootContent = AnyView(
-                ChannelValidationView(isValidating: context.coordinator.binding)
-                    .environmentObject(vm)
-            )
-        } else {
-            rootContent = AnyView(
-                ContentView()
-                    .environmentObject(vm)
-            )
-        }
+        // 直接加载主界面，不再进行首次验证
+        let rootContent = AnyView(
+            ContentView()
+                .environmentObject(vm)
+        )
 
         let finalView = rootContent
             .preferredColorScheme(.dark)
@@ -51,24 +40,10 @@ struct RootView: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: RootHostingController<AnyView>, context: Context) {
-        // 检查手动触发的验证
-        if vm.needsValidation {
-            context.coordinator.isValidating = true
-            vm.needsValidation = false
-        }
-
-        let rootContent: AnyView
-        if context.coordinator.isValidating {
-            rootContent = AnyView(
-                ChannelValidationView(isValidating: context.coordinator.binding)
-                    .environmentObject(vm)
-            )
-        } else {
-            rootContent = AnyView(
-                ContentView()
-                    .environmentObject(vm)
-            )
-        }
+        let rootContent = AnyView(
+            ContentView()
+                .environmentObject(vm)
+        )
 
         let finalView = rootContent
             .preferredColorScheme(.dark)
@@ -87,13 +62,6 @@ struct RootView: UIViewControllerRepresentable {
     }
 
     class Coordinator {
-        var isValidating = false
-        var binding: Binding<Bool> {
-            Binding(
-                get: { self.isValidating },
-                set: { self.isValidating = $0 }
-            )
-        }
     }
 }
 

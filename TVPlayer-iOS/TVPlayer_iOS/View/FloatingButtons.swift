@@ -8,11 +8,10 @@ struct FloatingButtons: View {
     let onLongPanel: () -> Void
     let onToggleLock: () -> Void
     let onLongLock: () -> Void
-    let onValidation: () -> Void  // 🆕 验证按钮回调
 
     var body: some View {
         ZStack {
-            // 左上角：切换面板 + 验证按钮
+            // 左上角：切换面板
             VStack {
                 HStack {
                     circleButton(
@@ -22,18 +21,6 @@ struct FloatingButtons: View {
                             haptic(.light)
                         },
                         onLongPress: onLongPanel
-                    )
-                    .opacity(locked ? 0 : 1)
-                    .animation(.easeInOut(duration: 0.15), value: locked)
-
-                    // 🆕 验证按钮
-                    circleButton(
-                        icon: "✓",
-                        action: {
-                            onValidation()
-                            haptic(.medium)
-                        },
-                        onLongPress: {}
                     )
                     .opacity(locked ? 0 : 1)
                     .animation(.easeInOut(duration: 0.15), value: locked)

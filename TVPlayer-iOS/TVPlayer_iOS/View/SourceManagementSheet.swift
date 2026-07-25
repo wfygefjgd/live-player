@@ -6,6 +6,7 @@ struct SourceManagementSheet: View {
     @State private var inputUrl = ""
     @State private var showInvalidAlert = false
     @State private var showFusionSettings = false
+    @State private var isRefreshing = false
 
     var body: some View {
         NavigationView {
@@ -47,7 +48,7 @@ struct SourceManagementSheet: View {
 
                 // 源列表
                 List {
-                    // 🆕 融合模式设置按钮
+                    // 融合模式设置和刷新按钮
                     Section {
                         Button(action: { showFusionSettings = true }) {
                             HStack {
@@ -65,22 +66,33 @@ struct SourceManagementSheet: View {
                             }
                         }
 
-                        // 🆕 重新验证按钮
+                        // 刷新频道按钮
                         Button(action: {
-                            vm.triggerManualValidation()
-                            dismiss()
+                            Task {
+                                isRefreshing = true
+                                await vm.refreshChannelsFromRemote()
+                                isRefreshing = false
+                            }
                         }) {
                             HStack {
-                                Image(systemName: "checkmark.circle")
-                                    .foregroundColor(.green)
-                                Text("重新验证频道")
+                                if isRefreshing {
+                                    ProgressView()
+                                        .scaleEffect(0.8)
+                                } else {
+                                    Image(systemName: "arrow.clockwise.circle")
+                                        .foregroundColor(.blue)
+                                }
+                                Text("刷新频道列表")
                                     .foregroundColor(.primary)
                                 Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                                if !isRefreshing {
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
                             }
                         }
+                        .disabled(isRefreshing)
                     }
 
                     Section {

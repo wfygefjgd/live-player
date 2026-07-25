@@ -148,8 +148,7 @@ struct ContentView: View {
             onTogglePanel: { vm.togglePanel() },
             onLongPanel: { vm.showSourceSheet = true },
             onToggleLock: { vm.toggleLock() },
-            onLongLock: { vm.confirmDeleteLine() },
-            onValidation: { vm.triggerManualValidation() }  // 🆕 触发手动验证
+            onLongLock: { vm.confirmDeleteLine() }
         )
         .alert("删除线路", isPresented: $vm.showDeleteAlert) {
             Button("取消", role: .cancel) { }
