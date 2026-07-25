@@ -190,11 +190,14 @@ final class PlaybackHealthMonitor {
             return .noTrack
         }
 
-        // 检查音频会话输出
-        let isAudioActive = audioSession.isOtherAudioPlaying == false &&
-                           audioSession.category != .ambient
+        // 检查是否有启用的音频轨道
+        let hasEnabledTrack = audioTracks.contains { $0.isEnabled }
+        if !hasEnabledTrack {
+            return .silent
+        }
 
-        if !isAudioActive {
+        // 检查播放器音量
+        if player.volume < 0.01 {
             return .silent
         }
 

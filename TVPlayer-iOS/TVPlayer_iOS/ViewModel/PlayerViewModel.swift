@@ -594,7 +594,8 @@ final class PlayerViewModel: ObservableObject {
     }
 
     var currentUrl: String? {
-        guard let ch = currentChannel, ch.urls.indices.contains(currentSourceIndex) else { return nil }
+        guard let ch = currentChannel else { return nil }
+        guard currentSourceIndex >= 0 && currentSourceIndex < ch.urls.count else { return nil }
         return ch.urls[currentSourceIndex]
     }
 

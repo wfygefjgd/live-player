@@ -334,6 +334,12 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
         forceHideHomeIndicator()
     }
 
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        hideIndicatorTimer?.invalidate()
+    }
+    }
+
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         forceHideHomeIndicator()

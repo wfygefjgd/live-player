@@ -196,10 +196,8 @@ struct ContentView: View {
                     if sx <= w * 0.65 {
                         if dy < 0 {
                             vm.nextChannel()
-                            print("✅ 下一频道手势触发")
                         } else {
                             vm.prevChannel()
-                            print("✅ 上一频道手势触发")
                         }
                     }
                 }

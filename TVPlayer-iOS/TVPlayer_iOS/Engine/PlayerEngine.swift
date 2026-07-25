@@ -49,11 +49,10 @@ final class PlayerEngine: ObservableObject {
     var onPlaybackStall: (() -> Void)?
     var onSilentAudio: (() -> Void)?
     var onExtendedStall: (() -> Void)?
-    var onHealthCritical: ((String) -> Void)?  // 🆕 综合健康度危急回调
+    var onHealthCritical: ((String) -> Void)?
 
-    private var stallPollTask: Task<Void, Never>?
     private var consecutiveStallCount = 0
-    private var healthCheckTask: Task<Void, Never>?  // 🆕 健康度检查任务
+    private var healthCheckTask: Task<Void, Never>?
 
     init() {
         player.actionAtItemEnd = .none
@@ -111,7 +110,6 @@ final class PlayerEngine: ObservableObject {
         statusObserver = nil
 
         resetState(for: token)
-        startStallPolling(token: token)
 
         let asset = AVURLAsset(url: url, options: [
             AVURLAssetPreferPreciseDurationAndTimingKey: false,
@@ -164,9 +162,8 @@ final class PlayerEngine: ObservableObject {
             timeObserver = nil
         }
         cancelAllTasks()
-        stopStallPolling()
-        stopHealthCheck()  // 🆕 停止健康度检查
-        cancellables.removeAll()  // 🆕 清理Combine订阅
+        stopHealthCheck()  // 只保留健康度检查
+        cancellables.removeAll()
         player.replaceCurrentItem(with: nil)
         isPlaying = false
         isReady = false
@@ -409,31 +406,6 @@ final class PlayerEngine: ObservableObject {
     }
 
     // MARK: - Private — Stall Polling
-
-    private func startStallPolling(token: Int) {
-        stopStallPolling()
-        consecutiveStallCount = 0
-        stallPollTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
-                guard let self, self.playToken == token, !Task.isCancelled else { return }
-                guard self.isReady else { continue }
-                if self.isStalled() {
-                    self.consecutiveStallCount += 1
-                    if self.consecutiveStallCount >= 2 {
-                        self.consecutiveStallCount = 0
-                        self.onExtendedStall?()
-                    }
-                } else {
-                    self.consecutiveStallCount = 0
-                }
-            }
-        }
-    }
-
-    private func stopStallPolling() {
-        stallPollTask?.cancel()
-        stallPollTask = nil
         consecutiveStallCount = 0
     }
 
