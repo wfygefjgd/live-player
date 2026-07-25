@@ -69,6 +69,8 @@ final class PlayerViewModel: ObservableObject {
 
     private var lastVolumeTranslation: CGFloat = 0
     private var lastSilentSwitchAt: Date = .distantPast
+    private var lastChannelSwitchAt: Date = .distantPast
+    private let channelSwitchDebounceInterval: TimeInterval = 0.3  // 300ms 防抖
 
     func startup() {
         guard !started else { return }
@@ -650,10 +652,25 @@ final class PlayerViewModel: ObservableObject {
             return
         }
 
-        // 如果只有一条线路，不自动切换频道，避免疯狂切换
+        // 判断是否为网络/画面问题（需要切换频道的情况）
+        let isCriticalIssue = hint.contains("黑屏") || hint.contains("冻结") || hint.contains("卡顿") || hint.contains("网络")
+
+        // 如果只有一条线路且是网络/画面问题，直接切换到下一频道
         if ch.sourceCount <= 1 {
-            showIndicator(hint)
-            beginCooldown()
+            if isCriticalIssue {
+                showIndicator("\(hint)，切换下一频道")
+                beginCooldown()
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    try? await Task.sleep(nanoseconds: 800_000_000)  // 0.8秒后切换
+                    guard !Task.isCancelled else { return }
+                    self.nextChannel()
+                }
+            } else {
+                // 非网络/画面问题（如线路失败、超时），只显示提示，不切换
+                showIndicator(hint)
+                beginCooldown()
+            }
             return
         }
 
@@ -715,6 +732,14 @@ final class PlayerViewModel: ObservableObject {
 
     func nextChannel() {
         guard !locked, !channels.isEmpty else { return }
+
+        // 防抖：300ms 内只能切换一次
+        let now = Date()
+        if now.timeIntervalSince(lastChannelSwitchAt) < channelSwitchDebounceInterval {
+            return
+        }
+        lastChannelSwitchAt = now
+
         cooldownTask?.cancel()
         currentIndex = (currentIndex + 1) % channels.count
         currentSourceIndex = 0
@@ -725,6 +750,14 @@ final class PlayerViewModel: ObservableObject {
 
     func prevChannel() {
         guard !locked, !channels.isEmpty else { return }
+
+        // 防抖：300ms 内只能切换一次
+        let now = Date()
+        if now.timeIntervalSince(lastChannelSwitchAt) < channelSwitchDebounceInterval {
+            return
+        }
+        lastChannelSwitchAt = now
+
         currentIndex = (currentIndex - 1 + channels.count) % channels.count
         currentSourceIndex = 0
         panelVisible = false
