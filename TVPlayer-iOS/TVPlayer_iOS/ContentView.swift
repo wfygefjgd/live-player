@@ -13,19 +13,26 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            Color.clear
+            Color.black
+                .ignoresSafeArea(.all, edges: .all)
 
+            // 🔥 画面层：悬浮显示，覆盖整个屏幕包括小白条区域
             VideoPlayerView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea(.all, edges: .all)
                 .allowsHitTesting(false)
+                .zIndex(1)
 
+            // 手势交互层
             if !vm.panelVisible {
                 Color.clear
+                    .ignoresSafeArea(.all, edges: .all)
                     .contentShape(Rectangle())
                     .onTapGesture { vm.showFloat() }
                     .simultaneousGesture(playerDragGesture())
                     .simultaneousGesture(doubleTapGesture())
                     .simultaneousGesture(longPressGesture())
+                    .zIndex(2)
             }
 
             if vm.panelVisible {
