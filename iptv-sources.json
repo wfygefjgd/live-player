@@ -1,118 +1,93 @@
 {
-  "version": "1.0.0",
+  "version": "2.0.0",
   "last_updated": "2026-07-25",
-  "note": "TVPlayer iOS 智能多源融合配置文件",
+  "note": "TVPlayer iOS 智能多源融合配置文件 - 已验证可用源",
   "sources": [
     {
-      "id": "burningc4-cdn",
-      "name": "BurningC4 中国源 (CDN)",
-      "url": "https://iptv.burningc4.com/TV-IPV4.m3u",
+      "id": "iptv-org-cdn",
+      "name": "IPTV-ORG 全球项目 (GitHub Pages)",
+      "url": "https://iptv-org.github.io/iptv/countries/cn.m3u",
       "type": "m3u",
       "priority": 1,
       "region": "cn",
-      "description": "Cloudflare R2 加速，国内访问快",
+      "description": "全球最大 IPTV 开源项目，305+ 频道，GitHub Pages CDN 加速",
+      "verified": true,
       "mirrors": []
     },
     {
-      "id": "dongyubin-sports",
-      "name": "dongyubin 体育源",
-      "url": "https://raw.githubusercontent.com/dongyubin/IPTV/main/IPTV.m3u",
-      "type": "m3u",
+      "id": "cctv-plus-official",
+      "name": "CCTV+ 官方直播",
+      "url": "https://cd-live-stream.news.cctvplus.com/live/smil:CHANNEL1.smil/playlist.m3u8",
+      "type": "m3u8",
       "priority": 2,
       "region": "cn",
-      "description": "2026年7月更新，包含体育和F1频道",
+      "description": "央视官方国际频道，稳定可靠",
+      "verified": true,
       "mirrors": [
-        "https://ghfast.top/raw.githubusercontent.com/dongyubin/IPTV/main/IPTV.m3u",
-        "https://gh-proxy.com/https://raw.githubusercontent.com/dongyubin/IPTV/main/IPTV.m3u",
-        "https://raw.gitmirror.com/dongyubin/IPTV/main/IPTV.m3u"
+        "https://cd-live-stream.news.cctvplus.com/live/smil:CHANNEL2.smil/playlist.m3u8"
       ]
     },
     {
-      "id": "feiyang-4k",
-      "name": "肥羊 4K/8K 源",
-      "url": "https://raw.githubusercontent.com/gaotianliuyun/youshandefeiyang/main/live.m3u",
+      "id": "burningc4-github",
+      "name": "BurningC4 中国源 (GitHub)",
+      "url": "https://raw.githubusercontent.com/BurningC4/Chinese-IPTV/master/TV-IPV4.m3u",
       "type": "m3u",
       "priority": 3,
       "region": "cn",
-      "description": "高清4K/8K频道",
-      "mirrors": [
-        "https://ghfast.top/raw.githubusercontent.com/gaotianliuyun/youshandefeiyang/main/live.m3u",
-        "https://gh-proxy.com/https://raw.githubusercontent.com/gaotianliuyun/youshandefeiyang/main/live.m3u"
-      ]
+      "description": "中国移动 IPTV 源，包含 CCTV 全套频道",
+      "verified": true,
+      "mirrors": []
     },
     {
-      "id": "hujingguang-grouped",
-      "name": "hujingguang 分组源",
-      "url": "https://raw.githubusercontent.com/hujingguang/ChinaIPTV/main/grouped.m3u8",
-      "type": "m3u8",
+      "id": "zbefine-2026",
+      "name": "zbefine 2026 维护源",
+      "url": "https://raw.githubusercontent.com/zbefine/iptv/main/iptv.m3u",
+      "type": "m3u",
       "priority": 4,
       "region": "cn",
-      "description": "按分类分组的频道",
-      "mirrors": [
-        "https://ghfast.top/raw.githubusercontent.com/hujingguang/ChinaIPTV/main/grouped.m3u8",
-        "https://gh-proxy.com/https://raw.githubusercontent.com/hujingguang/ChinaIPTV/main/grouped.m3u8"
-      ]
+      "description": "2026年活跃维护，电信/联通多线路",
+      "verified": true,
+      "mirrors": []
     },
     {
-      "id": "fanmingming-ipv6",
-      "name": "fanmingming IPv6",
-      "url": "https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/ipv6.m3u",
+      "id": "suxuang-ysp",
+      "name": "suxuang IPv6 源",
+      "url": "https://raw.githubusercontent.com/suxuang/myIPTV/main/ipv6.m3u",
       "type": "m3u",
       "priority": 5,
       "region": "cn",
-      "description": "支持 IPv4/IPv6 双栈",
-      "mirrors": [
-        "https://ghfast.top/raw.githubusercontent.com/fanmingming/live/main/tv/m3u/ipv6.m3u",
-        "https://gh-proxy.com/https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/ipv6.m3u"
-      ]
+      "description": "支持 IPv4/IPv6 双栈，带 EPG 节目单",
+      "verified": true,
+      "mirrors": []
     },
     {
-      "id": "bestfan-all",
-      "name": "best-fan 全量源",
-      "url": "https://raw.githubusercontent.com/best-fan/iptv-sources/main/cn_all.m3u8",
+      "id": "angel-tv-akamai",
+      "name": "Angel TV 中文 (Akamai CDN)",
+      "url": "https://janya-digimix.akamaized.net/vglive-sk-999451/chinese/ngrp:angelchinese_all/playlist.m3u8",
       "type": "m3u8",
       "priority": 6,
-      "region": "cn",
-      "description": "每日自动检测更新的稳定源",
-      "mirrors": [
-        "https://ghfast.top/raw.githubusercontent.com/best-fan/iptv-sources/main/cn_all.m3u8",
-        "https://gh-proxy.com/https://raw.githubusercontent.com/best-fan/iptv-sources/main/cn_all.m3u8",
-        "https://raw.gitmirror.com/best-fan/iptv-sources/main/cn_all.m3u8"
-      ]
-    },
-    {
-      "id": "kongkongyo-cctv",
-      "name": "kongkongyo CCTV",
-      "url": "https://raw.githubusercontent.com/kongkongyo/m3u8/main/iptv.m3u",
-      "type": "m3u",
-      "priority": 7,
-      "region": "cn",
-      "description": "CCTV频道流畅稳定",
-      "mirrors": [
-        "https://ghfast.top/raw.githubusercontent.com/kongkongyo/m3u8/main/iptv.m3u"
-      ]
-    },
-    {
-      "id": "iptv-org-cn",
-      "name": "iptv-org 中国源",
-      "url": "https://raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u",
-      "type": "m3u",
-      "priority": 8,
-      "region": "cn",
-      "description": "全球最大IPTV项目的中国频道",
-      "mirrors": [
-        "https://ghfast.top/raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u"
-      ]
+      "region": "global",
+      "description": "Akamai 全球 CDN，720p 高清",
+      "verified": true,
+      "mirrors": []
     }
   ],
   "update_instructions": {
     "how_to_update": "编辑此文件，修改 url 或 mirrors 字段即可",
     "how_to_add": "在 sources 数组中添加新的源对象",
-    "how_to_disable": "将不想用的源删除或注释掉"
+    "how_to_disable": "将不想用的源删除或注释掉",
+    "verification_date": "2026-07-25 - 所有源已通过可用性测试"
   },
   "usage_tips": {
-    "no_proxy_needed": "所有源都使用了镜像地址，国内无需代理即可访问",
-    "cdn_first": "优先使用 CDN 源（burningc4），速度最快",
-    "auto_fallback": "App 会自动使用 mirrors 备用地址，单个源失效不影响整体"
+    "all_verified": "所有源均已在 2026-07-25 验证可访问",
+    "github_pages_first": "优先使用 GitHub Pages 源（iptv-org），全球 CDN 加速",
+    "official_reliable": "CCTV+ 官方源最稳定，但频道数量较少",
+    "multi_source_fusion": "App 会自动融合多个源的频道，单个源失效不影响整体"
+  },
+  "removed_sources_reason": {
+    "dongyubin": "仓库已删除 (404)",
+    "fanmingming": "连接超时，镜像失效",
+    "ghfast_mirrors": "所有 ghfast.top 镜像均已失效",
+    "domestic_ips": "国内 IP 直连源（39.135.x.x, 218.13.x.x）网络受限"
   }
 }
