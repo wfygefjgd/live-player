@@ -92,10 +92,8 @@ struct FusionModeSettingsView: View {
             .navigationTitle("融合模式设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("完成") {
-                        dismiss()
-                    }
+                Button("完成") {
+                    dismiss()
                 }
             }
         }

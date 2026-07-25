@@ -141,7 +141,9 @@ final class SmartFusionEngine {
             for (index, url) in urls.enumerated() {
                 group.addTask {
                     do {
-                        self.onProgress?("正在加载源 \(index + 1)/\(urls.count)...")
+                        await MainActor.run {
+                            self.onProgress?("正在加载源 \(index + 1)/\(urls.count)...")
+                        }
                         let body = try await NetworkService.shared.fetch(url: url)
                         let parsed = M3UParserService.parse(body)
                         return (index, parsed)
@@ -213,9 +215,13 @@ final class SmartFusionEngine {
 
             // 添加剩余未测试的线路
             let remainingUrls = ch.urls.dropFirst(20)
-            optimizedCh.urls = sortedUrls + Array(remainingUrls)
+            let finalUrls = sortedUrls + Array(remainingUrls)
 
-            optimized.append(optimizedCh)
+            // 创建新的 Channel 对象，使用排序后的 URLs
+            var newChannel = Channel(name: ch.name, group: ch.group, key: ch.key)
+            newChannel.addUrls(finalUrls)
+
+            optimized.append(newChannel)
         }
 
         return optimized
