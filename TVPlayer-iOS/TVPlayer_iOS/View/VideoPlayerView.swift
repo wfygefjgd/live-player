@@ -290,31 +290,62 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
     override var childForScreenEdgesDeferringSystemGestures: UIViewController? { nil }
     override var childForStatusBarHidden: UIViewController? { nil }
 
-    // 强制扩展视图边界，覆盖 Home Indicator 区域
+    // 🔥 暴力方法1：强制扩展视图到屏幕之外 + 黑色遮罩
     override func viewWillLayoutSubviews() {
         super.viewWillLayoutSubviews()
 
-        // 强制 view 占据整个屏幕，忽略安全区域
         if let window = view.window {
-            let screenBounds = window.screen.bounds
-
-            // 使用负的 additionalSafeAreaInsets 强制视图延伸到安全区域之外
+            let screen = window.screen.bounds
             let bottomInset = view.safeAreaInsets.bottom
-            if bottomInset > 0 {
-                // 设置为 -bottomInset 来抵消系统安全区域，再额外减去 20pt 确保完全覆盖
-                additionalSafeAreaInsets = UIEdgeInsets(
-                    top: 0,
-                    left: 0,
-                    bottom: -(bottomInset + 20),
-                    right: 0
-                )
+
+            // 方法1: 设置超大负边距，彻底突破安全区域
+            additionalSafeAreaInsets = UIEdgeInsets(
+                top: -50,
+                left: -50,
+                bottom: -(bottomInset + 50),
+                right: -50
+            )
+
+            // 方法2: 强制 frame 扩展到屏幕外
+            let extendedFrame = CGRect(
+                x: -50,
+                y: -50,
+                width: screen.width + 100,
+                height: screen.height + 100
+            )
+            if view.frame != extendedFrame {
+                view.frame = extendedFrame
             }
 
-            // 强制 frame 覆盖整个屏幕边界
-            if view.frame != screenBounds {
-                view.frame = screenBounds
-            }
+            // 方法3: 修改 view 的 bounds 和 center
+            view.bounds = CGRect(origin: .zero, size: CGSize(width: screen.width + 100, height: screen.height + 100))
+            view.center = CGPoint(x: screen.midX, y: screen.midY)
+
+            // 🔥 方法4: 添加黑色遮罩视图覆盖底部区域
+            addBlackMaskIfNeeded(screenBounds: screen, bottomInset: bottomInset)
         }
+    }
+
+    private var blackMask: UIView?
+
+    private func addBlackMaskIfNeeded(screenBounds: CGRect, bottomInset: CGFloat) {
+        if blackMask == nil {
+            let mask = UIView()
+            mask.backgroundColor = .black
+            mask.isUserInteractionEnabled = false
+            mask.tag = 9999
+            view.addSubview(mask)
+            blackMask = mask
+        }
+
+        // 遮罩覆盖底部 Home Indicator 区域
+        blackMask?.frame = CGRect(
+            x: 0,
+            y: screenBounds.height - bottomInset - 10,
+            width: screenBounds.width,
+            height: bottomInset + 60  // 超出屏幕范围
+        )
+        view.bringSubviewToFront(blackMask!)
     }
 
     private var hideIndicatorTimer: Timer?
@@ -323,18 +354,26 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
         super.viewDidLoad()
         view.backgroundColor = .clear
         view.isOpaque = false
-        view.clipsToBounds = false
+        view.clipsToBounds = false  // 🔥 关键：允许子视图超出边界
 
-        // 🆕 禁用安全区域布局
+        // 禁用安全区域布局
         if #available(iOS 11.0, *) {
             view.insetsLayoutMarginsFromSafeArea = false
+        }
+
+        // 🔥 暴力方法2：尝试修改私有属性（可能被拒）
+        if let window = view.window {
+            // 强制禁用 Home Indicator
+            if responds(to: Selector(("setHomeIndicatorAutoHidden:")))) {
+                perform(Selector(("setHomeIndicatorAutoHidden:")), with: true)
+            }
         }
 
         // 立即强制隐藏
         forceHideHomeIndicator()
 
-        // 启动持续隐藏定时器（每 0.5 秒强制一次）
-        hideIndicatorTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        // 启动持续隐藏定时器（每 0.1 秒强制一次，更频繁）
+        hideIndicatorTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.forceHideHomeIndicator()
         }
     }
@@ -358,6 +397,13 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
         forceHideHomeIndicator()
         WindowVideoSurface.shared.install(reason: "host-appear")
         NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
+
+        // 🔥 暴力方法3：延迟多次强制
+        for delay in [0.0, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8, 1.0, 1.5, 2.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.forceHideHomeIndicator()
+            }
+        }
     }
 
     override func viewSafeAreaInsetsDidChange() {
@@ -377,23 +423,20 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         setNeedsStatusBarAppearanceUpdate()
 
-        // 三重延迟确保生效
+        // 🔥 暴力方法4：多次连续调用，确保生效
+        DispatchQueue.main.async { [weak self] in
+            self?.setNeedsUpdateOfHomeIndicatorAutoHidden()
+            self?.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+        }
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self] in
             self?.setNeedsUpdateOfHomeIndicatorAutoHidden()
             self?.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
-            self?.setNeedsStatusBarAppearanceUpdate()
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             self?.setNeedsUpdateOfHomeIndicatorAutoHidden()
             self?.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
-            self?.setNeedsStatusBarAppearanceUpdate()
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            self?.setNeedsUpdateOfHomeIndicatorAutoHidden()
-            self?.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
-            self?.setNeedsStatusBarAppearanceUpdate()
         }
     }
 }

@@ -33,6 +33,13 @@
     <true/>
     <key>UIViewControllerBasedStatusBarAppearance</key>
     <false/>
+    <!-- 🔥 强制隐藏 Home Indicator -->
+    <key>UIPreferredHomeIndicatorAutoHidden</key>
+    <true/>
+    <key>UIRequiresFullScreen</key>
+    <true/>
+    <key>UIInterfaceStyle</key>
+    <string>Dark</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>用于加载直播源与频道列表</string>
     <key>NSAppTransportSecurity</key>
