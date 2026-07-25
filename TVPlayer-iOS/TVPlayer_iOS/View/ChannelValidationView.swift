@@ -81,16 +81,16 @@ struct ChannelValidationView: View {
     }
 
     private func performValidation() async {
-        // 🆕 第一步：先启动 PlayerViewModel，加载频道数据
-        await MainActor.run {
-            vm.startup()
-        }
-
-        // 🆕 第二步：发起简单的网络请求触发 iOS 权限弹窗
+        // 🆕 第一步：发起简单的网络请求触发 iOS 权限弹窗
         await triggerNetworkPermission()
 
         // 🆕 延迟 2 秒等待用户点击"允许"
         try? await Task.sleep(nanoseconds: 2_000_000_000)
+
+        // 🆕 第二步：在后台加载频道数据（不启动播放器）
+        await MainActor.run {
+            vm.loadChannelsOnly()  // 只加载频道，不启动播放
+        }
 
         // 🆕 第三步：等待频道加载完成（最多等待 10 秒）
         var attempts = 0
@@ -107,7 +107,7 @@ struct ChannelValidationView: View {
             return
         }
 
-        // 第四步：开始验证
+        // 第四步：开始验证（50并发，3秒超时）
         let result = await validator.validateAllChannels(channels)
 
         // 保存验证结果

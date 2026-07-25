@@ -19,11 +19,11 @@ final class ChannelValidator: ObservableObject {
 
     private var validationTask: Task<Void, Never>?
 
-    // 验证超时时间（秒）
-    private let validationTimeout: TimeInterval = 8.0
+    // 验证超时时间（秒）- 缩短到3秒快速失败
+    private let validationTimeout: TimeInterval = 3.0
 
-    // 并发验证数量
-    private let concurrentValidations = 8
+    // 并发验证数量 - 提高到50并发
+    private let concurrentValidations = 50
 
     func validateAllChannels(_ channels: [Channel]) async -> ValidationResult {
         isValidating = true

@@ -111,6 +111,26 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
+    // 🆕 只加载频道数据，不启动播放器（用于验证界面）
+    func loadChannelsOnly() {
+        guard !started else { return }
+        started = true
+        favorites = storage.loadFavorites()
+
+        setupFusionObserver()
+        restoreFusionMode()
+        restoreSources()
+
+        // 只加载频道，不启动播放器
+        let cached = applyRules(storage.loadChannels())
+        if !cached.isEmpty {
+            channels = cached
+        } else {
+            // 直接加载频道，不显示引导界面
+            loadChannels(force: true, silent: true, preferActiveOnly: false)
+        }
+    }
+
     // MARK: - 加载逻辑
 
     private func beginBootstrapLoad() {
