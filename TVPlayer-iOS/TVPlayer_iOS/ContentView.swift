@@ -24,41 +24,18 @@ struct ContentView: View {
                 .zIndex(1)
 
             // 手势交互层
-            if !vm.panelVisible {
-                Color.clear
-                    .ignoresSafeArea(.all, edges: .all)
-                    .contentShape(Rectangle())
-                    .onTapGesture { vm.showFloat() }
-                    .simultaneousGesture(playerDragGesture())
-                    .simultaneousGesture(doubleTapGesture())
-                    .simultaneousGesture(longPressGesture())
-                    .zIndex(2)
-            }
-
-            if vm.panelVisible {
-                ZStack(alignment: .leading) {
-                    // 半透明遮罩层
-                    Color.black.opacity(0.5)
-                        .ignoresSafeArea(.all, edges: .all)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                                vm.panelVisible = false
-                            }
-                        }
-
-                    // 侧边栏面板
-                    ChannelListPanel(onShowSettings: {
-                        showSettingsMenu = true
-                    })
-                    .frame(width: 320)
-                    .frame(maxHeight: .infinity)
-                    .background(Color(white: 0.12).opacity(0.98))
-                    .ignoresSafeArea(.all, edges: .all)
+            Color.clear
+                .ignoresSafeArea(.all, edges: .all)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    if !vm.panelVisible {
+                        vm.showFloat()
+                    }
                 }
-                .transition(.move(edge: .leading))
-                .zIndex(100)
-            }
+                .simultaneousGesture(playerDragGesture())
+                .simultaneousGesture(doubleTapGesture())
+                .simultaneousGesture(longPressGesture())
+                .zIndex(2)
 
             if vm.isBootstrapping {
                 VStack(spacing: 10) {
@@ -122,6 +99,29 @@ struct ContentView: View {
         .onAppear {
             vm.startup()
             NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
+
+            // 设置 window 级侧边栏
+            WindowPanelSurface.shared.setPanel(
+                AnyView(
+                    ChannelListPanel(onShowSettings: {
+                        showSettingsMenu = true
+                    })
+                    .environmentObject(vm)
+                ),
+                viewModel: vm
+            )
+        }
+        .onChange(of: vm.panelVisible) { visible in
+            if visible {
+                WindowPanelSurface.shared.show()
+            } else {
+                WindowPanelSurface.shared.hide()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .panelShouldClose)) { _ in
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                vm.panelVisible = false
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             vm.pause()
