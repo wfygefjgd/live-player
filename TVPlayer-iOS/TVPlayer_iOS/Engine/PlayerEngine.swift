@@ -25,6 +25,9 @@ final class PlayerEngine: ObservableObject {
     private var watchTasks: [String: Task<Void, Never>] = [:]
     private var playToken = 0
 
+    // 🆕 健康度监控
+    private var healthMonitor: PlaybackHealthMonitor?
+
     // 播放状态
     private var stallWatchEnabled = false
     private var continuousStall = false
@@ -46,13 +49,16 @@ final class PlayerEngine: ObservableObject {
     var onPlaybackStall: (() -> Void)?
     var onSilentAudio: (() -> Void)?
     var onExtendedStall: (() -> Void)?
+    var onHealthCritical: ((String) -> Void)?  // 🆕 综合健康度危急回调
 
     private var stallPollTask: Task<Void, Never>?
     private var consecutiveStallCount = 0
+    private var healthCheckTask: Task<Void, Never>?  // 🆕 健康度检查任务
 
     init() {
         player.actionAtItemEnd = .none
         player.automaticallyWaitsToMinimizeStalling = true
+        healthMonitor = PlaybackHealthMonitor(player: player)  // 🆕 初始化健康度监控
         observeTimeControl()
         setupCacheCleanup()  // 🆕 设置AVPlayer缓存清理
     }
@@ -159,6 +165,7 @@ final class PlayerEngine: ObservableObject {
         }
         cancelAllTasks()
         stopStallPolling()
+        stopHealthCheck()  // 🆕 停止健康度检查
         cancellables.removeAll()  // 🆕 清理Combine订阅
         player.replaceCurrentItem(with: nil)
         isPlaying = false
@@ -195,6 +202,7 @@ final class PlayerEngine: ObservableObject {
         silenceCheckScheduled = false
         lastItemTime = .zero
         lastTimeProgressAt = .distantPast
+        healthMonitor?.reset()  // 🆕 重置健康度监控
     }
 
     private func cancelAllTasks() {
@@ -265,6 +273,9 @@ final class PlayerEngine: ObservableObject {
                 if !self.hasRendered && time > .zero {
                     self.hasRendered = true
                 }
+
+                // 🆕 更新健康度监控
+                self.healthMonitor?.updateVideoProgress(time: time, hasRendered: self.hasRendered)
             }
         }
     }
@@ -303,6 +314,9 @@ final class PlayerEngine: ObservableObject {
 
         // 延迟后检测静音
         scheduleSilentAudioCheck(token: token)
+
+        // 🆕 启动综合健康度检查（替代单一的 startStallPolling）
+        startHealthCheck(token: token)
     }
 
     private func handleItemFailed(token: Int) {
@@ -421,6 +435,52 @@ final class PlayerEngine: ObservableObject {
         stallPollTask?.cancel()
         stallPollTask = nil
         consecutiveStallCount = 0
+    }
+
+    // MARK: - Private — Health Monitoring
+
+    /// 🆕 启动综合健康度检查（在 ready 后启动）
+    private func startHealthCheck(token: Int) {
+        stopHealthCheck()
+        healthCheckTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)  // 1.5秒检查一次
+                guard let self, self.playToken == token, !Task.isCancelled else { return }
+                guard self.isReady else { continue }
+
+                // 检查是否需要立即切换
+                if let monitor = self.healthMonitor {
+                    let result = monitor.shouldSwitchImmediately()
+                    if result.should {
+                        self.onHealthCritical?(result.reason)
+                        return  // 触发后停止检查
+                    }
+                }
+
+                // 记录缓冲事件
+                if let item = self.player.currentItem, item.isPlaybackBufferEmpty {
+                    self.healthMonitor?.recordBufferEmpty()
+                }
+
+                // 保持原有的卡顿检测逻辑
+                if self.isStalled() {
+                    self.healthMonitor?.recordStall()
+                    self.consecutiveStallCount += 1
+                    if self.consecutiveStallCount >= 2 {
+                        self.consecutiveStallCount = 0
+                        self.onExtendedStall?()
+                    }
+                } else {
+                    self.consecutiveStallCount = 0
+                }
+            }
+        }
+    }
+
+    /// 🆕 停止健康度检查
+    private func stopHealthCheck() {
+        healthCheckTask?.cancel()
+        healthCheckTask = nil
     }
 
     // MARK: - Private — Task Helpers

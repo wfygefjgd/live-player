@@ -90,6 +90,7 @@ final class PlayerViewModel: ObservableObject {
         player.onPlaybackStall = { [weak self] in self?.onPlaybackStall() }
         player.onSilentAudio = { [weak self] in self?.onSilentAudio() }
         player.onExtendedStall = { [weak self] in self?.onExtendedStall() }
+        player.onHealthCritical = { [weak self] reason in self?.onHealthCritical(reason) }  // 🆕 健康度危急回调
 
         NetworkMonitor.shared.onSatisfied = { [weak self] in self?.onNetworkBecameAvailable() }
         NetworkMonitor.shared.onConnectionTypeChanged = { [weak self] type in
@@ -628,6 +629,11 @@ final class PlayerViewModel: ObservableObject {
     private func onStartupTimeout() { autoSwitchLine(hint: "线路超时，切换下一线路") }
     private func onPlaybackStall() { autoSwitchLine(hint: "网络卡顿，切换下一线路") }
     private func onExtendedStall() { autoSwitchLine(hint: "画面冻结，切换下一线路") }
+
+    /// 🆕 综合健康度危急处理
+    private func onHealthCritical(_ reason: String) {
+        autoSwitchLine(hint: reason)
+    }
 
     // MARK: - 静音检测
 
