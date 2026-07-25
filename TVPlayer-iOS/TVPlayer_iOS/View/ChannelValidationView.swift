@@ -81,6 +81,9 @@ struct ChannelValidationView: View {
     }
 
     private func performValidation() async {
+        // 🆕 延迟 3 秒启动验证，等待 iOS 弹出网络权限请求
+        try? await Task.sleep(nanoseconds: 3_000_000_000)
+
         // 加载所有频道
         let channels = vm.channels
 
