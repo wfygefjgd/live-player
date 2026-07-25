@@ -42,7 +42,6 @@ final class PlayerViewModel: ObservableObject {
     @Published var isBootstrapping = false
     @Published var bootstrapMessage = "正在连接网络..."
     @Published var playerLayoutEpoch: Int = 0
-    @Published var needsValidation = false  // 🆕 手动触发验证标志
 
     // 🆕 智能融合相关
     @Published var fusionMode: FusionMode = .smart
@@ -96,18 +95,27 @@ final class PlayerViewModel: ObservableObject {
         }
 
         restoreSources()
-        let cached = applyRules(storage.loadChannels())
-        if !cached.isEmpty {
-            channels = cached
+
+        // 🆕 优先从 Bundle 加载预验证的频道
+        if let bundleChannels = loadChannelsFromBundle(), !bundleChannels.isEmpty {
+            channels = applyRules(bundleChannels)
             restoreLastChannelPosition()
             isBootstrapping = false
             playCurrent(showOSD: false, resetTried: true)
-            loadChannels(force: true, silent: true, preferActiveOnly: false)
         } else {
-            isBootstrapping = true
-            bootstrapMessage = "正在加载频道列表..."
-            indicatorText = ""
-            beginBootstrapLoad()
+            // 回退到缓存
+            let cached = applyRules(storage.loadChannels())
+            if !cached.isEmpty {
+                channels = cached
+                restoreLastChannelPosition()
+                isBootstrapping = false
+                playCurrent(showOSD: false, resetTried: true)
+            } else {
+                isBootstrapping = true
+                bootstrapMessage = "正在加载频道列表..."
+                indicatorText = ""
+                beginBootstrapLoad()
+            }
         }
     }
 
@@ -379,11 +387,52 @@ final class PlayerViewModel: ObservableObject {
     }
 
     // MARK: - 手动触发重新验证
-    func triggerManualValidation() {
-        // 清除验证记录
-        ValidationStorage.shared.clear()
-        // 设置标志，让RootView重新显示验证界面
-        needsValidation = true
+    // MARK: - 从 Bundle 加载预验证频道
+    private func loadChannelsFromBundle() -> [Channel]? {
+        guard let url = Bundle.main.url(forResource: "validated-channels", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let json = try? JSONDecoder().decode(ValidatedChannelsResponse.self, from: data) else {
+            return nil
+        }
+
+        return json.channels.map { ch in
+            Channel(name: ch.name, group: ch.group, key: ch.name, urls: ch.urls)
+        }
+    }
+
+    // MARK: - 从远程刷新频道
+    func refreshChannelsFromRemote() async {
+        let mirrorUrl = "https://ghfast.top/raw.githubusercontent.com/wfygefjgd/live-player/main/TVPlayer-iOS/scripts/validated-channels.json"
+
+        guard let url = URL(string: mirrorUrl) else {
+            await MainActor.run {
+                showIndicator("刷新失败：URL 无效")
+            }
+            return
+        }
+
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            let json = try JSONDecoder().decode(ValidatedChannelsResponse.self, from: data)
+
+            let newChannels = json.channels.map { ch in
+                Channel(name: ch.name, group: ch.group, key: ch.name, urls: ch.urls)
+            }
+
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.rawChannels = newChannels
+                self.channels = self.applyRules(newChannels)
+                self.storage.saveChannels(newChannels)
+                self.restoreLastChannelPosition()
+                self.showIndicator("✓ 已刷新 \(self.channels.count) 个频道")
+                self.playCurrent(showOSD: false, resetTried: true)
+            }
+        } catch {
+            await MainActor.run {
+                showIndicator("刷新失败：\(error.localizedDescription)")
+            }
+        }
     }
 
     func buildCandidates() -> [String] {
