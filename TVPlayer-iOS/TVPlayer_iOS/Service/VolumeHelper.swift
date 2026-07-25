@@ -54,20 +54,49 @@ enum VolumeHelper {
         ensureInstalled()
         let clamped = max(0, min(1, value))
 
-        // 使用 animated: true 显示系统音量 HUD，体验更友好
+        // 使用指数退避重试确保 slider 就绪
+        ensureSlider { slider in
+            guard let slider else {
+                // 5 次重试后仍未获取到 slider，静默失败
+                return
+            }
+            slider.setValue(clamped, animated: true)
+        }
+    }
+
+    /// 确保 slider 就绪，带指数退避重试（最多 5 次，总计约 1.55 秒）
+    private static func ensureSlider(completion: @escaping (UISlider?) -> Void) {
+        // 如果已有 slider，立即回调
         if let slider = volumeSlider {
             DispatchQueue.main.async {
-                slider.setValue(clamped, animated: true)
+                completion(slider)
             }
-        } else {
-            // slider 尚未就绪，延迟重试
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak volumeView] in
-                if volumeSlider == nil {
-                    volumeSlider = volumeView?.subviews.compactMap { $0 as? UISlider }.first
+            return
+        }
+
+        // 指数退避重试
+        var attempts = 0
+        func retry() {
+            attempts += 1
+            if attempts > 5 {
+                // 超过 5 次，返回 nil
+                DispatchQueue.main.async {
+                    completion(nil)
                 }
-                volumeSlider?.setValue(clamped, animated: true)
+                return
+            }
+
+            let delay = 0.05 * Double(attempts)  // 0.05s, 0.1s, 0.15s, 0.2s, 0.25s
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                if let slider = volumeSlider ?? volumeView?.subviews.compactMap({ $0 as? UISlider }).first {
+                    volumeSlider = slider
+                    completion(slider)
+                } else {
+                    retry()
+                }
             }
         }
+        retry()
     }
 
     /// 调整音量（相对值）

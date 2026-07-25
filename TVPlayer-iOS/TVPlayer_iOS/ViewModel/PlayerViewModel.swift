@@ -352,7 +352,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func restoreLastChannelPosition() {
-        // 优先默认选择第一个频道，除非用户有明确的上次观看记录
+        // 优先默认选择CCTV，除非用户有明确的上次观看记录
         let key = storage.loadLastChannelKey()
         if !key.isEmpty, let idx = channels.firstIndex(where: { $0.key == key }) {
             // 用户有观看历史，恢复到上次的频道
@@ -360,8 +360,19 @@ final class PlayerViewModel: ObservableObject {
             let si = storage.loadLastSourceIndex()
             currentSourceIndex = min(max(0, si), max(0, channels[idx].sourceCount - 1))
         } else {
-            // 没有观看历史，默认选择第一个频道
-            currentIndex = 0
+            // 没有观看历史，默认选择 CCTV-1 或第一个 CCTV 频道
+            if let cctvIdx = channels.firstIndex(where: {
+                $0.name.contains("CCTV") || $0.name.contains("央视") || $0.name.contains("cctv")
+            }) {
+                currentIndex = cctvIdx
+            } else if let cctv1Idx = channels.firstIndex(where: {
+                $0.name.contains("CCTV1") || $0.name.contains("CCTV-1") || $0.name.contains("综合")
+            }) {
+                currentIndex = cctv1Idx
+            } else {
+                // 实在找不到 CCTV，才选择第一个频道
+                currentIndex = 0
+            }
             currentSourceIndex = 0
         }
     }

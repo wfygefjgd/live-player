@@ -97,7 +97,8 @@ final class StorageService {
 
     func saveSourceUrls(_ urls: [String]) {
         queue.async(flags: .barrier) { [weak self] in
-            self?.defaults.set(urls, forKey: self?.kSourceUrls ?? "")
+            guard let self else { return }
+            self.defaults.set(urls, forKey: self.kSourceUrls)
         }
     }
 
@@ -109,7 +110,8 @@ final class StorageService {
 
     func saveSelectedSourceUrl(_ url: String) {
         queue.async(flags: .barrier) { [weak self] in
-            self?.defaults.set(url, forKey: self?.kSelectedSource ?? "")
+            guard let self else { return }
+            self.defaults.set(url, forKey: self.kSelectedSource)
         }
     }
 
@@ -121,7 +123,8 @@ final class StorageService {
 
     func saveCustomSourceUrl(_ url: String) {
         queue.async(flags: .barrier) { [weak self] in
-            self?.defaults.set(url, forKey: self?.kCustomSource ?? "")
+            guard let self else { return }
+            self.defaults.set(url, forKey: self.kCustomSource)
         }
     }
 
@@ -159,7 +162,8 @@ final class StorageService {
 
     func unhideAllLines() {
         queue.async(flags: .barrier) { [weak self] in
-            self?.defaults.removeObject(forKey: self?.kHiddenLines ?? "")
+            guard let self else { return }
+            self.defaults.removeObject(forKey: self.kHiddenLines)
         }
     }
 

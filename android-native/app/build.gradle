@@ -10,8 +10,8 @@ android {
         applicationId "org.tvplayer.app"
         minSdkVersion 19
         targetSdkVersion 33
-        versionCode 5
-        versionName "1.5.1"
+        versionCode 6
+        versionName "1.5.2"
         multiDexEnabled true
     }
 

@@ -1,0 +1,36 @@
+{
+  "version": "1.0",
+  "description": "频道线路跳过规则配置",
+  "skip_rules": [
+    {
+      "key": "cctv10",
+      "skip_indices": [0],
+      "reason": "第一条线路不稳定"
+    },
+    {
+      "key": "cctv14",
+      "skip_indices": [0],
+      "reason": "第一条线路不稳定"
+    },
+    {
+      "key": "cctv13",
+      "skip_indices": [0, 1, 2],
+      "reason": "前三条线路不稳定"
+    },
+    {
+      "key": "北京",
+      "skip_indices": [0],
+      "reason": "第一条线路不稳定"
+    },
+    {
+      "key": "湖南",
+      "skip_indices": [0, 1],
+      "reason": "前两条线路不稳定"
+    }
+  ],
+  "notes": [
+    "key: 频道标识符（由 M3UParser.normalize_name 生成）",
+    "skip_indices: 要跳过的线路索引（从 0 开始）",
+    "reason: 跳过原因（可选，仅供参考）"
+  ]
+}

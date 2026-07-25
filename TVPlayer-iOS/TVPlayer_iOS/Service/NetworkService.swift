@@ -25,7 +25,7 @@ final class NetworkService {
     static let shared = NetworkService()
 
     private let ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"
-    private let timeout: TimeInterval = 8
+    private let timeout: TimeInterval = 15
 
     private lazy var session: URLSession = {
         let cfg = URLSessionConfiguration.default

@@ -120,6 +120,7 @@ class SpeedTester(threading.Thread):
                 chunks = []
                 for chunk in resp.iter_content(65536):
                     if not self._running:
+                        resp.close()
                         return None
                     chunks.append(chunk)
                     if len(chunks) >= 3:
@@ -128,15 +129,16 @@ class SpeedTester(threading.Thread):
                 downloaded = sum(len(c) for c in chunks)
                 speed = downloaded / elapsed if elapsed > 0 else 0
                 return (ch, speed, "ok")
-            except:
+            except Exception:
                 return (ch, 0, "fail")
 
-        batch_size = 3
+        import multiprocessing
+        batch_size = max(3, min(8, multiprocessing.cpu_count() - 1))
         for i in range(0, len(self.channels), batch_size):
             if not self._running:
                 break
             batch = self.channels[i:i+batch_size]
-            with ThreadPoolExecutor(max_workers=3) as pool:
+            with ThreadPoolExecutor(max_workers=batch_size) as pool:
                 futures = {pool.submit(test_one, ch): ch for ch in batch}
                 for fut in as_completed(futures):
                     if not self._running:
@@ -147,7 +149,7 @@ class SpeedTester(threading.Thread):
                             ch, speed, status = result
                             if speed < 1 * 1024 * 1024 or status == "fail":
                                 self.slow_urls.append(ch.url)
-                    except:
+                    except Exception:
                         pass
 
     def stop(self):
@@ -198,12 +200,11 @@ class SourceLoader(threading.Thread):
                     pass
 
         if all_channels:
-            seen, uniq = set(), []
+            seen = {}
             for c in all_channels:
                 if c.url not in seen:
-                    seen.add(c.url)
-                    uniq.append(c)
-            self.sig.done.emit(uniq)
+                    seen[c.url] = c
+            self.sig.done.emit(list(seen.values()))
         else:
             self.sig.err.emit("加载失败")
 
@@ -343,6 +344,7 @@ class MPVWidget(QWidget):
         self._process.setProcessChannelMode(QProcess.MergedChannels)
         self._process.started.connect(self._on_started)
         self._process.finished.connect(self._on_finished)
+        self._process.errorOccurred.connect(self._on_process_error)
         self._process.start(cmd[0], cmd[1:])
         self._check_timer.start()
 
@@ -353,6 +355,17 @@ class MPVWidget(QWidget):
     def _on_finished(self, exit_code, exit_status):
         self._is_playing = False
         self._check_timer.stop()
+
+    def _on_process_error(self, error):
+        """处理 mpv 进程错误"""
+        self._is_playing = False
+        self._check_timer.stop()
+        if error == QProcess.FailedToStart:
+            self.show_msg("mpv 启动失败 - 请检查安装")
+        elif error == QProcess.Crashed:
+            self.show_msg("播放器崩溃")
+        else:
+            self.show_msg(f"播放错误 ({error})")
 
     def _check_state(self):
         if self._process and self._process.state() == QProcess.Running:
@@ -581,7 +594,6 @@ class MainWindow(QMainWindow):
         self.video = MPVWidget()
         main_layout.addWidget(self.video, 1)
         self.video.set_volume(self._volume)
-        self._volume = 100
 
         self.setStyleSheet(DARK_QSS)
         QTimer.singleShot(100, self._refresh)
@@ -701,6 +713,9 @@ class MainWindow(QMainWindow):
     def _on_select(self, row):
         if self._select_mode or row < 0 or row >= len(self.filtered_channels):
             return
+        # 如果正在切换，取消之前的定时器
+        if self._switch_timer.isActive():
+            self._switch_timer.stop()
         url = self.filtered_channels[row].url
         self._pending_url = url
         self.video.stop_mpv()
