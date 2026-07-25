@@ -265,15 +265,20 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
     override var prefersHomeIndicatorAutoHidden: Bool { true }
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
     override var prefersStatusBarHidden: Bool { true }
+    override var shouldAutorotate: Bool { false }
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
 
     override var childForHomeIndicatorAutoHidden: UIViewController? { nil }
     override var childForScreenEdgesDeferringSystemGestures: UIViewController? { nil }
+    override var childForStatusBarHidden: UIViewController? { nil }
 
-    // 强制忽略所有安全区域，防止 Home Indicator 挤压画面
+    // 强制负值安全区域，完全消除 Home Indicator 影响
     override var additionalSafeAreaInsets: UIEdgeInsets {
-        get { UIEdgeInsets(top: -100, left: -100, bottom: -100, right: -100) }
+        get { UIEdgeInsets(top: -200, left: -200, bottom: -200, right: -200) }
         set { }
     }
+
+    private var hideIndicatorTimer: Timer?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -281,44 +286,41 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
         view.isOpaque = false
         view.clipsToBounds = false
 
-        // 强制设置安全区域为负值，完全消除 Home Indicator 影响
-        if let window = view.window {
-            window.safeAreaInsets
-        }
+        // 立即强制隐藏
+        forceHideHomeIndicator()
 
-        // 立即隐藏 Home Indicator
-        setNeedsUpdateOfHomeIndicatorAutoHidden()
-        setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
-        setNeedsStatusBarAppearanceUpdate()
+        // 启动持续隐藏定时器（每 0.5 秒强制一次）
+        hideIndicatorTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.forceHideHomeIndicator()
+        }
+    }
+
+    deinit {
+        hideIndicatorTimer?.invalidate()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        // 再次确保 Home Indicator 隐藏
-        setNeedsUpdateOfHomeIndicatorAutoHidden()
-        setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
-        setNeedsStatusBarAppearanceUpdate()
+        forceHideHomeIndicator()
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        // 多次调用确保生效
         forceHideHomeIndicator()
-
         WindowVideoSurface.shared.install(reason: "host-appear")
         NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
     }
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
-        // 每次安全区域变化时都重新隐藏 Home Indicator
         forceHideHomeIndicator()
+        WindowVideoSurface.shared.install(reason: "safeArea")
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        // 布局完成后再次确保隐藏
         forceHideHomeIndicator()
+        WindowVideoSurface.shared.install(reason: "host-layout")
     }
 
     private func forceHideHomeIndicator() {
@@ -326,7 +328,13 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         setNeedsStatusBarAppearanceUpdate()
 
-        // 延迟再次调用，确保布局完成后仍然隐藏
+        // 三重延迟确保生效
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self] in
+            self?.setNeedsUpdateOfHomeIndicatorAutoHidden()
+            self?.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+            self?.setNeedsStatusBarAppearanceUpdate()
+        }
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
             self?.setNeedsUpdateOfHomeIndicatorAutoHidden()
             self?.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()

@@ -159,7 +159,7 @@ struct ContentView: View {
     }
 
     private func playerDragGesture() -> some Gesture {
-        DragGesture(minimumDistance: 24)
+        DragGesture(minimumDistance: 20)
             .onChanged { value in
                 guard !vm.locked, !vm.panelVisible else { return }
                 let w = max(UIScreen.main.bounds.width, UIScreen.main.bounds.height, 1)
@@ -171,20 +171,37 @@ struct ContentView: View {
             .onEnded { value in
                 guard !vm.locked, !vm.panelVisible else { return }
                 let w = max(UIScreen.main.bounds.width, UIScreen.main.bounds.height, 1)
+                let h = max(UIScreen.main.bounds.height, 1)
                 let sx = value.startLocation.x
+                let sy = value.startLocation.y
                 let dx = value.translation.width
                 let dy = value.translation.height
+
+                // 右侧音量控制区域
                 if sx > w * 0.65 {
                     vm.handleVolumeDrag(translationHeight: dy, ended: true)
+                    return
                 }
-                if abs(dx) > abs(dy), abs(dx) > 50 {
+
+                // 左右滑动切换线路（全屏幕有效）
+                if abs(dx) > abs(dy) && abs(dx) > 50 {
                     if dx > 0 { vm.switchSource(direction: -1) }
                     else { vm.switchSource(direction: 1) }
                     return
                 }
-                if abs(dy) > abs(dx), abs(dy) > 40, sx >= w * 0.30, sx <= w * 0.65 {
-                    if dy < 0 { vm.nextChannel() }
-                    else { vm.prevChannel() }
+
+                // 上下滑动切换频道（扩大识别区域到整个中间区域，降低门槛）
+                if abs(dy) > abs(dx) && abs(dy) > 30 {
+                    // 放宽识别条件：只要不是在最右侧音量区，都可以切换频道
+                    if sx <= w * 0.65 {
+                        if dy < 0 {
+                            vm.nextChannel()
+                            print("✅ 下一频道手势触发")
+                        } else {
+                            vm.prevChannel()
+                            print("✅ 上一频道手势触发")
+                        }
+                    }
                 }
             }
     }

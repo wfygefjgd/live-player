@@ -59,7 +59,10 @@ final class PlayerEngine: ObservableObject {
     // MARK: - Public API
 
     func play(url: URL) {
+        // 彻底清理之前的播放状态
         pause()
+        player.replaceCurrentItem(with: nil)
+
         playToken += 1
         let token = playToken
         statusObserver?.invalidate()
@@ -76,20 +79,27 @@ final class PlayerEngine: ObservableObject {
         item.preferredForwardBufferDuration = 2
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
         player.automaticallyWaitsToMinimizeStalling = false
-        player.replaceCurrentItem(with: item)
-        isReady = false
-        isPlaying = true
 
-        setupItemObserver(item, token: token)
-        setupTimeObserver(token: token)
+        // 强制刷新播放器状态，防止画面冻结
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            guard let self, self.playToken == token else { return }
+            self.player.replaceCurrentItem(with: item)
+            self.isReady = false
+            self.isPlaying = true
 
-        scheduleTask(named: "startup", token: token, timeout: Self.startupTimeoutNs) { [weak self] in
-            guard let self, !self.isReady, !self.hasRendered else { return }
-            self.cancelAllTasks()
-            self.onStartupTimeout?()
+            self.setupItemObserver(item, token: token)
+            self.setupTimeObserver(token: token)
+
+            self.scheduleTask(named: "startup", token: token, timeout: Self.startupTimeoutNs) { [weak self] in
+                guard let self, !self.isReady, !self.hasRendered else { return }
+                self.cancelAllTasks()
+                self.onStartupTimeout?()
+            }
+
+            // 强制播放，确保不会卡住
+            self.player.play()
+            self.player.rate = 1.0
         }
-
-        player.play()
     }
 
     func pause() {
