@@ -12,12 +12,13 @@
 
 | 项目 | 状态 | 详情 |
 |------|------|------|
-| 代码提交 | ✅ 完成 | Commit: 94f4161 |
-| Git 标签 | ✅ 完成 | v1.5.0-ios |
+| 代码提交 | ✅ 完成 | Commit: 38ed21a |
+| Git 标签 | ✅ 完成 | v1.5.0-ios (已更新) |
 | GitHub 推送 | ✅ 完成 | https://github.com/wfygefjgd/live-player |
 | GitHub Release | ✅ 完成 | https://github.com/wfygefjgd/live-player/releases/tag/v1.5.0-ios |
-| GitHub Actions | 🔄 构建中 | https://github.com/wfygefjgd/live-player/actions/runs/30136221670 |
+| GitHub Actions | 🔄 构建中 | https://github.com/wfygefjgd/live-player/actions/runs/30136912426 |
 | IPA 文件 | ⏳ 等待构建 | 将自动上传到 Release |
+| 编译错误修复 | ✅ 完成 | 已修复 MainActor、Channel.urls 和 toolbar 问题 |
 
 ### ✅ Android v1.5.0 - 版本号同步
 
@@ -255,6 +256,10 @@ for channel in allChannels {
 ### iOS 提交
 
 ```bash
+38ed21a - fix(ios): 修复智能融合引擎的编译错误
+dbf3fb1 - fix(ios): 删除重复的 PlayerViewModel+Fusion 文件
+bcbdd19 - fix(ios): 修复 PlayerViewModel+Fusion 扩展语法
+0f351fe - fix(ci): 更新 Xcode 版本为 latest-stable
 94f4161 - feat(ios): v1.5.0 智能多源融合系统
 759b50f - chore: 更新 iOS GitHub Actions 使用完整发布说明
 b83af28 - fix(ci): 更新 iOS 构建使用最新稳定版 Xcode
@@ -481,7 +486,30 @@ Android 同步版本: 1 次
 **iOS Release**: https://github.com/wfygefjgd/live-player/releases/tag/v1.5.0-ios  
 **Android Release**: https://github.com/wfygefjgd/live-player/releases/tag/v1.5.0-android
 
-**iOS Actions**: https://github.com/wfygefjgd/live-player/actions/runs/30136221670
+**iOS Actions**: https://github.com/wfygefjgd/live-player/actions/runs/30136912426
+
+---
+
+## 🐛 编译问题修复记录
+
+### iOS 编译错误（已全部修复）
+
+在发布过程中遇到了 6 个编译错误，已通过 4 次提交全部修复：
+
+**错误 1-2**: Xcode 版本和文件语法问题
+- 提交: 0f351fe, bcbdd19
+- 修复: 更新 Xcode 版本，修正扩展语法
+
+**错误 3**: 重复函数声明
+- 提交: dbf3fb1
+- 修复: 删除重复的 PlayerViewModel+Fusion.swift 文件
+
+**错误 4-6**: MainActor 隔离、Channel.urls 只读、toolbar API
+- 提交: 38ed21a
+- 修复详情:
+  1. 在 TaskGroup 中用 `await MainActor.run { }` 包装回调
+  2. 创建新 Channel 对象并使用 `addUrls()` 方法
+  3. 简化 toolbar 语法移除 ToolbarItem 包装
 
 ---
 
