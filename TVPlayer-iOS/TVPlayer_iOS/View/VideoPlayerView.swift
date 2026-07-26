@@ -4,34 +4,26 @@ import UIKit
 import MediaPlayer
 
 // =============================================================================
-// Edge-to-Edge 全屏播放（标准写法）
+// Edge-to-Edge 全屏播放（最小稳妥方案）
 //
-// 目标：
-// - 播放器视图贴紧物理屏幕，不限制在 Safe Area 内
-// - Home Indicator 半透明浮在视频上方，不把画面挤上去
-// - 自动隐藏 / 淡化状态栏与 Home Indicator
-//
-// UIKit 要点：
-//   edgesForExtendedLayout = .all
-//   prefersHomeIndicatorAutoHidden = true
-//   prefersStatusBarHidden = true
-//   preferredScreenEdgesDeferringSystemGestures = .all
-//   约束钉 view 四边，不要用 safeAreaLayoutGuide
-//
-// SwiftUI 要点：
-//   视频层 .ignoresSafeArea(.all) / .ignoresSafeArea()
-//   .statusBarHidden(true)
-//   .persistentSystemOverlays(.hidden)
-//   .defersSystemGestures(on: .all)
-//   仅浮动控制栏可用 safeAreaInsets 抬高，视频本身不要
+// - 容器 safeAreaInsets 强制 0：小白条不挤高度
+// - 子视图钉 superview 四边（不用 safeAreaLayoutGuide）
+// - 不每帧改 window.frame（避免中间小框 / 四周黑边）
+// - Home Indicator 仅 auto-hide 浮在画面上
+// - 视频 resizeAspect：完整画面，只允许两边比例黑边
 // =============================================================================
 
-// MARK: - UIKit：铺满 bounds 的 AVPlayer 层（不读 Safe Area）
+// MARK: - 根容器：系统 safe area 不参与布局
+
+final class SinkContainerView: UIView {
+    override var safeAreaInsets: UIEdgeInsets { .zero }
+}
+
+// MARK: - UIKit：铺满 bounds 的 AVPlayer 层
 
 final class PlayerSurfaceView: UIView {
     private var boundPlayer: AVPlayer?
 
-    /// UIKit 标准：view.layer 直接是 AVPlayerLayer，layout 时自然铺满 bounds
     override class var layerClass: AnyClass { AVPlayerLayer.self }
 
     private var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
@@ -41,7 +33,6 @@ final class PlayerSurfaceView: UIView {
         backgroundColor = .black
         isOpaque = true
         clipsToBounds = true
-        // 保持原比例，不裁切、不拉伸
         playerLayer.videoGravity = .resizeAspect
         playerLayer.backgroundColor = UIColor.black.cgColor
     }
@@ -67,7 +58,6 @@ final class PlayerSurfaceView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        // layerClass=AVPlayerLayer：layer 即 self.layer，尺寸随 view.bounds，勿改 layer.frame
         playerLayer.videoGravity = .resizeAspect
     }
 }
@@ -84,14 +74,13 @@ final class WindowVideoSurface {
     func install(reason: String = "") { surface?.rebind() }
 }
 
-// MARK: - SwiftUI：.ignoresSafeArea() 贴满物理屏
+// MARK: - SwiftUI 包装
 
 struct VideoPlayerView: UIViewRepresentable {
     @EnvironmentObject private var vm: PlayerViewModel
 
     func makeUIView(context: Context) -> PlayerSurfaceView {
         let v = PlayerSurfaceView()
-        // 允许在 SwiftUI 布局中横向/纵向完全拉伸铺满
         v.setContentHuggingPriority(.defaultLow, for: .horizontal)
         v.setContentHuggingPriority(.defaultLow, for: .vertical)
         v.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -107,15 +96,17 @@ struct VideoPlayerView: UIViewRepresentable {
         _ = vm.playerLayoutEpoch
     }
 
-    // 不声明固定 intrinsic size，交给父级 .frame(maxWidth/maxHeight: .infinity)
+    /// 跟随父级 proposal，不写死 UIScreen 尺寸（避免方向错误锁死小框）
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: PlayerSurfaceView, context: Context) -> CGSize? {
-        let w = proposal.width ?? UIScreen.main.bounds.width
-        let h = proposal.height ?? UIScreen.main.bounds.height
+        guard let w = proposal.width, let h = proposal.height,
+              w.isFinite, h.isFinite, w > 0, h > 0 else {
+            return nil
+        }
         return CGSize(width: w, height: h)
     }
 }
 
-// MARK: - UIKit 根控制器（标准 Edge-to-Edge）
+// MARK: - UIKit 根控制器
 
 final class FullScreenRootController: UIViewController {
     private let hosted: UIViewController
@@ -127,18 +118,18 @@ final class FullScreenRootController: UIViewController {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    // —— 隐藏 / 自动淡化 Home Indicator（小白条）——
+    override func loadView() {
+        view = SinkContainerView(frame: .zero)
+    }
+
     override var prefersHomeIndicatorAutoHidden: Bool { true }
-    // 延迟边缘手势，减少与小白条冲突
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
-    // —— 隐藏状态栏 ——
     override var prefersStatusBarHidden: Bool { true }
     override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation { .fade }
 
     override var shouldAutorotate: Bool { true }
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
 
-    // 自身决定策略，不转发给子 VC
     override var childForHomeIndicatorAutoHidden: UIViewController? { nil }
     override var childForScreenEdgesDeferringSystemGestures: UIViewController? { nil }
     override var childForStatusBarHidden: UIViewController? { nil }
@@ -148,75 +139,46 @@ final class FullScreenRootController: UIViewController {
         view.backgroundColor = .black
         view.isOpaque = true
         view.clipsToBounds = false
-        // 解除系统圆角/限高限宽对子树的裁剪影响
-        additionalSafeAreaInsets = .zero
-
-        // 内容延伸到系统栏后面（不要用 safeAreaLayoutGuide 包播放器）
         edgesForExtendedLayout = .all
         extendedLayoutIncludesOpaqueBars = true
 
         addChild(hosted)
-        // 用 frame 布局，避免 Auto Layout 被 safe area 约束带偏
-        hosted.view.translatesAutoresizingMaskIntoConstraints = true
-        hosted.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        hosted.view.translatesAutoresizingMaskIntoConstraints = false
         hosted.view.backgroundColor = .black
         hosted.view.clipsToBounds = false
         view.addSubview(hosted.view)
-        hosted.view.frame = view.bounds
+        // 钉 view 四边，不用 safeAreaLayoutGuide
+        NSLayoutConstraint.activate([
+            hosted.view.topAnchor.constraint(equalTo: view.topAnchor),
+            hosted.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            hosted.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            hosted.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+        ])
         hosted.didMove(toParent: self)
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        forcePhysicalFullScreen()
         refreshSystemChrome()
     }
 
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        forcePhysicalFullScreen()
-    }
-
-    override func viewSafeAreaInsetsDidChange() {
-        super.viewSafeAreaInsetsDidChange()
-        // 拒绝系统 inset 把根容器挤成中间小框
-        additionalSafeAreaInsets = .zero
-        forcePhysicalFullScreen()
-    }
-
-    /// 横屏下强制 window / root / host 等于物理全屏尺寸
+    /// 兼容旧调用：只刷新系统栏策略，不改 window.frame
     func forcePhysicalFullScreen() {
-        let target = ScreenGeometry.physicalLandscapeBounds(for: view.window?.windowScene)
-        if let window = view.window, window.bounds.size != target.size || window.frame.origin != .zero {
-            window.frame = target
-        }
-        if view.bounds.size != target.size {
-            view.frame = CGRect(origin: .zero, size: target.size)
-            view.bounds = CGRect(origin: .zero, size: target.size)
-        }
-        hosted.view.frame = view.bounds
-        hosted.view.bounds = CGRect(origin: .zero, size: view.bounds.size)
-        additionalSafeAreaInsets = .zero
-        if let hosting = hosted as? UIHostingController<AnyView> {
-            hosting.additionalSafeAreaInsets = .zero
-        }
-        hosted.additionalSafeAreaInsets = .zero
+        refreshSystemChrome()
     }
 
     func refreshSystemChrome() {
-        forcePhysicalFullScreen()
         setNeedsUpdateOfHomeIndicatorAutoHidden()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         setNeedsStatusBarAppearanceUpdate()
     }
 }
 
-/// 物理横屏全屏几何：解除 portrait bounds / scene 未旋转导致的中间小框
+/// 兼容旧几何工具（仅只读，不再用于强写 window）
 enum ScreenGeometry {
     static func physicalLandscapeBounds(for scene: UIWindowScene?) -> CGRect {
         if let scene {
             let b = scene.coordinateSpace.bounds
-            // scene bounds 已是当前方向；保证宽>=高（横屏）
             if b.width >= b.height {
                 return CGRect(x: 0, y: 0, width: b.width, height: b.height)
             }
@@ -229,7 +191,7 @@ enum ScreenGeometry {
     }
 }
 
-// MARK: - UIHostingController（SwiftUI 宿主同样声明全屏策略）
+// MARK: - UIHostingController
 
 final class RootHostingController<Content: View>: UIHostingController<Content> {
     override var prefersHomeIndicatorAutoHidden: Bool { true }
@@ -249,70 +211,21 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
         view.isOpaque = true
         view.clipsToBounds = false
         view.layer.cornerRadius = 0
-        view.layer.masksToBounds = false
         edgesForExtendedLayout = .all
         extendedLayoutIncludesOpaqueBars = true
-        additionalSafeAreaInsets = .zero
-        // iOS 16.4+：彻底关闭 Hosting 对 SwiftUI 的 safe area 注入
         if #available(iOS 16.4, *) {
             safeAreaRegions = []
         }
-        disableSafeAreaOnHostingViewTree()
-    }
-
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        // 根 Hosting 强行等于父视图物理全屏，解除中间圆角限宽框
-        if let superview = view.superview {
-            let target = superview.bounds
-            if view.frame != target {
-                view.frame = target
-            }
-        } else {
-            let target = ScreenGeometry.physicalLandscapeBounds(for: view.window?.windowScene)
-            view.frame = target
-        }
-        view.layer.cornerRadius = 0
-        additionalSafeAreaInsets = .zero
-        disableSafeAreaOnHostingViewTree()
-    }
-
-    override func viewSafeAreaInsetsDidChange() {
-        super.viewSafeAreaInsetsDidChange()
-        additionalSafeAreaInsets = .zero
-        disableSafeAreaOnHostingViewTree()
+        view.insetsLayoutMarginsFromSafeArea = false
+        view.preservesSuperviewLayoutMargins = false
+        view.layoutMargins = .zero
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        additionalSafeAreaInsets = .zero
-        disableSafeAreaOnHostingViewTree()
         setNeedsUpdateOfHomeIndicatorAutoHidden()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         setNeedsStatusBarAppearanceUpdate()
-    }
-
-    /// 去掉 UIHostingController 内部可能带的圆角/safe area 容器
-    private func disableSafeAreaOnHostingViewTree() {
-        view.insetsLayoutMarginsFromSafeArea = false
-        view.preservesSuperviewLayoutMargins = false
-        view.layoutMargins = .zero
-        func walk(_ v: UIView) {
-            v.insetsLayoutMarginsFromSafeArea = false
-            v.preservesSuperviewLayoutMargins = false
-            v.layoutMargins = .zero
-            v.layer.cornerRadius = 0
-            if v.clipsToBounds, v !== view {
-                // 仅清掉中间卡片式裁剪，保留 PlayerSurfaceView 自身 clips
-                if String(describing: type(of: v)).contains("Hosting")
-                    || v.backgroundColor == .black
-                    || v.backgroundColor == nil {
-                    // 不强制改所有子视图 clips，避免破坏播放层
-                }
-            }
-            for sub in v.subviews { walk(sub) }
-        }
-        walk(view)
     }
 }
 

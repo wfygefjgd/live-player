@@ -3,7 +3,7 @@ import AVKit
 import UIKit
 
 /// SwiftUI Edge-to-Edge 全屏播放页
-/// - 根节点强制物理屏宽高，双重 ignoresSafeArea 解开 Hosting 约束
+/// - 视频 ignoresSafeArea，不给小白条让高度
 /// - 仅浮动 OSD/提示：用 safeAreaInsets 抬高（不缩视频）
 struct ContentView: View {
     @EnvironmentObject private var vm: PlayerViewModel
@@ -13,38 +13,29 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            // 纯黑背景铺满物理屏
             Color.black
-                .edgesIgnoringSafeArea(.all)
                 .ignoresSafeArea()
 
-            // 视频视图：强制充满并忽略所有安全区域（可命中，手势层在上层）
             VideoPlayerView()
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-                .edgesIgnoringSafeArea(.all)
                 .ignoresSafeArea()
                 .zIndex(1)
 
-            // 手势交互层
             Color.clear
                 .contentShape(Rectangle())
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-                .edgesIgnoringSafeArea(.all)
                 .ignoresSafeArea()
                 .highPriorityGesture(longPressGesture())
                 .simultaneousGesture(doubleTapGesture())
                 .simultaneousGesture(playerDragGesture())
                 .zIndex(2)
 
-            // 浮动控制层
             floatingChrome()
                 .zIndex(5)
         }
-        // 标准自适应铺满，不写死宽高
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-        .edgesIgnoringSafeArea(.all)
         .ignoresSafeArea()
-        .background(Color.black.edgesIgnoringSafeArea(.all).ignoresSafeArea())
+        .background(Color.black.ignoresSafeArea())
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .defersSystemGestures(on: .all)
@@ -109,8 +100,9 @@ struct ContentView: View {
     @ViewBuilder
     private func floatingChrome() -> some View {
         GeometryReader { geo in
-            let bottom = max(geo.safeAreaInsets.bottom, 8)
-            let top = max(geo.safeAreaInsets.top, 8)
+            // 容器已强制 insets=0；OSD 用系统值或横屏兜底，避免贴边
+            let bottom = max(geo.safeAreaInsets.bottom, 21)
+            let top = max(geo.safeAreaInsets.top, 12)
 
             ZStack {
                 if vm.isBootstrapping {
@@ -167,7 +159,6 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-        .edgesIgnoringSafeArea(.all)
         .ignoresSafeArea()
         .allowsHitTesting(false)
     }
@@ -177,7 +168,7 @@ struct ContentView: View {
         root.setNeedsUpdateOfHomeIndicatorAutoHidden()
         root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         root.setNeedsStatusBarAppearanceUpdate()
-        (root as? FullScreenRootController)?.forcePhysicalFullScreen()
+        (root as? FullScreenRootController)?.refreshSystemChrome()
     }
 
     private func longPressGesture() -> some Gesture {

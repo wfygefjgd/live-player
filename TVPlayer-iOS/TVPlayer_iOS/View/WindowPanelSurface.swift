@@ -171,9 +171,11 @@ final class WindowPanelSurface {
     }
 }
 
-/// 侧栏 window 的 root：不抢 key
+/// 侧栏 window 的 root：不抢 key；声明与主界面一致的系统栏策略
 private final class PanelRootViewController: UIViewController {
     override var prefersStatusBarHidden: Bool { true }
+    override var prefersHomeIndicatorAutoHidden: Bool { true }
+    override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
 
     override func viewDidLoad() {
         super.viewDidLoad()
