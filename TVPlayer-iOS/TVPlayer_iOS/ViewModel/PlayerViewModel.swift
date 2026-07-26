@@ -710,8 +710,8 @@ final class PlayerViewModel: ObservableObject {
 
         func sortChannels(_ arr: [Channel]) -> [Channel] {
             arr.sorted { a, b in
-                let a1 = isCCTV1Channel(a)
-                let b1 = isCCTV1Channel(b)
+                let a1 = Self.isCCTV1Channel(a)
+                let b1 = Self.isCCTV1Channel(b)
                 if a1 != b1 { return a1 && !b1 }
                 let na = M3UParserService.cctvNumber(from: a.key)
                 let nb = M3UParserService.cctvNumber(from: b.key)
