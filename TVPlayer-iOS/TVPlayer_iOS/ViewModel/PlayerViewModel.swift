@@ -3,7 +3,8 @@ import AVKit
 import UIKit
 import MediaPlayer
 
-let DEFAULT_SOURCE_URL = "https://wfygefjgd.github.io/live-player/iptv-mirrors/validated-channels.json"
+// 默认 M3U 镜像（源管理/融合关闭时按 m3u 解析；已筛选 JSON 走 refreshChannelsFromRemote）
+let DEFAULT_SOURCE_URL = "https://wfygefjgd.github.io/live-player/iptv-mirrors/burningc4-chinese-iptv.m3u"
 
 private let CHANNEL_OSD_MS: UInt64 = 2_500_000_000
 private let INDICATOR_MS: UInt64 = 1_200_000_000
@@ -12,9 +13,12 @@ private let SILENT_AUDIO_GRACE_NS: UInt64 = 5_000_000_000  // 5s 静音切换冷
 private let AUTO_RECOVER_MAX_CHANNELS = 30                 // 连续自动切台上限
 private let PREFERRED_LINE_STABLE_NS: UInt64 = 5_000_000_000 // 稳定播放 5s 后记住好线路
 
-// 仅保留实测可用的预置源（2026-07 探测：404/403 已剔除）
+// 已筛选列表（JSON，303 台）专用地址，勿当 m3u 源塞进 PRESET
+let VALIDATED_CHANNELS_MIRROR =
+    "https://wfygefjgd.github.io/live-player/iptv-mirrors/validated-channels.json"
+
+// 仅 M3U 镜像预置源（GitHub Pages，无需代理）
 let PRESET_SOURCES: [(name: String, url: String)] = [
-    ("已筛选频道", "https://wfygefjgd.github.io/live-player/iptv-mirrors/validated-channels.json"),
     ("BurningC4 中国源", "https://wfygefjgd.github.io/live-player/iptv-mirrors/burningc4-chinese-iptv.m3u"),
     ("zbefine 2026 维护源", "https://wfygefjgd.github.io/live-player/iptv-mirrors/zbefine-iptv.m3u"),
     ("suxuang IPv6 源", "https://wfygefjgd.github.io/live-player/iptv-mirrors/suxuang-myiptv.m3u"),
@@ -42,6 +46,8 @@ final class PlayerViewModel: ObservableObject {
 
     // 智能融合相关（默认关闭：仅使用单一源）
     @Published var fusionMode: FusionMode = .off
+    /// 线路超时自动换线（默认关，便于先测镜像源）
+    @Published var lineTimeoutEnabled: Bool = false
     private let fusionEngine = SmartFusionEngine.shared
 
     let player = PlayerEngine()
@@ -85,6 +91,7 @@ final class PlayerViewModel: ObservableObject {
 
         setupFusionObserver()
         restoreFusionMode()
+        restoreLineTimeoutEnabled()
 
         player.onReady = { [weak self] in self?.onPlayerReady() }
         player.onError = { [weak self] in self?.onPlayerError() }
@@ -161,6 +168,7 @@ final class PlayerViewModel: ObservableObject {
 
         setupFusionObserver()
         restoreFusionMode()
+        restoreLineTimeoutEnabled()
         restoreSources()
 
         // 只加载频道，不启动播放器
@@ -462,7 +470,7 @@ final class PlayerViewModel: ObservableObject {
     func refreshChannelsFromRemote(silent: Bool = false) async -> Bool {
         // 主：Pages 镜像；备：raw GitHub
         let candidates = [
-            "https://wfygefjgd.github.io/live-player/iptv-mirrors/validated-channels.json",
+            VALIDATED_CHANNELS_MIRROR,
             "https://raw.githubusercontent.com/wfygefjgd/live-player/main/iptv-mirrors/validated-channels.json",
         ]
 
@@ -820,25 +828,25 @@ final class PlayerViewModel: ObservableObject {
         autoSwitchLine(hint: "线路失败", reason: .hardFail)
     }
     private func onStartupTimeout() {
-        guard !userPaused, !panelVisible else { return }
+        guard lineTimeoutEnabled, !userPaused, !panelVisible else { return }
         autoSwitchLine(hint: "线路超时无画面", reason: .startupTimeout)
     }
     private func onPlaybackStall() {
-        guard !userPaused, !panelVisible else { return }
+        guard lineTimeoutEnabled, !userPaused, !panelVisible else { return }
         autoSwitchLine(hint: "画面卡顿", reason: .stall)
     }
     private func onExtendedStall() {
-        guard !userPaused, !panelVisible else { return }
+        guard lineTimeoutEnabled, !userPaused, !panelVisible else { return }
         autoSwitchLine(hint: "画面持续卡顿", reason: .stall)
     }
 
     private func onHealthCritical(_ reason: String) {
-        guard !userPaused, !panelVisible else { return }
+        guard lineTimeoutEnabled, !userPaused, !panelVisible else { return }
         autoSwitchLine(hint: reason, reason: .healthCritical)
     }
 
     private func onLowSpeed(_ reason: String) {
-        guard !userPaused, !panelVisible else { return }
+        guard lineTimeoutEnabled, !userPaused, !panelVisible else { return }
         autoSwitchLine(hint: reason, reason: .lowSpeed)
     }
 
@@ -1202,5 +1210,22 @@ final class PlayerViewModel: ObservableObject {
         } else {
             fusionMode = .off
         }
+    }
+
+    /// 线路超时开关（默认关）
+    func setLineTimeoutEnabled(_ enabled: Bool) {
+        lineTimeoutEnabled = enabled
+        player.lineTimeoutEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "lineTimeoutEnabled")
+        showIndicator(enabled ? "已开启线路超时" : "已关闭线路超时")
+    }
+
+    func restoreLineTimeoutEnabled() {
+        if UserDefaults.standard.object(forKey: "lineTimeoutEnabled") != nil {
+            lineTimeoutEnabled = UserDefaults.standard.bool(forKey: "lineTimeoutEnabled")
+        } else {
+            lineTimeoutEnabled = false
+        }
+        player.lineTimeoutEnabled = lineTimeoutEnabled
     }
 }

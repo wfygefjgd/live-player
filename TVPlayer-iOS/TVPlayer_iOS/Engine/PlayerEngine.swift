@@ -67,6 +67,9 @@ final class PlayerEngine: ObservableObject {
     /// 网速过低/无网触发换线
     var onLowSpeed: ((String) -> Void)?
 
+    /// 线路超时/卡顿/低速自动检测（设置可关，默认开）
+    var lineTimeoutEnabled: Bool = true
+
     private var consecutiveStallCount = 0
     private var healthCheckTask: Task<Void, Never>?
 
@@ -135,10 +138,12 @@ final class PlayerEngine: ObservableObject {
             self.setupItemObserver(item, token: token)
             self.setupTimeObserver(token: token)
 
-            self.scheduleTask(named: "startup", token: token, timeout: Self.startupTimeoutNs) { [weak self] in
-                guard let self, !self.isReady, !self.hasRendered else { return }
-                self.cancelAllTasks()
-                self.onStartupTimeout?()
+            if self.lineTimeoutEnabled {
+                self.scheduleTask(named: "startup", token: token, timeout: Self.startupTimeoutNs) { [weak self] in
+                    guard let self, self.lineTimeoutEnabled, !self.isReady, !self.hasRendered else { return }
+                    self.cancelAllTasks()
+                    self.onStartupTimeout?()
+                }
             }
 
             // 强制播放，确保不会卡住
@@ -364,8 +369,10 @@ final class PlayerEngine: ObservableObject {
             WindowVideoSurface.shared.forceFullBleed(reason: "ready-protect")
         }
         scheduleSilentAudioCheck(token: token)
-        startHealthCheck(token: token)
-        startSpeedCheck(token: token)
+        if lineTimeoutEnabled {
+            startHealthCheck(token: token)
+            startSpeedCheck(token: token)
+        }
     }
 
     private func handleItemFailed(token: Int) {
@@ -404,11 +411,12 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func beginStallCheck() {
+        guard lineTimeoutEnabled else { return }
         guard !continuousStall else { return }
         continuousStall = true
         let token = playToken
         scheduleTask(named: "stall", token: token, timeout: Self.stallTimeoutNs) { [weak self] in
-            guard let self, self.playToken == token, self.stallWatchEnabled else { return }
+            guard let self, self.lineTimeoutEnabled, self.playToken == token, self.stallWatchEnabled else { return }
             // 有够用网速时暂缓换线（正在缓冲加载）
             let speed = self.sampleObservedSpeedKBps()
             if speed >= Self.minUsefulSpeedKBps {
@@ -483,12 +491,13 @@ final class PlayerEngine: ObservableObject {
     /// 综合健康度检查（ready 后启动；连续确认才切线）
     private func startHealthCheck(token: Int) {
         stopHealthCheck()
+        guard lineTimeoutEnabled else { return }
         consecutiveStallCount = 0
         healthCheckTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: Self.readyProtectNs)
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 800_000_000)
-                guard let self, self.playToken == token, !Task.isCancelled else { return }
+                guard let self, self.lineTimeoutEnabled, self.playToken == token, !Task.isCancelled else { return }
                 guard self.isReady, self.stallWatchEnabled else { continue }
                 if self.player.timeControlStatus == .paused {
                     self.consecutiveStallCount = 0
@@ -541,12 +550,13 @@ final class PlayerEngine: ObservableObject {
     /// 起播后即采样 accessLog；无网/无速快切，有速暂缓，低速持续再切
     private func startSpeedCheck(token: Int) {
         stopSpeedCheck()
+        guard lineTimeoutEnabled else { return }
         speedCheckTask = Task { [weak self] in
             // 起播阶段也采样（不必等 ready）
             try? await Task.sleep(nanoseconds: 600_000_000)
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 500_000_000)
-                guard let self, self.playToken == token, !Task.isCancelled else { return }
+                guard let self, self.lineTimeoutEnabled, self.playToken == token, !Task.isCancelled else { return }
                 if self.player.timeControlStatus == .paused { continue }
 
                 let speed = self.sampleObservedSpeedKBps()

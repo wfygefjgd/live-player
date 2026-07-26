@@ -48,6 +48,22 @@ struct SourceManagementSheet: View {
                 // 源列表
                 List {
                     Section {
+                        Toggle(isOn: Binding(
+                            get: { vm.lineTimeoutEnabled },
+                            set: { vm.setLineTimeoutEnabled($0) }
+                        )) {
+                            HStack {
+                                Image(systemName: "timer")
+                                    .foregroundColor(.orange)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("线路超时")
+                                    Text("关闭后不因超时/卡顿自动换线")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+
                         Button(action: { showFusionSettings = true }) {
                             HStack {
                                 Image(systemName: "wand.and.stars")
@@ -63,6 +79,8 @@ struct SourceManagementSheet: View {
                                     .foregroundColor(.secondary)
                             }
                         }
+                    } header: {
+                        Text("播放设置")
                     }
 
                     Section {
