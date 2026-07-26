@@ -3,8 +3,9 @@ import AVKit
 import UIKit
 import MediaPlayer
 
-// 默认 M3U 镜像（源管理/融合关闭时按 m3u 解析；已筛选 JSON 走 refreshChannelsFromRemote）
-let DEFAULT_SOURCE_URL = "https://wfygefjgd.github.io/live-player/iptv-mirrors/burningc4-chinese-iptv.m3u"
+// 默认 M3U 源：Guovin/iptv-api 每日两次自动采集+测速+筛选的产物。
+// raw 地址由 MirrorResolver 在拉取时自动扩展 jsDelivr/ghproxy 镜像，国内可直连
+let DEFAULT_SOURCE_URL = "https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u"
 
 private let CHANNEL_OSD_MS: UInt64 = 2_500_000_000
 private let INDICATOR_MS: UInt64 = 1_200_000_000
@@ -17,8 +18,11 @@ private let PREFERRED_LINE_STABLE_NS: UInt64 = 5_000_000_000 // 稳定播放 5s 
 let VALIDATED_CHANNELS_MIRROR =
     "https://wfygefjgd.github.io/live-player/iptv-mirrors/validated-channels.json"
 
-// 仅 M3U 镜像预置源（GitHub Pages，无需代理）
+// M3U 预置源（GitHub 系地址拉取时自动扩镜像，见 MirrorResolver）
 let PRESET_SOURCES: [(name: String, url: String)] = [
+    ("Guovin 自动筛选源（推荐）", "https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u"),
+    ("vbskycn 双栈源", "https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv4.m3u"),
+    ("fanmingming IPv6 源", "https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/ipv6.m3u"),
     ("BurningC4 中国源", "https://wfygefjgd.github.io/live-player/iptv-mirrors/burningc4-chinese-iptv.m3u"),
     ("zbefine 2026 维护源", "https://wfygefjgd.github.io/live-player/iptv-mirrors/zbefine-iptv.m3u"),
     ("suxuang IPv6 源", "https://wfygefjgd.github.io/live-player/iptv-mirrors/suxuang-myiptv.m3u"),
@@ -468,54 +472,61 @@ final class PlayerViewModel: ObservableObject {
     /// - Returns: 是否成功应用列表
     @discardableResult
     func refreshChannelsFromRemote(silent: Bool = false) async -> Bool {
-        // 主：Pages 镜像；备：raw GitHub
-        let candidates = [
-            VALIDATED_CHANNELS_MIRROR,
-            "https://raw.githubusercontent.com/wfygefjgd/live-player/main/iptv-mirrors/validated-channels.json",
-        ]
+        // Pages 原址 + jsDelivr/ghproxy/raw 镜像并发竞速（被墙域名会挂到超时，串行太慢）
+        let candidates = MirrorResolver.candidates(for: VALIDATED_CHANNELS_MIRROR)
 
-        for mirrorUrl in candidates {
-            guard let url = URL(string: mirrorUrl) else { continue }
-            do {
-                let (data, resp) = try await URLSession.shared.data(from: url)
-                if let http = resp as? HTTPURLResponse, http.statusCode >= 400 { continue }
-                let json = try JSONDecoder().decode(ValidatedChannelsResponse.self, from: data)
-                let newChannels = json.channels.map { ch in
-                    Channel(name: ch.name, group: ch.group, key: ch.name, urls: ch.urls)
+        let fetched: [Channel]? = await withTaskGroup(of: [Channel]?.self) { group in
+            for mirror in candidates {
+                group.addTask {
+                    guard let url = URL(string: mirror) else { return nil }
+                    let req = URLRequest(
+                        url: url,
+                        cachePolicy: .reloadIgnoringLocalCacheData,
+                        timeoutInterval: 12
+                    )
+                    guard let (data, resp) = try? await URLSession.shared.data(for: req) else { return nil }
+                    if let http = resp as? HTTPURLResponse, http.statusCode >= 400 { return nil }
+                    guard let json = try? JSONDecoder().decode(ValidatedChannelsResponse.self, from: data) else {
+                        return nil
+                    }
+                    let channels = json.channels.map { ch in
+                        Channel(name: ch.name, group: ch.group, key: ch.name, urls: ch.urls)
+                    }
+                    return channels.isEmpty ? nil : channels
                 }
-                guard !newChannels.isEmpty else { continue }
-
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    let prevKey = self.currentChannel?.key
-                    let applied = self.reputation.applyToChannels(newChannels)
-                    self.rawChannels = applied
-                    self.channels = self.applyRules(applied)
-                    self.storage.saveChannels(applied)
-                    self.isBootstrapping = false
-                    if let prevKey, let idx = self.channels.firstIndex(where: { $0.key == prevKey }) {
-                        self.currentIndex = idx
-                    } else {
-                        self.restoreLastChannelPosition()
-                    }
-                    if !silent {
-                        self.showIndicator("已加载 \(self.channels.count) 个已筛频道")
-                    }
-                    if !self.playbackStable || !self.player.isReady {
-                        self.playCurrent(showOSD: false, resetTried: true)
-                    }
-                }
-                return true
-            } catch {
-                continue
             }
+            for await result in group {
+                if let result {
+                    group.cancelAll()
+                    return result
+                }
+            }
+            return nil
+        }
+
+        guard let newChannels = fetched else {
+            if !silent { showIndicator("镜像列表暂不可用") }
+            return false
+        }
+
+        let prevKey = currentChannel?.key
+        let applied = reputation.applyToChannels(newChannels)
+        rawChannels = applied
+        channels = applyRules(applied)
+        storage.saveChannels(applied)
+        isBootstrapping = false
+        if let prevKey, let idx = channels.firstIndex(where: { $0.key == prevKey }) {
+            currentIndex = idx
+        } else {
+            restoreLastChannelPosition()
         }
         if !silent {
-            await MainActor.run { [weak self] in
-                self?.showIndicator("镜像列表暂不可用")
-            }
+            showIndicator("已加载 \(channels.count) 个已筛频道")
         }
-        return false
+        if !playbackStable || !player.isReady {
+            playCurrent(showOSD: false, resetTried: true)
+        }
+        return true
     }
 
     func buildCandidates() -> [String] {

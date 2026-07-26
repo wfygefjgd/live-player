@@ -172,7 +172,7 @@ final class SmartFusionEngine {
             for (index, url) in urls.enumerated() {
                 group.addTask {
                     do {
-                        let body = try await NetworkService.shared.fetch(url: url)
+                        let body = try await NetworkService.shared.fetchTextWithMirrors(url: url)
                         let parsed = M3UParserService.parse(body)
                         return (index, parsed)
                     } catch {

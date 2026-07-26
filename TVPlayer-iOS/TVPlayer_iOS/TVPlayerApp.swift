@@ -10,8 +10,14 @@ struct TVPlayerApp: App {
 
     var body: some Scene {
         WindowGroup {
+            // 隐藏小白条/延迟边缘手势必须挂在最外层：真正的 window rootViewController
+            // 是包裹 RootView 的 SwiftUI HostingController，内层 RootHostingController
+            // 的 prefersHomeIndicatorAutoHidden 等策略系统不会询问
             RootView(vm: vm)
                 .ignoresSafeArea(.all, edges: .all)
+                .statusBarHidden(true)
+                .persistentSystemOverlays(.hidden)
+                .defersSystemGestures(on: .all)
         }
     }
 }

@@ -142,6 +142,32 @@ final class NetworkService {
         return text
     }
 
+    /// 单一源 + 镜像竞速：GitHub 系地址自动展开镜像并发请求，任一候选返回可用文本即胜出。
+    /// 被墙域名常见表现是挂到超时而非快速失败，串行回退会拖慢启动，故并发。
+    func fetchTextWithMirrors(url: String) async throws -> String {
+        let candidates = MirrorResolver.candidates(for: url)
+        guard !candidates.isEmpty else { throw NetworkFetchError.invalidURL }
+        if candidates.count == 1 {
+            return try await fetch(url: candidates[0])
+        }
+        let text: String? = await withTaskGroup(of: String?.self) { group in
+            for candidate in candidates {
+                group.addTask {
+                    try? await self.fetch(url: candidate)
+                }
+            }
+            for await result in group {
+                if let result, !result.isEmpty {
+                    group.cancelAll()
+                    return result
+                }
+            }
+            return nil
+        }
+        guard let text else { throw NetworkFetchError.allFailed }
+        return text
+    }
+
     /// 所有候选源竞速：谁先解析出频道用谁
     func fetchWithCandidates(urls: [String]) async -> (channels: [Channel], errorMessage: String?) {
         guard !urls.isEmpty else {
@@ -157,7 +183,7 @@ final class NetworkService {
         var lastError: String?
         for url in urls {
             do {
-                let body = try await fetch(url: url)
+                let body = try await fetchTextWithMirrors(url: url)
                 let parsed = await parseOffMain(body)
                 if parsed.isEmpty {
                     lastError = NetworkFetchError.parseEmpty.errorDescription
@@ -179,7 +205,7 @@ final class NetworkService {
             for url in urls {
                 group.addTask {
                     do {
-                        let body = try await self.fetch(url: url)
+                        let body = try await self.fetchTextWithMirrors(url: url)
                         let parsed = await self.parseOffMain(body)
                         return parsed.isEmpty ? nil : parsed
                     } catch {

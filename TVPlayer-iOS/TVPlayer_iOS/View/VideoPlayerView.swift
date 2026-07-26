@@ -184,9 +184,17 @@ final class WindowVideoSurface {
             if #available(iOS 11.0, *) {
                 root.view.insetsLayoutMarginsFromSafeArea = false
             }
-            // 负向 additionalSafeArea：把系统 inset 顶掉，布局可延伸进小白条
+            // 负向 additionalSafeArea：把系统 inset 顶掉，布局可延伸进小白条。
+            // safeAreaInsets 已含 additionalSafeAreaInsets，须先还原系统值再取负，
+            // 否则会在 0 与 -系统值 之间来回翻转，画面被小白条反复上挤
             let si = root.view.safeAreaInsets
-            let neg = UIEdgeInsets(top: -si.top, left: -si.left, bottom: -si.bottom, right: -si.right)
+            let add = root.additionalSafeAreaInsets
+            let neg = UIEdgeInsets(
+                top: -(si.top - add.top),
+                left: -(si.left - add.left),
+                bottom: -(si.bottom - add.bottom),
+                right: -(si.right - add.right)
+            )
             if root.additionalSafeAreaInsets != neg {
                 root.additionalSafeAreaInsets = neg
             }
@@ -426,12 +434,14 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
     }
 
     private func applyZeroSafeArea() {
+        // safeAreaInsets 已含 additionalSafeAreaInsets，先还原系统值再取负（避免 0/-系统值 震荡）
         let inset = view.safeAreaInsets
+        let add = additionalSafeAreaInsets
         let target = UIEdgeInsets(
-            top: -inset.top,
-            left: -inset.left,
-            bottom: -inset.bottom,
-            right: -inset.right
+            top: -(inset.top - add.top),
+            left: -(inset.left - add.left),
+            bottom: -(inset.bottom - add.bottom),
+            right: -(inset.right - add.right)
         )
         if additionalSafeAreaInsets != target {
             additionalSafeAreaInsets = target
