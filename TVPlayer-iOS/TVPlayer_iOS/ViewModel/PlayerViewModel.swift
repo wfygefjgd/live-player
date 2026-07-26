@@ -92,11 +92,11 @@ final class PlayerViewModel: ObservableObject {
         player.onReady = { [weak self] in self?.onPlayerReady() }
         player.onError = { [weak self] in self?.onPlayerError() }
         player.onStartupTimeout = { [weak self] in self?.onStartupTimeout() }
-        // 移除快速卡顿检测，只保留扩展卡顿和健康度检测
-        // player.onPlaybackStall = { [weak self] in self?.onPlaybackStall() }
+        // 卡顿：timeControl waiting 超时 + 健康度扩展卡顿，双路径都要换线
+        player.onPlaybackStall = { [weak self] in self?.onPlaybackStall() }
         player.onSilentAudio = { [weak self] in self?.onSilentAudio() }
         player.onExtendedStall = { [weak self] in self?.onExtendedStall() }
-        player.onHealthCritical = { [weak self] reason in self?.onHealthCritical(reason) }  // 🆕 健康度危急回调
+        player.onHealthCritical = { [weak self] reason in self?.onHealthCritical(reason) }
 
         NetworkMonitor.shared.onSatisfied = { [weak self] in self?.onNetworkBecameAvailable() }
         NetworkMonitor.shared.onConnectionTypeChanged = { [weak self] type in
@@ -497,29 +497,69 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func restoreLastChannelPosition() {
-        // 优先默认选择CCTV，除非用户有明确的上次观看记录
+        // 有用户上次关闭时的频道 → 恢复；否则永远默认 CCTV-1
         let key = storage.loadLastChannelKey()
         if !key.isEmpty, let idx = channels.firstIndex(where: { $0.key == key }) {
-            // 用户有观看历史，恢复到上次的频道
             currentIndex = idx
             let si = storage.loadLastSourceIndex()
             currentSourceIndex = min(max(0, si), max(0, channels[idx].sourceCount - 1))
-        } else {
-            // 没有观看历史，默认选择 CCTV-1 或第一个 CCTV 频道
-            if let cctvIdx = channels.firstIndex(where: {
-                $0.name.contains("CCTV") || $0.name.contains("央视") || $0.name.contains("cctv")
-            }) {
-                currentIndex = cctvIdx
-            } else if let cctv1Idx = channels.firstIndex(where: {
-                $0.name.contains("CCTV1") || $0.name.contains("CCTV-1") || $0.name.contains("综合")
-            }) {
-                currentIndex = cctv1Idx
-            } else {
-                // 实在找不到 CCTV，才选择第一个频道
-                currentIndex = 0
-            }
-            currentSourceIndex = 0
+            return
         }
+        currentIndex = indexOfPreferredDefaultChannel()
+        currentSourceIndex = 0
+    }
+
+    /// 默认台：CCTV-1 / 综合 优先，再任意央视，否则 0
+    private func indexOfPreferredDefaultChannel() -> Int {
+        let preds: [(Channel) -> Bool] = [
+            { ch in
+                let n = ch.name.uppercased().replacingOccurrences(of: " ", with: "")
+                let k = ch.key.uppercased()
+                return n.contains("CCTV-1") || n.contains("CCTV1") || n.hasPrefix("CCTV1")
+                    || k == "CCTV1" || k == "CCTV-1" || k.hasPrefix("CCTV1")
+                    || (ch.name.contains("综合") && (n.contains("CCTV") || ch.name.contains("央视")))
+            },
+            { ch in
+                ch.name.uppercased().contains("CCTV") || ch.name.contains("央视") || ch.key.uppercased().contains("CCTV")
+            },
+        ]
+        for pred in preds {
+            if let i = channels.firstIndex(where: pred) { return i }
+        }
+        return 0
+    }
+
+    /// 与侧栏一致的浏览顺序（收藏→央视→…），上下滑/超时切台都按此序，避免「乱跳」
+    func browseOrderedChannels() -> [Channel] {
+        sections(search: "").flatMap(\.channels)
+    }
+
+    private func advanceChannel(delta: Int, userInitiated: Bool) {
+        if panelVisible { return }
+        let ordered = browseOrderedChannels()
+        guard !ordered.isEmpty else { return }
+        if userInitiated {
+            let now = Date()
+            if now.timeIntervalSince(lastChannelSwitchAt) < channelSwitchDebounceInterval { return }
+            lastChannelSwitchAt = now
+            autoRecoverChannelHops = 0
+        }
+        playbackStable = false
+        cooldownTask?.cancel()
+        autoSwitchState = .idle
+
+        let curKey = currentChannel?.key
+        let pos: Int = {
+            if let curKey, let i = ordered.firstIndex(where: { $0.key == curKey }) { return i }
+            return 0
+        }()
+        let next = ordered[(pos + delta + ordered.count) % ordered.count]
+        guard let idx = channels.firstIndex(where: { $0.key == next.key }) else { return }
+        currentIndex = idx
+        currentSourceIndex = 0
+        if userInitiated { panelVisible = false }
+        triedLineIndices.removeAll()
+        playCurrent(resetTried: true)
     }
 
     private func persistLastChannel() {
@@ -738,26 +778,31 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func onPlayerError() {
-        guard !userPaused else { return }
+        guard !userPaused, !panelVisible else { return }
         autoSwitchLine(hint: "线路失败", reason: .hardFail)
     }
     private func onStartupTimeout() {
-        guard !userPaused else { return }
+        guard !userPaused, !panelVisible else { return }
         autoSwitchLine(hint: "线路超时无画面", reason: .startupTimeout)
     }
+    private func onPlaybackStall() {
+        guard !userPaused, !panelVisible else { return }
+        autoSwitchLine(hint: "画面卡顿", reason: .stall)
+    }
     private func onExtendedStall() {
-        guard !userPaused else { return }
+        guard !userPaused, !panelVisible else { return }
         autoSwitchLine(hint: "画面持续卡顿", reason: .stall)
     }
 
     private func onHealthCritical(_ reason: String) {
-        guard !userPaused else { return }
+        guard !userPaused, !panelVisible else { return }
         autoSwitchLine(hint: reason, reason: .healthCritical)
     }
 
     // MARK: - 静音检测
 
     private func onSilentAudio() {
+        guard !panelVisible else { return }
         // 仅多线路 + 已稳定 + 仍无音轨时才切；HLS 起播慢选轨不误杀
         guard let ch = currentChannel, ch.sourceCount > 1 else { return }
         guard playbackStable, player.isReady else { return }
@@ -785,8 +830,10 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    /// 自动切线：仅确认坏线才切；同频道试完所有线路后切下一频道，直到出画
+    /// 自动切线：仅确认坏线才切；同频道试完所有线路后按浏览序切下一台
     private func autoSwitchLine(hint: String, reason: FailReason) {
+        // 侧栏操作中：禁止自动换线/换台，避免打断选台
+        if panelVisible { return }
         guard let ch = currentChannel else {
             showIndicator(hint)
             return
@@ -863,16 +910,10 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    /// 自动恢复用的切台（不受用户防抖影响）
+    /// 自动恢复切台：按侧栏浏览序下一台（非 raw 数组下标）
     private func autoAdvanceChannel() {
-        guard !channels.isEmpty else { return }
-        cooldownTask?.cancel()
-        autoSwitchState = .idle
-        currentIndex = (currentIndex + 1) % channels.count
-        currentSourceIndex = 0
-        panelVisible = false
-        triedLineIndices.removeAll()
-        playCurrent(resetTried: true)
+        guard !panelVisible else { return }
+        advanceChannel(delta: 1, userInitiated: false)
     }
 
     private func beginCooldown() {
@@ -889,40 +930,17 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func nextChannel() {
-        guard !channels.isEmpty else { return }
-        let now = Date()
-        if now.timeIntervalSince(lastChannelSwitchAt) < channelSwitchDebounceInterval {
-            return
-        }
-        lastChannelSwitchAt = now
-        autoRecoverChannelHops = 0
-        playbackStable = false
-        cooldownTask?.cancel()
-        currentIndex = (currentIndex + 1) % channels.count
-        currentSourceIndex = 0
-        panelVisible = false
-        autoSwitchState = .idle
-        playCurrent(resetTried: true)
+        advanceChannel(delta: 1, userInitiated: true)
     }
 
     func prevChannel() {
-        guard !channels.isEmpty else { return }
-        let now = Date()
-        if now.timeIntervalSince(lastChannelSwitchAt) < channelSwitchDebounceInterval {
-            return
-        }
-        lastChannelSwitchAt = now
-        autoRecoverChannelHops = 0
-        playbackStable = false
-        currentIndex = (currentIndex - 1 + channels.count) % channels.count
-        currentSourceIndex = 0
-        panelVisible = false
-        autoSwitchState = .idle
-        playCurrent(resetTried: true)
+        advanceChannel(delta: -1, userInitiated: true)
     }
 
     func selectChannel(_ ch: Channel) {
         guard let idx = channels.firstIndex(where: { $0.key == ch.key }) else { return }
+        // 取消进行中的自动恢复，避免选台后又被 hop 拉走
+        recoverGeneration += 1
         autoRecoverChannelHops = 0
         playbackStable = false
         currentIndex = idx
@@ -933,6 +951,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func switchSource(direction: Int) {
+        if panelVisible { return }
         guard let ch = currentChannel, ch.sourceCount > 1 else {
             if let ch = currentChannel, ch.sourceCount <= 1 {
                 showIndicator("当前频道只有一个来源")
@@ -940,6 +959,7 @@ final class PlayerViewModel: ObservableObject {
             }
             return
         }
+        recoverGeneration += 1
         autoSwitchState = .idle
         autoRecoverChannelHops = 0
         playbackStable = false

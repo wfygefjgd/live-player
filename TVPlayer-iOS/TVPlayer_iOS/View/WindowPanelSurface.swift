@@ -1,11 +1,11 @@
 import SwiftUI
 import UIKit
 
-/// Window 级侧边栏浮层 - 完全覆盖小白条区域
-/// 必须始终压在 WindowVideoSurface 之上，避免画面层 install 重排后被遮挡
+/// 侧边栏：独立 UIWindow，层级高于主界面，避免 confirmationDialog / sheet 被盖住
 final class WindowPanelSurface {
     static let shared = WindowPanelSurface()
 
+    private var overlayWindow: UIWindow?
     private let containerView = UIView(frame: .zero)
     private let maskView = UIView(frame: .zero)
     private var hostingController: UIHostingController<AnyView>?
@@ -16,10 +16,6 @@ final class WindowPanelSurface {
         maskView.backgroundColor = UIColor.black.withAlphaComponent(0.5)
         maskView.alpha = 0
         maskView.isUserInteractionEnabled = true
-        // 高于默认层级，避免被其它 window 子视图盖住
-        maskView.layer.zPosition = 9_000
-        containerView.layer.zPosition = 9_001
-
         containerView.backgroundColor = UIColor(white: 0.12, alpha: 0.98)
         containerView.clipsToBounds = false
         containerView.layer.shadowColor = UIColor.black.cgColor
@@ -51,15 +47,18 @@ final class WindowPanelSurface {
         NotificationCenter.default.post(name: .panelShouldClose, object: nil)
     }
 
+    /// 打开设置菜单前：先把侧栏降到主 window 下，避免盖住 confirmationDialog
+    func prepareForModalPresentation() {
+        hide(animated: false)
+    }
+
     func show() {
         if isVisible {
-            // 已显示时仍强制置顶 + 校正尺寸（防止被画面层 install 压住）
             ensureOnTop()
             return
         }
         isVisible = true
-        guard install() else {
-            // window 尚未就绪：短延迟重试
+        guard ensureOverlayWindow() else {
             isVisible = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
                 self?.show()
@@ -67,14 +66,15 @@ final class WindowPanelSurface {
             return
         }
 
-        guard let window = keyWindow() else { return }
-        let bounds = window.bounds
+        guard let win = overlayWindow else { return }
+        let bounds = win.bounds
         panelWidth = min(320, max(260, bounds.width * 0.42))
 
         containerView.frame = CGRect(x: -panelWidth, y: 0, width: panelWidth, height: bounds.height)
         maskView.frame = bounds
         maskView.alpha = 0
         hostingController?.view.frame = containerView.bounds
+        win.isHidden = false
 
         UIView.animate(withDuration: 0.32, delay: 0, usingSpringWithDamping: 0.88, initialSpringVelocity: 0.2, options: [.curveEaseOut, .allowUserInteraction]) {
             self.containerView.frame = CGRect(x: 0, y: 0, width: self.panelWidth, height: bounds.height)
@@ -82,75 +82,82 @@ final class WindowPanelSurface {
         }
     }
 
-    func hide() {
-        guard isVisible else { return }
-        isVisible = false
-
-        guard let window = keyWindow() else {
-            uninstall()
+    func hide(animated: Bool = true) {
+        guard isVisible else {
+            overlayWindow?.isHidden = true
             return
         }
-        let bounds = window.bounds
+        isVisible = false
+
+        let finish: () -> Void = {
+            self.maskView.removeFromSuperview()
+            self.containerView.removeFromSuperview()
+            self.overlayWindow?.isHidden = true
+        }
+
+        guard animated, let win = overlayWindow else {
+            finish()
+            return
+        }
+        let bounds = win.bounds
         UIView.animate(withDuration: 0.28, delay: 0, options: [.curveEaseIn, .allowUserInteraction]) {
             self.containerView.frame = CGRect(x: -self.panelWidth, y: 0, width: self.panelWidth, height: bounds.height)
             self.maskView.alpha = 0
         } completion: { _ in
-            if !self.isVisible {
-                self.uninstall()
-            }
+            if !self.isVisible { finish() }
         }
     }
 
-    /// 画面层每次 install 后调用：保证侧边栏仍在最顶层
     func ensureOnTop() {
         guard isVisible else { return }
-        _ = install()
-        guard let window = keyWindow() else { return }
-        let bounds = window.bounds
+        _ = ensureOverlayWindow()
+        guard let win = overlayWindow else { return }
+        let bounds = win.bounds
         panelWidth = min(320, max(260, bounds.width * 0.42))
         maskView.frame = bounds
-        // 展开状态保持 x=0
         if containerView.frame.origin.x >= -1 {
             containerView.frame = CGRect(x: 0, y: 0, width: panelWidth, height: bounds.height)
         }
         hostingController?.view.frame = containerView.bounds
-        window.bringSubviewToFront(maskView)
-        window.bringSubviewToFront(containerView)
+        win.bringSubviewToFront(maskView)
+        win.bringSubviewToFront(containerView)
+        win.isHidden = false
     }
 
     @discardableResult
-    private func install() -> Bool {
-        guard let window = keyWindow() else { return false }
-        let bounds = window.bounds
+    private func ensureOverlayWindow() -> Bool {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+            ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+        guard let scene else { return false }
 
-        if maskView.superview !== window {
+        if overlayWindow == nil || overlayWindow?.windowScene !== scene {
+            let win = UIWindow(windowScene: scene)
+            // 高于主界面，低于系统 alert 的典型层级；设置弹窗前会 hide
+            win.windowLevel = .alert - 1
+            win.backgroundColor = .clear
+            win.isHidden = true
+            overlayWindow = win
+        }
+
+        guard let win = overlayWindow else { return false }
+        let bounds = win.bounds.size.width > 1 ? win.bounds : scene.coordinateSpace.bounds
+        win.frame = bounds
+
+        if maskView.superview !== win {
             maskView.removeFromSuperview()
-            window.addSubview(maskView)
+            win.addSubview(maskView)
         }
-        maskView.frame = bounds
+        maskView.frame = win.bounds
 
-        if containerView.superview !== window {
+        if containerView.superview !== win {
             containerView.removeFromSuperview()
-            window.addSubview(containerView)
+            win.addSubview(containerView)
         }
-
-        window.bringSubviewToFront(maskView)
-        window.bringSubviewToFront(containerView)
+        win.bringSubviewToFront(maskView)
+        win.bringSubviewToFront(containerView)
         return true
-    }
-
-    private func uninstall() {
-        maskView.removeFromSuperview()
-        containerView.removeFromSuperview()
-    }
-
-    private func keyWindow() -> UIWindow? {
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        for scene in scenes where scene.activationState == .foregroundActive {
-            if let w = scene.windows.first(where: \.isKeyWindow) { return w }
-            if let w = scene.windows.first { return w }
-        }
-        return scenes.flatMap(\.windows).first
     }
 }
 

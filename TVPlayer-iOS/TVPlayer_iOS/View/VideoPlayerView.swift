@@ -28,7 +28,7 @@ final class WindowVideoSurface {
         host.clipsToBounds = false
         host.layer.zPosition = -1_000
         // 等比铺满，避免 .resize 拉伸变形
-        playerLayer.videoGravity = .resizeAspectFill
+        playerLayer.videoGravity = .resizeAspect
         playerLayer.backgroundColor = UIColor.black.cgColor
         playerLayer.isOpaque = true
         playerLayer.masksToBounds = false
@@ -114,7 +114,7 @@ final class WindowVideoSurface {
     func setPlayer(_ player: AVPlayer?) {
         boundPlayer = player
         playerLayer.player = player
-        playerLayer.videoGravity = .resizeAspectFill
+        playerLayer.videoGravity = .resizeAspect
         playerLayer.isHidden = false
         playerLayer.opacity = 1
         forceFullBleed(reason: "setPlayer")
@@ -198,35 +198,25 @@ final class WindowVideoSurface {
             window.sendSubviewToBack(host)
         }
 
-        // 强制物理全屏：可大于 window.bounds，盖住 Home Indicator 区域
+        // 物理全屏 + 略外扩，盖住 Home Indicator / 安全区黑边（小白条）
+        let bleed: CGFloat = 2
+        let bleedRect = full.insetBy(dx: -bleed, dy: -bleed)
         host.isHidden = false
         host.alpha = 1
         host.backgroundColor = .black
         host.clipsToBounds = false
         host.isUserInteractionEnabled = false
-        host.frame = full
-        host.bounds = CGRect(origin: .zero, size: full.size)
-        // 若 window 原点与 screen 不一致，仍对齐到 (0,0) 物理坐标
-        if window.bounds != full {
-            // 把 host 中心对齐到屏幕中心在 window 坐标系下的位置
-            let screen = window.windowScene?.screen ?? window.screen
-            let screenOriginInWindow = window.convert(CGPoint.zero, from: screen.coordinateSpace)
-            // convert from screen may fail on older API — fallback center
-            if full.width > window.bounds.width + 1 || full.height > window.bounds.height + 1 {
-                host.center = CGPoint(x: window.bounds.midX, y: window.bounds.midY)
-                host.bounds = CGRect(origin: .zero, size: full.size)
-            } else {
-                host.frame = CGRect(origin: .zero, size: full.size)
-            }
-            _ = screenOriginInWindow
-        }
+        host.frame = bleedRect
+        host.bounds = CGRect(origin: .zero, size: bleedRect.size)
+        host.center = CGPoint(x: window.bounds.midX, y: window.bounds.midY)
 
-        lastAppliedSize = full.size
+        lastAppliedSize = bleedRect.size
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        // 等比完整显示，不裁切（黑边可能出现在两侧/上下，但画面不丢）
         playerLayer.frame = host.bounds
-        playerLayer.videoGravity = .resizeAspectFill
+        playerLayer.videoGravity = .resizeAspect
         playerLayer.isHidden = false
         playerLayer.opacity = 1
         if playerLayer.player == nil {
@@ -234,7 +224,7 @@ final class WindowVideoSurface {
         }
         CATransaction.commit()
 
-        WindowPanelSurface.shared.ensureOnTop()
+        // 侧栏在独立 window，不依赖 ensureOnTop 抢主 window
 
         let heavy = reason.contains("active")
             || reason.contains("foreground")

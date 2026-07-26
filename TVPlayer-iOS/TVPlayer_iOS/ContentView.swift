@@ -98,11 +98,15 @@ struct ContentView: View {
             vm.startup()
             NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
 
-            // 设置 window 级侧边栏
             WindowPanelSurface.shared.setPanel(
                 AnyView(
                     ChannelListPanel(onShowSettings: {
-                        showSettingsMenu = true
+                        // 先降侧栏，再弹菜单，避免被盖住
+                        vm.panelVisible = false
+                        WindowPanelSurface.shared.prepareForModalPresentation()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            showSettingsMenu = true
+                        }
                     })
                     .environmentObject(vm)
                 ),
@@ -115,6 +119,10 @@ struct ContentView: View {
             } else {
                 WindowPanelSurface.shared.hide()
             }
+        }
+        .onChange(of: showSettingsMenu) { open in
+            // 菜单关闭后不自动开栏，由用户长按再开
+            if !open { /* keep panel closed */ }
         }
         .onReceive(NotificationCenter.default.publisher(for: .panelShouldClose)) { _ in
             withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
@@ -163,7 +171,9 @@ struct ContentView: View {
             Button("切换来源") {
                 vm.showSourceSheet = true
             }
-            Button("取消", role: .cancel) {}
+            Button("关闭", role: .cancel) {
+                showSettingsMenu = false
+            }
         }
         .then { base in
             if #available(iOS 17.0, *) {

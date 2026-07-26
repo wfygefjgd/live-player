@@ -10,11 +10,11 @@ final class PlayerEngine: ObservableObject {
     static let errorGraceNs: UInt64 = 1_500_000_000           // 1.5s 错误宽容
     static let silentAudioCheckNs: UInt64 = 8_000_000_000     // 8s 后再查静音（HLS 晚选轨）
     static let silentAudioPollIntervalNs: UInt64 = 1_200_000_000 // 1.2s 二次确认
-    static let progressStallThreshold: TimeInterval = 4.5     // 出画后进度停滞阈值
+    static let progressStallThreshold: TimeInterval = 3.5     // 出画后进度停滞阈值（更快发现冻屏）
 
-    // 根据网络类型动态调整卡顿阈值（偏保守，好线不轻易切）
+    // 卡顿等待：可感知冻屏后换线（WiFi 略快）
     static var stallTimeoutNs: UInt64 {
-        NetworkMonitor.shared.isWiFi ? 6_000_000_000 : 9_000_000_000
+        NetworkMonitor.shared.isWiFi ? 4_000_000_000 : 6_000_000_000
     }
 
     let player = AVPlayer()
@@ -450,8 +450,8 @@ final class PlayerEngine: ObservableObject {
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 guard let self, self.playToken == token, !Task.isCancelled else { return }
                 guard self.isReady, self.stallWatchEnabled else { continue }
-                // 用户暂停：绝不自动换线
-                if self.player.timeControlStatus == .paused || self.player.rate < 0.01 {
+                // 仅用户暂停跳过；waiting/rate=0 正是卡顿，必须继续检测
+                if self.player.timeControlStatus == .paused {
                     self.consecutiveStallCount = 0
                     continue
                 }
@@ -468,11 +468,11 @@ final class PlayerEngine: ObservableObject {
                     self.healthMonitor?.recordBufferEmpty()
                 }
 
-                // 连续 3 次确认卡顿（约 4.5s+）才切，短暂缓冲不切
+                // 连续 2 次确认卡顿（约 3s+）即切，冻屏更快响应
                 if self.isStalled() {
                     self.healthMonitor?.recordStall()
                     self.consecutiveStallCount += 1
-                    if self.consecutiveStallCount >= 3 {
+                    if self.consecutiveStallCount >= 2 {
                         self.consecutiveStallCount = 0
                         self.onExtendedStall?()
                         return
