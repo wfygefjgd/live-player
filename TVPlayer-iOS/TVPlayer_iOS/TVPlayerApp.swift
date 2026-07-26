@@ -79,6 +79,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         window.rootViewController = container
         self.window = window
         window.makeKeyAndVisible()
+        WindowVideoSurface.shared.setPlayer(viewModel.player.player)
+        WindowVideoSurface.shared.rebindPlayer()
         container.refreshSystemChrome()
     }
 

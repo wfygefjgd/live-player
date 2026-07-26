@@ -4,13 +4,16 @@ import UIKit
 import MediaPlayer
 
 // =============================================================================
-// Edge-to-Edge 全屏播放（最小稳妥方案）
+// v1.5.57：画面脱离 SwiftUI 布局
 //
-// - 容器 safeAreaInsets 强制 0：小白条不挤高度
-// - 子视图钉 superview 四边（不用 safeAreaLayoutGuide）
-// - 不每帧改 window.frame（避免中间小框 / 四周黑边）
-// - Home Indicator 仅 auto-hide 浮在画面上
-// - 视频 resizeAspect：完整画面，只允许两边比例黑边
+// 现象 1+4：中间小框四周黑 + 小白条顶起
+// 根因：VideoPlayerView 在 SwiftUI/Hosting 安全区内，被缩成中间卡片
+//
+// 做法：
+// - PlayerSurfaceView 钉在 FullScreenRootController.view 底层四边
+// - Hosting / ContentView 全透明，只叠手势与 OSD
+// - 视频不读 safe area，小白条只能浮在上面
+// - resizeAspect：完整画面，只允许两边比例黑边
 // =============================================================================
 
 // MARK: - 根容器：系统 safe area 不参与布局
@@ -19,7 +22,7 @@ final class SinkContainerView: UIView {
     override var safeAreaInsets: UIEdgeInsets { .zero }
 }
 
-// MARK: - UIKit：铺满 bounds 的 AVPlayer 层
+// MARK: - AVPlayer 画面层
 
 final class PlayerSurfaceView: UIView {
     private var boundPlayer: AVPlayer?
@@ -33,6 +36,7 @@ final class PlayerSurfaceView: UIView {
         backgroundColor = .black
         isOpaque = true
         clipsToBounds = true
+        isUserInteractionEnabled = false
         playerLayer.videoGravity = .resizeAspect
         playerLayer.backgroundColor = UIColor.black.cgColor
     }
@@ -62,47 +66,95 @@ final class PlayerSurfaceView: UIView {
     }
 }
 
-/// 兼容旧调用
+// MARK: - 全局画面宿主（钉在 root 底层，不进 SwiftUI）
+
 final class WindowVideoSurface {
     static let shared = WindowVideoSurface()
-    weak var surface: PlayerSurfaceView?
 
-    func setPlayer(_ player: AVPlayer?) { surface?.setPlayer(player) }
-    func rebindPlayer() { surface?.rebind() }
-    func forceFullBleed(reason: String = "") { surface?.rebind() }
-    func hardRemount(reason: String = "") { surface?.rebind() }
-    func install(reason: String = "") { surface?.rebind() }
+    private(set) var surface: PlayerSurfaceView?
+    private weak var container: UIView?
+    private var boundPlayer: AVPlayer?
+
+    private init() {}
+
+    /// 安装到 root 容器底层，约束钉四边（不用 safeAreaLayoutGuide）
+    func install(in container: UIView) {
+        self.container = container
+        let surface: PlayerSurfaceView
+        if let existing = self.surface {
+            surface = existing
+        } else {
+            surface = PlayerSurfaceView(frame: container.bounds)
+            self.surface = surface
+        }
+
+        if surface.superview !== container {
+            surface.removeFromSuperview()
+            surface.translatesAutoresizingMaskIntoConstraints = false
+            container.insertSubview(surface, at: 0)
+            NSLayoutConstraint.activate([
+                surface.topAnchor.constraint(equalTo: container.topAnchor),
+                surface.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+                surface.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                surface.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            ])
+        } else {
+            container.sendSubviewToBack(surface)
+        }
+
+        if let p = boundPlayer {
+            surface.setPlayer(p)
+        }
+    }
+
+    func setPlayer(_ player: AVPlayer?) {
+        boundPlayer = player
+        if let surface {
+            surface.setPlayer(player)
+        } else if let container {
+            install(in: container)
+            surface?.setPlayer(player)
+        }
+    }
+
+    func rebindPlayer() {
+        if let container, surface?.superview !== container {
+            install(in: container)
+        }
+        if let p = boundPlayer {
+            surface?.setPlayer(p)
+        } else {
+            surface?.rebind()
+        }
+        // 确保在最底
+        if let surface, let container = surface.superview {
+            container.sendSubviewToBack(surface)
+        }
+    }
+
+    func forceFullBleed(reason: String = "") { rebindPlayer() }
+    func hardRemount(reason: String = "") { rebindPlayer() }
+    func install(reason: String = "") {
+        if let container { install(in: container) }
+    }
 }
 
-// MARK: - SwiftUI 包装
+// MARK: - SwiftUI：仅绑定 player，不承载画面尺寸
 
 struct VideoPlayerView: UIViewRepresentable {
     @EnvironmentObject private var vm: PlayerViewModel
 
-    func makeUIView(context: Context) -> PlayerSurfaceView {
-        let v = PlayerSurfaceView()
-        v.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        v.setContentHuggingPriority(.defaultLow, for: .vertical)
-        v.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        v.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
-        WindowVideoSurface.shared.surface = v
-        v.setPlayer(vm.player.player)
+    func makeUIView(context: Context) -> UIView {
+        let v = UIView()
+        v.backgroundColor = .clear
+        v.isUserInteractionEnabled = false
+        WindowVideoSurface.shared.setPlayer(vm.player.player)
         return v
     }
 
-    func updateUIView(_ uiView: PlayerSurfaceView, context: Context) {
-        WindowVideoSurface.shared.surface = uiView
-        uiView.setPlayer(vm.player.player)
+    func updateUIView(_ uiView: UIView, context: Context) {
+        WindowVideoSurface.shared.setPlayer(vm.player.player)
         _ = vm.playerLayoutEpoch
-    }
-
-    /// 跟随父级 proposal，不写死 UIScreen 尺寸（避免方向错误锁死小框）
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: PlayerSurfaceView, context: Context) -> CGSize? {
-        guard let w = proposal.width, let h = proposal.height,
-              w.isFinite, h.isFinite, w > 0, h > 0 else {
-            return nil
-        }
-        return CGSize(width: w, height: h)
     }
 }
 
@@ -136,18 +188,23 @@ final class FullScreenRootController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .black
-        view.isOpaque = true
+        // 透明：让底层视频露出来；视频层自己是黑底
+        view.backgroundColor = .clear
+        view.isOpaque = false
         view.clipsToBounds = false
         edgesForExtendedLayout = .all
         extendedLayoutIncludesOpaqueBars = true
 
+        // 1) 视频钉 root 底层
+        WindowVideoSurface.shared.install(in: view)
+
+        // 2) SwiftUI 叠在上面（透明）
         addChild(hosted)
         hosted.view.translatesAutoresizingMaskIntoConstraints = false
-        hosted.view.backgroundColor = .black
+        hosted.view.backgroundColor = .clear
+        hosted.view.isOpaque = false
         hosted.view.clipsToBounds = false
         view.addSubview(hosted.view)
-        // 钉 view 四边，不用 safeAreaLayoutGuide
         NSLayoutConstraint.activate([
             hosted.view.topAnchor.constraint(equalTo: view.topAnchor),
             hosted.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -155,15 +212,27 @@ final class FullScreenRootController: UIViewController {
             hosted.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
         ])
         hosted.didMove(toParent: self)
+
+        if let surface = WindowVideoSurface.shared.surface {
+            view.sendSubviewToBack(surface)
+        }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        if let surface = WindowVideoSurface.shared.surface {
+            view.sendSubviewToBack(surface)
+        }
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        WindowVideoSurface.shared.rebindPlayer()
         refreshSystemChrome()
     }
 
-    /// 兼容旧调用：只刷新系统栏策略，不改 window.frame
     func forcePhysicalFullScreen() {
+        WindowVideoSurface.shared.rebindPlayer()
         refreshSystemChrome()
     }
 
@@ -174,7 +243,6 @@ final class FullScreenRootController: UIViewController {
     }
 }
 
-/// 兼容旧几何工具（仅只读，不再用于强写 window）
 enum ScreenGeometry {
     static func physicalLandscapeBounds(for scene: UIWindowScene?) -> CGRect {
         if let scene {
@@ -191,7 +259,7 @@ enum ScreenGeometry {
     }
 }
 
-// MARK: - UIHostingController
+// MARK: - UIHostingController（透明叠层）
 
 final class RootHostingController<Content: View>: UIHostingController<Content> {
     override var prefersHomeIndicatorAutoHidden: Bool { true }
@@ -207,8 +275,8 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .black
-        view.isOpaque = true
+        view.backgroundColor = .clear
+        view.isOpaque = false
         view.clipsToBounds = false
         view.layer.cornerRadius = 0
         edgesForExtendedLayout = .all

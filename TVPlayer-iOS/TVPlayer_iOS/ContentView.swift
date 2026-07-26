@@ -2,9 +2,9 @@ import SwiftUI
 import AVKit
 import UIKit
 
-/// SwiftUI Edge-to-Edge 全屏播放页
-/// - 视频 ignoresSafeArea，不给小白条让高度
-/// - 仅浮动 OSD/提示：用 safeAreaInsets 抬高（不缩视频）
+/// SwiftUI 叠层：透明，画面在 UIKit root 底层
+/// - 仅浮动 OSD/提示抬高
+/// - 手势与频道面板仍在此层
 struct ContentView: View {
     @EnvironmentObject private var vm: PlayerViewModel
 
@@ -13,13 +13,15 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            Color.black
+            // 透明：露出 root 底层 PlayerSurfaceView
+            Color.clear
                 .ignoresSafeArea()
 
+            // 仅绑定 AVPlayer，不参与画面尺寸
             VideoPlayerView()
-                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-                .ignoresSafeArea()
-                .zIndex(1)
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .allowsHitTesting(false)
 
             Color.clear
                 .contentShape(Rectangle())
@@ -35,12 +37,14 @@ struct ContentView: View {
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .ignoresSafeArea()
-        .background(Color.black.ignoresSafeArea())
+        .background(Color.clear)
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .defersSystemGestures(on: .all)
         .onAppear {
             vm.startup()
+            WindowVideoSurface.shared.setPlayer(vm.player.player)
+            WindowVideoSurface.shared.rebindPlayer()
             refreshImmersiveChrome()
             WindowPanelSurface.shared.setPanel(
                 AnyView(
