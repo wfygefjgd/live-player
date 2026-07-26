@@ -11,21 +11,23 @@ struct ContentView: View {
     @State private var numberInputTask: Task<Void, Never>?
 
     var body: some View {
+        // 最外层：无 padding / cornerRadius / 固定宽度，强制物理全屏
         ZStack {
             Color.black
-                .ignoresSafeArea()
+                .ignoresSafeArea(.all)
 
             // —— 视频：Edge-to-Edge，禁止 Safe Area 缩进 ——
             VideoPlayerView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .ignoresSafeArea()
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                .ignoresSafeArea(.all)
                 .allowsHitTesting(false)
                 .zIndex(1)
 
             // 手势全屏
             Color.clear
                 .contentShape(Rectangle())
-                .ignoresSafeArea()
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                .ignoresSafeArea(.all)
                 .highPriorityGesture(longPressGesture())
                 .simultaneousGesture(doubleTapGesture())
                 .simultaneousGesture(playerDragGesture())
@@ -35,9 +37,9 @@ struct ContentView: View {
             floatingChrome()
                 .zIndex(5)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea()
-        .background(Color.black.ignoresSafeArea())
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+        .ignoresSafeArea(.all)
+        .background(Color.black.ignoresSafeArea(.all))
         // SwiftUI：隐藏状态栏 + 系统叠层 + 延迟边缘手势
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)

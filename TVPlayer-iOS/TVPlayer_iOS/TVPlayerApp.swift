@@ -41,9 +41,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         if let window, rootContainer != nil {
             if let scene {
                 window.windowScene = scene
-                window.frame = scene.coordinateSpace.bounds
+                window.frame = ScreenGeometry.physicalLandscapeBounds(for: scene)
             }
             window.makeKeyAndVisible()
+            rootContainer?.forcePhysicalFullScreen()
             return
         }
 
@@ -54,29 +55,36 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             ContentView()
                 .environmentObject(viewModel)
                 .preferredColorScheme(.dark)
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                .ignoresSafeArea(.all)
                 .statusBarHidden(true)
                 .persistentSystemOverlays(.hidden)
                 .defersSystemGestures(on: .all)
         )
         let hosting = RootHostingController(rootView: rootView)
+        hosting.additionalSafeAreaInsets = .zero
         let container = FullScreenRootController(hosting: hosting)
         self.rootContainer = container
 
         let resolvedScene = scene
             ?? application.connectedScenes.compactMap({ $0 as? UIWindowScene }).first
 
+        // 横屏物理全屏：避免启动时仍是 portrait bounds 导致中间小框+左右大黑边
+        let fullBounds = ScreenGeometry.physicalLandscapeBounds(for: resolvedScene)
         let window: UIWindow
         if let resolvedScene {
             window = UIWindow(windowScene: resolvedScene)
-            window.frame = resolvedScene.coordinateSpace.bounds
+            window.frame = fullBounds
         } else {
-            window = UIWindow(frame: UIScreen.main.bounds)
+            window = UIWindow(frame: fullBounds)
         }
         window.backgroundColor = .black
         window.isOpaque = true
+        window.clipsToBounds = false
         window.rootViewController = container
         self.window = window
         window.makeKeyAndVisible()
+        container.forcePhysicalFullScreen()
     }
 
     private func setupAudioSession() {
@@ -155,16 +163,27 @@ final class SceneDelegate: NSObject, UIWindowSceneDelegate {
             app.installMainWindow(application: UIApplication.shared, scene: windowScene)
         } else if app.window?.windowScene !== windowScene {
             app.window?.windowScene = windowScene
-            app.window?.frame = windowScene.coordinateSpace.bounds
+            app.window?.frame = ScreenGeometry.physicalLandscapeBounds(for: windowScene)
             app.window?.makeKeyAndVisible()
         }
+        (app.window?.rootViewController as? FullScreenRootController)?.forcePhysicalFullScreen()
     }
 
     func sceneDidBecomeActive(_ scene: UIScene) {
+        if let windowScene = scene as? UIWindowScene,
+           let app = UIApplication.shared.delegate as? AppDelegate {
+            app.window?.frame = ScreenGeometry.physicalLandscapeBounds(for: windowScene)
+            (app.window?.rootViewController as? FullScreenRootController)?.forcePhysicalFullScreen()
+        }
         WindowVideoSurface.shared.rebindPlayer()
     }
 
     func sceneWillEnterForeground(_ scene: UIScene) {
+        if let windowScene = scene as? UIWindowScene,
+           let app = UIApplication.shared.delegate as? AppDelegate {
+            app.window?.frame = ScreenGeometry.physicalLandscapeBounds(for: windowScene)
+            (app.window?.rootViewController as? FullScreenRootController)?.forcePhysicalFullScreen()
+        }
         WindowVideoSurface.shared.rebindPlayer()
     }
 }

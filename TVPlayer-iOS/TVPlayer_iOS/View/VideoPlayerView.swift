@@ -41,7 +41,8 @@ final class PlayerSurfaceView: UIView {
         backgroundColor = .black
         isOpaque = true
         clipsToBounds = true
-        playerLayer.videoGravity = .resizeAspectFill
+        // 保持原比例，不裁切、不拉伸
+        playerLayer.videoGravity = .resizeAspect
         playerLayer.backgroundColor = UIColor.black.cgColor
     }
 
@@ -52,20 +53,22 @@ final class PlayerSurfaceView: UIView {
         playerLayer.player = player
         playerLayer.isHidden = false
         playerLayer.opacity = 1
-        playerLayer.videoGravity = .resizeAspectFill
+        playerLayer.videoGravity = .resizeAspect
         setNeedsLayout()
     }
 
     func rebind() {
         guard let p = boundPlayer else { return }
         if playerLayer.player !== p { playerLayer.player = p }
-        playerLayer.videoGravity = .resizeAspectFill
-        // layer 随 bounds 自动布局；无需按 safeArea 缩 frame
+        playerLayer.videoGravity = .resizeAspect
+        setNeedsLayout()
+        layoutIfNeeded()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        playerLayer.videoGravity = .resizeAspectFill
+        // layerClass=AVPlayerLayer：layer 即 self.layer，尺寸随 view.bounds，勿改 layer.frame
+        playerLayer.videoGravity = .resizeAspect
     }
 }
 
@@ -88,6 +91,11 @@ struct VideoPlayerView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PlayerSurfaceView {
         let v = PlayerSurfaceView()
+        // 允许在 SwiftUI 布局中横向/纵向完全拉伸铺满
+        v.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        v.setContentHuggingPriority(.defaultLow, for: .vertical)
+        v.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        v.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         WindowVideoSurface.shared.surface = v
         v.setPlayer(vm.player.player)
         return v
@@ -97,6 +105,13 @@ struct VideoPlayerView: UIViewRepresentable {
         WindowVideoSurface.shared.surface = uiView
         uiView.setPlayer(vm.player.player)
         _ = vm.playerLayoutEpoch
+    }
+
+    // 不声明固定 intrinsic size，交给父级 .frame(maxWidth/maxHeight: .infinity)
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: PlayerSurfaceView, context: Context) -> CGSize? {
+        let w = proposal.width ?? UIScreen.main.bounds.width
+        let h = proposal.height ?? UIScreen.main.bounds.height
+        return CGSize(width: w, height: h)
     }
 }
 
@@ -132,41 +147,85 @@ final class FullScreenRootController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = .black
         view.isOpaque = true
+        view.clipsToBounds = false
+        // 解除系统圆角/限高限宽对子树的裁剪影响
+        additionalSafeAreaInsets = .zero
 
         // 内容延伸到系统栏后面（不要用 safeAreaLayoutGuide 包播放器）
         edgesForExtendedLayout = .all
         extendedLayoutIncludesOpaqueBars = true
 
         addChild(hosted)
-        hosted.view.translatesAutoresizingMaskIntoConstraints = false
+        // 用 frame 布局，避免 Auto Layout 被 safe area 约束带偏
+        hosted.view.translatesAutoresizingMaskIntoConstraints = true
+        hosted.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         hosted.view.backgroundColor = .black
+        hosted.view.clipsToBounds = false
         view.addSubview(hosted.view)
-
-        // 钉死物理四边 = Edge-to-Edge（禁止 safeAreaLayoutGuide）
-        NSLayoutConstraint.activate([
-            hosted.view.topAnchor.constraint(equalTo: view.topAnchor),
-            hosted.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            hosted.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            hosted.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-        ])
+        hosted.view.frame = view.bounds
         hosted.didMove(toParent: self)
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        forcePhysicalFullScreen()
         refreshSystemChrome()
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        // 保证子树仍铺满，不被系统临时 inset 带偏
+        forcePhysicalFullScreen()
+    }
+
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        // 拒绝系统 inset 把根容器挤成中间小框
+        additionalSafeAreaInsets = .zero
+        forcePhysicalFullScreen()
+    }
+
+    /// 横屏下强制 window / root / host 等于物理全屏尺寸
+    func forcePhysicalFullScreen() {
+        let target = ScreenGeometry.physicalLandscapeBounds(for: view.window?.windowScene)
+        if let window = view.window, window.bounds.size != target.size || window.frame.origin != .zero {
+            window.frame = target
+        }
+        if view.bounds.size != target.size {
+            view.frame = CGRect(origin: .zero, size: target.size)
+            view.bounds = CGRect(origin: .zero, size: target.size)
+        }
         hosted.view.frame = view.bounds
+        hosted.view.bounds = CGRect(origin: .zero, size: view.bounds.size)
+        additionalSafeAreaInsets = .zero
+        if let hosting = hosted as? UIHostingController<AnyView> {
+            hosting.additionalSafeAreaInsets = .zero
+        }
+        hosted.additionalSafeAreaInsets = .zero
     }
 
     func refreshSystemChrome() {
+        forcePhysicalFullScreen()
         setNeedsUpdateOfHomeIndicatorAutoHidden()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         setNeedsStatusBarAppearanceUpdate()
+    }
+}
+
+/// 物理横屏全屏几何：解除 portrait bounds / scene 未旋转导致的中间小框
+enum ScreenGeometry {
+    static func physicalLandscapeBounds(for scene: UIWindowScene?) -> CGRect {
+        if let scene {
+            let b = scene.coordinateSpace.bounds
+            // scene bounds 已是当前方向；保证宽>=高（横屏）
+            if b.width >= b.height {
+                return CGRect(x: 0, y: 0, width: b.width, height: b.height)
+            }
+            return CGRect(x: 0, y: 0, width: b.height, height: b.width)
+        }
+        let s = UIScreen.main.bounds
+        let w = max(s.width, s.height)
+        let h = min(s.width, s.height)
+        return CGRect(x: 0, y: 0, width: w, height: h)
     }
 }
 
@@ -188,16 +247,39 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
         super.viewDidLoad()
         view.backgroundColor = .black
         view.isOpaque = true
+        view.clipsToBounds = false
         edgesForExtendedLayout = .all
         extendedLayoutIncludesOpaqueBars = true
+        additionalSafeAreaInsets = .zero
         // iOS 16.4+：不让 Hosting 把 safe area 强加给 SwiftUI 内容
         if #available(iOS 16.4, *) {
             safeAreaRegions = []
         }
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // 根 Hosting 强行等于父视图物理全屏，解除中间圆角限宽框
+        if let superview = view.superview {
+            let target = superview.bounds
+            if view.frame != target {
+                view.frame = target
+            }
+        } else {
+            let target = ScreenGeometry.physicalLandscapeBounds(for: view.window?.windowScene)
+            view.frame = target
+        }
+        additionalSafeAreaInsets = .zero
+    }
+
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        additionalSafeAreaInsets = .zero
+    }
+
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        additionalSafeAreaInsets = .zero
         setNeedsUpdateOfHomeIndicatorAutoHidden()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         setNeedsStatusBarAppearanceUpdate()
