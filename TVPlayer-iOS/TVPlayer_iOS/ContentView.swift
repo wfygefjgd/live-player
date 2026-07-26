@@ -72,12 +72,6 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
             cancelNumberInput()
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
-            vm.resumeIfAppropriate()
-            vm.onAppBecameActive()
-            WindowVideoSurface.shared.rebindPlayer()
-            refreshImmersiveChrome()
-        }
         .onReceive(NotificationCenter.default.publisher(for: .tvPlayerRemotePlay)) { _ in vm.resume() }
         .onReceive(NotificationCenter.default.publisher(for: .tvPlayerRemotePause)) { _ in vm.pause() }
         .onReceive(NotificationCenter.default.publisher(for: .tvPlayerRemoteNext)) { _ in vm.nextChannel() }

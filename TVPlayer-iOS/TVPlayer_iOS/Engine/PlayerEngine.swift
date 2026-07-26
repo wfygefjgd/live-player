@@ -189,7 +189,6 @@ final class PlayerEngine: ObservableObject {
         cancelAllTasks()
         stopHealthCheck()
         stopSpeedCheck()
-        cancellables.removeAll()
         player.replaceCurrentItem(with: nil)
         isPlaying = false
         isReady = false
