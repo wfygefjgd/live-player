@@ -291,7 +291,37 @@ struct VideoPlayerView: UIViewRepresentable {
     }
 }
 
-// MARK: - 主 UI 根：全透明容器
+// MARK: - 零 Safe Area 容器 View（用户：被挤的是容器，不是画面）
+
+/// 强制 safeAreaInsets = 0，容器可沉到物理底边，不给 Home Indicator 留位
+final class SinkContainerView: UIView {
+    override var safeAreaInsets: UIEdgeInsets { .zero }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isOpaque = false
+        clipsToBounds = false
+        insetsLayoutMarginsFromSafeArea = false
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
+/// 容器下沉：frame 钉死 window.bounds（物理全屏）
+private func sinkContainerFrame(_ view: UIView) {
+    guard let window = view.window else { return }
+    let target = window.bounds
+    guard target.width > 1, target.height > 1 else { return }
+    if view.frame.size != target.size || abs(view.frame.origin.x) > 0.5 || abs(view.frame.origin.y) > 0.5 {
+        view.frame = target
+        view.bounds = CGRect(origin: .zero, size: target.size)
+    }
+    window.backgroundColor = .clear
+    window.isOpaque = false
+}
+
+// MARK: - 主 UI 根：容器下沉到最底
 
 final class FullScreenRootController: UIViewController {
     private let hosted: UIViewController
@@ -302,6 +332,11 @@ final class FullScreenRootController: UIViewController {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 用零 safeArea 的容器 view，而不是系统默认 UIView
+    override func loadView() {
+        view = SinkContainerView(frame: UIScreen.main.bounds)
+    }
 
     override var prefersHomeIndicatorAutoHidden: Bool { true }
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
@@ -316,31 +351,26 @@ final class FullScreenRootController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        // 容器透明（用户方案）：底下露出 window 最底层的画面 host
         view.backgroundColor = .clear
         view.isOpaque = false
         view.clipsToBounds = false
         edgesForExtendedLayout = .all
         extendedLayoutIncludesOpaqueBars = true
-        additionalSafeAreaInsets = .zero
         view.insetsLayoutMarginsFromSafeArea = false
 
         addChild(hosted)
-        hosted.view.translatesAutoresizingMaskIntoConstraints = false
+        hosted.view.translatesAutoresizingMaskIntoConstraints = true
+        hosted.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         hosted.view.backgroundColor = .clear
         hosted.view.isOpaque = false
+        hosted.view.frame = view.bounds
         view.addSubview(hosted.view)
-        NSLayoutConstraint.activate([
-            hosted.view.topAnchor.constraint(equalTo: view.topAnchor),
-            hosted.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            hosted.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            hosted.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-        ])
         hosted.didMove(toParent: self)
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        sinkSelf()
         refreshSystemChrome()
         WindowVideoSurface.shared.forceFullBleed(reason: "root-appear")
     }
@@ -348,22 +378,38 @@ final class FullScreenRootController: UIViewController {
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
         super.viewWillTransition(to: size, with: coordinator)
         coordinator.animate(alongsideTransition: { _ in
+            self.sinkSelf()
             WindowVideoSurface.shared.forceFullBleed(reason: "transition")
         }, completion: { _ in
+            self.sinkSelf()
             WindowVideoSurface.shared.forceFullBleed(reason: "transition-end")
         })
     }
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
+        // 系统 inset 变化：容器再下沉（SinkContainerView 已强制 insets=0）
+        sinkSelf()
         refreshSystemChrome()
-        // safeArea 变了也不让位：再钉全屏
         WindowVideoSurface.shared.forceFullBleed(reason: "safeArea")
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        sinkSelf()
+        hosted.view.frame = view.bounds
         WindowVideoSurface.shared.forceFullBleed(reason: "root-layout")
+    }
+
+    private func sinkSelf() {
+        // 容器下沉到 window 最底铺满（不依赖负 additionalSafeArea，避免震荡）
+        additionalSafeAreaInsets = .zero
+        sinkContainerFrame(view)
+        if let window = view.window, window.rootViewController === self {
+            view.frame = window.bounds
+            view.bounds = CGRect(origin: .zero, size: window.bounds.size)
+        }
+        hosted.view.frame = view.bounds
     }
 
     func refreshSystemChrome() {
@@ -401,10 +447,20 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        if let superview = view.superview {
+            view.frame = superview.bounds
+        }
         setNeedsUpdateOfHomeIndicatorAutoHidden()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         setNeedsStatusBarAppearanceUpdate()
         WindowVideoSurface.shared.forceFullBleed(reason: "host-appear")
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        if let superview = view.superview {
+            view.frame = superview.bounds
+        }
     }
 }
 
