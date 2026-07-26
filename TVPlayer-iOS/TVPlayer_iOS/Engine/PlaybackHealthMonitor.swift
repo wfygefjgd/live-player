@@ -192,10 +192,9 @@ final class PlaybackHealthMonitor {
         }
 
         // 检查播放器音量
-        if player.volume < 0.01 {
-            return .silent
-        }
-
+        // AVPlayer.volume is a user mute/volume setting, not evidence that
+        // the source has no decoded audio. Do not switch lines when the user
+        // has muted playback locally.
         return .healthy
     }
 

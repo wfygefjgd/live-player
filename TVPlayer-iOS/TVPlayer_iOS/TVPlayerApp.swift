@@ -71,10 +71,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 .statusBarHidden(true)
                 .persistentSystemOverlays(.hidden)
                 .defersSystemGestures(on: .all)
-                .background(Color.black)
+                // The video layer lives directly in the window. Keep the
+                // hosting view transparent so it cannot cover the AVPlayerLayer.
+                .background(Color.clear)
         )
         let rootController = RootHostingController(rootView: rootView)
-        rootController.view.backgroundColor = .black
+        rootController.view.backgroundColor = .clear
 
         let window = UIWindow(frame: UIScreen.main.bounds)
         window.backgroundColor = .black

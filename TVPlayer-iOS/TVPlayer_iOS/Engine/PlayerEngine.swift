@@ -310,7 +310,7 @@ final class PlayerEngine: ObservableObject {
                     self.lastItemTime = time
                 }
 
-                if !self.hasRendered && time > .zero && self.hasVideoTrackPresent() {
+                if !self.hasRendered && time > .zero && self.hasVideoFrameEvidence() {
                     self.hasRendered = true
                 }
 
@@ -345,13 +345,13 @@ final class PlayerEngine: ObservableObject {
 
         scheduleTask(named: "confirmReady", token: token, timeout: 800_000_000) { [weak self] in
             guard let self, self.playToken == token else { return }
-            if self.hasRendered || self.lastTimeProgressAt != .distantPast {
+            if self.hasVideoFrameEvidence() {
                 self.markTrulyReady(token: token)
                 return
             }
             self.scheduleTask(named: "confirmReady2", token: token, timeout: 1_500_000_000) { [weak self] in
                 guard let self, self.playToken == token else { return }
-                if self.hasRendered || self.lastTimeProgressAt != .distantPast {
+                if self.hasVideoFrameEvidence() {
                     self.markTrulyReady(token: token)
                 }
                 // 仍无进度：保留 startup 超时触发换线，避免假 READY 卡住
@@ -361,6 +361,9 @@ final class PlayerEngine: ObservableObject {
 
     private func markTrulyReady(token: Int) {
         guard playToken == token else { return }
+        // Audio-only streams can advance AVPlayer's clock and report
+        // readyToPlay. Do not expose them as a healthy video channel.
+        guard hasVideoFrameEvidence() else { return }
         cancelTask(named: "startup")
         cancelTask(named: "confirmReady")
         cancelTask(named: "confirmReady2")
@@ -508,6 +511,21 @@ final class PlayerEngine: ObservableObject {
             return true
         }
         return !item.asset.tracks(withMediaType: .video).isEmpty
+    }
+
+    /// Evidence that decoded video exists, rather than only an advancing
+    /// audio/live clock. presentationSize becomes valid once AVFoundation has
+    /// received a video sample; isReadyForDisplay is reported separately by
+    /// WindowVideoSurface and sets hasRendered immediately when available.
+    private func hasVideoFrameEvidence() -> Bool {
+        if hasRendered { return true }
+        guard let item = player.currentItem,
+              item.presentationSize.width > 1,
+              item.presentationSize.height > 1,
+              lastTimeProgressAt != .distantPast else {
+            return false
+        }
+        return hasVideoTrackPresent()
     }
 
     // MARK: - Private — Health Monitoring
