@@ -10,20 +10,16 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            // 容器透明：真实画面在 window 最底层 host，SwiftUI 只负责手势/OSD
-            Color.clear
-                .ignoresSafeArea(.all, edges: .all)
+            // 方案 A：黑底 + 画面在 safe area 内（给小白条让路）
+            Color.black
 
             VideoPlayerView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .ignoresSafeArea(.all, edges: .all)
                 .allowsHitTesting(false)
-                .opacity(0.01)
                 .zIndex(1)
 
             // 手势交互层（长按优先于拖动，避免侧边栏弹不出）
             Color.clear
-                .ignoresSafeArea(.all, edges: .all)
                 .contentShape(Rectangle())
                 .onTapGesture {
                     // 单击：无角标模式下不做事（避免误触）；面板关闭时保持干净画面
@@ -88,13 +84,10 @@ struct ContentView: View {
 
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.clear)
-        .ignoresSafeArea(.all, edges: .all)
-        .persistentSystemOverlays(.hidden)
-        .defersSystemGestures(on: .all)
+        .background(Color.black)
+        // 方案 A：不 ignoresSafeArea，整体在安全区内，给 Home Indicator 让路
         .onAppear {
             vm.startup()
-            NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
 
             WindowPanelSurface.shared.setPanel(
                 AnyView(
@@ -130,14 +123,7 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             vm.resumeIfAppropriate()
             vm.onAppBecameActive()
-            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-               let root = windowScene.windows.first?.rootViewController {
-                root.setNeedsUpdateOfHomeIndicatorAutoHidden()
-                root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
-            }
-            WindowVideoSurface.shared.forceFullBleed(reason: "app-active")
             WindowVideoSurface.shared.rebindPlayer()
-            NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
         }
         .onReceive(NotificationCenter.default.publisher(for: .tvPlayerRemotePlay)) { _ in
             vm.resume()

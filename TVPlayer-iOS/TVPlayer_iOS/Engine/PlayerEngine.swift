@@ -176,7 +176,6 @@ final class PlayerEngine: ObservableObject {
         player.rate = 1.0
         isPlaying = true
         WindowVideoSurface.shared.rebindPlayer()
-        WindowVideoSurface.shared.forceFullBleed(reason: "engine-resume")
     }
 
     func stop() {
@@ -376,16 +375,12 @@ final class PlayerEngine: ObservableObject {
         player.rate = 1.0
         isPlaying = true
         onReady?()
-        // 出画后强制重绑画面层，消除「有声无画 / 被小白条裁切」
-        NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
         WindowVideoSurface.shared.rebindPlayer()
-        WindowVideoSurface.shared.forceFullBleed(reason: "player-ready")
 
         stallWatchEnabled = false
         scheduleTask(named: "readyProtect", token: token, timeout: Self.readyProtectNs) { [weak self] in
             guard let self, self.playToken == token else { return }
             self.stallWatchEnabled = true
-            WindowVideoSurface.shared.forceFullBleed(reason: "ready-protect")
         }
         scheduleSilentAudioCheck(token: token)
         if lineTimeoutEnabled {

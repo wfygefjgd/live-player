@@ -171,24 +171,14 @@ final class WindowPanelSurface {
     }
 }
 
-/// 侧栏 window 的 root：声明隐藏 Home Indicator，且不成为 key
+/// 侧栏 window 的 root：不抢 key
 private final class PanelRootViewController: UIViewController {
-    override var prefersHomeIndicatorAutoHidden: Bool { true }
-    override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
     override var prefersStatusBarHidden: Bool { true }
-    override var childForHomeIndicatorAutoHidden: UIViewController? { nil }
-    override var childForScreenEdgesDeferringSystemGestures: UIViewController? { nil }
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .clear
         view.isOpaque = false
-    }
-
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        setNeedsUpdateOfHomeIndicatorAutoHidden()
-        setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
     }
 }
 

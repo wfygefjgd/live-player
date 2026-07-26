@@ -254,8 +254,6 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func onAppBecameActive() {
-        // 只恢复播放，画面层已锁定物理全屏，不再 remount 风暴
-        WindowVideoSurface.shared.forceFullBleed(reason: "app-active")
         WindowVideoSurface.shared.rebindPlayer()
         if channels.isEmpty {
             retryLoadSources()
@@ -286,7 +284,6 @@ final class PlayerViewModel: ObservableObject {
 
     func bumpLayoutForRemount() {
         bumpPlayerLayout()
-        WindowVideoSurface.shared.forceFullBleed(reason: "vm-pin")
         WindowVideoSurface.shared.rebindPlayer()
     }
 
@@ -839,7 +836,6 @@ final class PlayerViewModel: ObservableObject {
         userPaused = false
         if !indicatorText.isEmpty { showIndicator("") }
         bumpPlayerLayout()
-        WindowVideoSurface.shared.forceFullBleed(reason: "player-ready")
         WindowVideoSurface.shared.rebindPlayer()
         updateNowPlaying()
         UIApplication.shared.isIdleTimerDisabled = true
@@ -1157,7 +1153,6 @@ final class PlayerViewModel: ObservableObject {
         bumpPlayerLayout()
         updateNowPlaying()
         WindowVideoSurface.shared.rebindPlayer()
-        WindowVideoSurface.shared.forceFullBleed(reason: "resume-fg")
     }
 
     func noteInterruptionBegan() {

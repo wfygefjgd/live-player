@@ -8,12 +8,8 @@ struct ChannelListPanel: View {
     var onShowSettings: (() -> Void)?
 
     var body: some View {
-        GeometryReader { geo in
+        GeometryReader { _ in
             VStack(spacing: 0) {
-                // 🆕 安全区域顶部占位，确保工具栏不被遮挡
-                Color.clear
-                    .frame(height: geo.safeAreaInsets.top > 0 ? geo.safeAreaInsets.top : 0)
-
                 // 顶部工具栏：设置按钮 + 搜索框
                 HStack(spacing: 12) {
                     // 设置按钮
