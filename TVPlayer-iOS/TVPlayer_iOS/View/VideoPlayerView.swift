@@ -133,14 +133,20 @@ final class WindowVideoSurface {
         }
         playerLayer.isHidden = false
         playerLayer.opacity = 1
+        playerLayer.videoGravity = .resize
         playerLayer.setNeedsDisplay()
         host.setNeedsLayout()
         host.layoutIfNeeded()
-        // 再钉一次 frame，防止 layer 卡在旧 bounds
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        playerLayer.frame = host.bounds
-        CATransaction.commit()
+        // 不把 layer 撑满 host（host 有 bleed）；保持 forceFullBleed 设的 video 矩形
+        if lastAppliedSize.width > 1, lastAppliedSize.height > 1 {
+            let ox = (host.bounds.width - lastAppliedSize.width) / 2
+            let oy = (host.bounds.height - lastAppliedSize.height) / 2
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            playerLayer.frame = CGRect(x: ox, y: oy, width: lastAppliedSize.width, height: lastAppliedSize.height)
+            playerLayer.videoGravity = .resize
+            CATransaction.commit()
+        }
     }
 
     func cleanup() {
@@ -198,28 +204,33 @@ final class WindowVideoSurface {
             window.sendSubviewToBack(host)
         }
 
-        // 物理全屏 + 大外扩，强制盖住 Home Indicator / 小白条
-        let bleed: CGFloat = 24
-        let bleedRect = full.insetBy(dx: -bleed, dy: -bleed)
+        // host 略外扩盖小白条（黑底）；画面层严格等于物理屏 + 只拉伸不裁切
+        let bleed: CGFloat = 12
+        let hostRect = full.insetBy(dx: -bleed, dy: -bleed)
         host.isHidden = false
         host.alpha = 1
         host.backgroundColor = .black
         host.clipsToBounds = false
         host.isUserInteractionEnabled = false
-        host.bounds = CGRect(origin: .zero, size: bleedRect.size)
+        host.bounds = CGRect(origin: .zero, size: hostRect.size)
         host.center = CGPoint(x: window.bounds.midX, y: window.bounds.midY)
         host.frame = CGRect(
-            x: window.bounds.midX - bleedRect.width / 2,
-            y: window.bounds.midY - bleedRect.height / 2,
-            width: bleedRect.width,
-            height: bleedRect.height
+            x: window.bounds.midX - hostRect.width / 2,
+            y: window.bounds.midY - hostRect.height / 2,
+            width: hostRect.width,
+            height: hostRect.height
         )
 
-        lastAppliedSize = bleedRect.size
+        lastAppliedSize = full.size
 
+        // 画面：铺满物理屏，强制拉伸(.resize)；不跟 host 一起外扩，避免「又拉又裁」
+        let videoOrigin = CGPoint(
+            x: (hostRect.width - full.width) / 2,
+            y: (hostRect.height - full.height) / 2
+        )
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        playerLayer.frame = host.bounds
+        playerLayer.frame = CGRect(origin: videoOrigin, size: full.size)
         playerLayer.videoGravity = .resize
         playerLayer.isHidden = false
         playerLayer.opacity = 1
@@ -317,14 +328,9 @@ private final class DisplayLinkProxy: NSObject {
 private final class TouchThroughView: UIView {
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? { nil }
 
+    // 不在 layout 里把 AVPlayerLayer 撑满 bounds（会破坏「只拉伸不外扩裁切」）
     override func layoutSubviews() {
         super.layoutSubviews()
-        if let layer = layer.sublayers?.compactMap({ $0 as? AVPlayerLayer }).first {
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            layer.frame = bounds
-            CATransaction.commit()
-        }
     }
 }
 

@@ -103,19 +103,28 @@ final class PlayerViewModel: ObservableObject {
         restoreSources()
         reputation.prune()
 
-        // ① 缓存 / Bundle 立刻出画（信誉排序跳过已知坏线）
-        // ② 后台静默刷新融合，不打断已稳定播放
+        // ① 缓存 / Bundle 预筛列表立刻出画
+        // ② 后台拉 GitHub 镜像预筛列表（主路径）
+        // ③ 镜像失败再走融合兜底（不再一上来全量塞列表）
         if applyQuickStartChannels() {
-            loadChannels(force: true, silent: true, preferActiveOnly: false)
+            Task { [weak self] in
+                await self?.refreshChannelsFromRemote(silent: true)
+            }
         } else {
             isBootstrapping = true
-            bootstrapMessage = "正在加载频道列表..."
+            bootstrapMessage = "正在加载已筛选频道..."
             indicatorText = ""
-            beginBootstrapLoad()
+            Task { [weak self] in
+                guard let self else { return }
+                let ok = await self.refreshChannelsFromRemote(silent: false)
+                if !ok, self.channels.isEmpty {
+                    self.beginBootstrapLoad()
+                }
+            }
         }
     }
 
-    /// 快速启动：用户缓存优先于 Bundle 内置，避免覆盖融合结果
+    /// 快速启动：用户缓存 → Bundle 预筛列表
     @discardableResult
     private func applyQuickStartChannels() -> Bool {
         let cached = storage.loadChannels()
@@ -447,39 +456,58 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    // MARK: - 从远程刷新频道
-    func refreshChannelsFromRemote() async {
-        let mirrorUrl = "https://ghfast.top/raw.githubusercontent.com/wfygefjgd/live-player/main/TVPlayer-iOS/scripts/validated-channels.json"
+    // MARK: - 从远程刷新「已筛选」频道列表（GitHub Pages 镜像）
+    /// - Returns: 是否成功应用列表
+    @discardableResult
+    func refreshChannelsFromRemote(silent: Bool = false) async -> Bool {
+        // 主：Pages 镜像；备：raw GitHub
+        let candidates = [
+            "https://wfygefjgd.github.io/live-player/iptv-mirrors/validated-channels.json",
+            "https://raw.githubusercontent.com/wfygefjgd/live-player/main/iptv-mirrors/validated-channels.json",
+        ]
 
-        guard let url = URL(string: mirrorUrl) else {
-            await MainActor.run {
-                showIndicator("刷新失败：URL 无效")
+        for mirrorUrl in candidates {
+            guard let url = URL(string: mirrorUrl) else { continue }
+            do {
+                let (data, resp) = try await URLSession.shared.data(from: url)
+                if let http = resp as? HTTPURLResponse, http.statusCode >= 400 { continue }
+                let json = try JSONDecoder().decode(ValidatedChannelsResponse.self, from: data)
+                let newChannels = json.channels.map { ch in
+                    Channel(name: ch.name, group: ch.group, key: ch.name, urls: ch.urls)
+                }
+                guard !newChannels.isEmpty else { continue }
+
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    let prevKey = self.currentChannel?.key
+                    let applied = self.reputation.applyToChannels(newChannels)
+                    self.rawChannels = applied
+                    self.channels = self.applyRules(applied)
+                    self.storage.saveChannels(applied)
+                    self.isBootstrapping = false
+                    if let prevKey, let idx = self.channels.firstIndex(where: { $0.key == prevKey }) {
+                        self.currentIndex = idx
+                    } else {
+                        self.restoreLastChannelPosition()
+                    }
+                    if !silent {
+                        self.showIndicator("已加载 \(self.channels.count) 个已筛频道")
+                    }
+                    if !self.playbackStable || !self.player.isReady {
+                        self.playCurrent(showOSD: false, resetTried: true)
+                    }
+                }
+                return true
+            } catch {
+                continue
             }
-            return
         }
-
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            let json = try JSONDecoder().decode(ValidatedChannelsResponse.self, from: data)
-
-            let newChannels = json.channels.map { ch in
-                Channel(name: ch.name, group: ch.group, key: ch.name, urls: ch.urls)
-            }
-
+        if !silent {
             await MainActor.run { [weak self] in
-                guard let self else { return }
-                self.rawChannels = newChannels
-                self.channels = self.applyRules(newChannels)
-                self.storage.saveChannels(newChannels)
-                self.restoreLastChannelPosition()
-                self.showIndicator("✓ 已刷新 \(self.channels.count) 个频道")
-                self.playCurrent(showOSD: false, resetTried: true)
-            }
-        } catch {
-            await MainActor.run {
-                showIndicator("刷新失败：\(error.localizedDescription)")
+                self?.showIndicator("镜像列表暂不可用")
             }
         }
+        return false
     }
 
     func buildCandidates() -> [String] {
