@@ -8,12 +8,50 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
     var window: UIWindow?
     private var viewModel: PlayerViewModel?
+    private weak var rootContainer: FullScreenRootController?
 
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        let viewModel = PlayerViewModel()
+        setupAudioSession()
+        setupRemoteCommands()
+        // scene 可能尚未就绪：先建，再在 scene 回调里绑 windowScene
+        installMainWindow(application: application)
+        return true
+    }
+
+    func application(
+        _ application: UIApplication,
+        configurationForConnecting connectingSceneSession: UISceneSession,
+        options: UIScene.ConnectionOptions
+    ) -> UISceneConfiguration {
+        let config = UISceneConfiguration(name: "Default Configuration", sessionRole: connectingSceneSession.role)
+        config.delegateClass = SceneDelegate.self
+        return config
+    }
+
+    func application(
+        _ application: UIApplication,
+        supportedInterfaceOrientationsFor window: UIWindow?
+    ) -> UIInterfaceOrientationMask {
+        .landscape
+    }
+
+    func installMainWindow(application: UIApplication, scene: UIWindowScene? = nil) {
+        // 已有正确 scene 的 window 则只刷新，避免重复创建
+        if let window, let rootContainer, scene == nil || window.windowScene === scene {
+            if let scene, window.windowScene == nil {
+                window.windowScene = scene
+                window.frame = scene.coordinateSpace.bounds
+            }
+            window.makeKeyAndVisible()
+            rootContainer.refreshSystemChrome()
+            WindowVideoSurface.shared.forceFullBleed(reason: "reinstall-skip")
+            return
+        }
+
+        let viewModel = self.viewModel ?? PlayerViewModel()
         self.viewModel = viewModel
 
         let rootView = AnyView(
@@ -24,39 +62,50 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 .persistentSystemOverlays(.hidden)
                 .defersSystemGestures(on: .all)
                 .background(Color.clear)
+                .ignoresSafeArea(.all, edges: .all)
         )
-        let rootController = RootHostingController(rootView: rootView)
-        rootController.view.backgroundColor = .clear
-        rootController.view.isOpaque = false
-        rootController.view.clipsToBounds = false
-        rootController.additionalSafeAreaInsets = .zero
+        let hosting = RootHostingController(rootView: rootView)
+        hosting.view.backgroundColor = .clear
+        hosting.view.isOpaque = false
+        let container = FullScreenRootController(hosting: hosting)
+        self.rootContainer = container
 
-        // 必须绑定 UIWindowScene，否则 bounds/safeArea 与物理屏脱节，小白条会顶画面
+        let resolvedScene = scene
+            ?? application.connectedScenes.compactMap({ $0 as? UIWindowScene }).first
         let window: UIWindow
-        if let scene = application.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
-            window = UIWindow(windowScene: scene)
-            window.frame = scene.coordinateSpace.bounds
+        if let resolvedScene {
+            if let existing = self.window, existing.windowScene == nil || existing.windowScene === resolvedScene {
+                existing.windowScene = resolvedScene
+                existing.frame = resolvedScene.coordinateSpace.bounds
+                existing.rootViewController = container
+                existing.backgroundColor = .black
+                existing.clipsToBounds = false
+                self.window = existing
+                existing.makeKeyAndVisible()
+            } else {
+                let w = UIWindow(windowScene: resolvedScene)
+                w.frame = resolvedScene.coordinateSpace.bounds
+                w.backgroundColor = .black
+                w.clipsToBounds = false
+                w.rootViewController = container
+                self.window = w
+                w.makeKeyAndVisible()
+            }
         } else {
-            window = UIWindow(frame: UIScreen.main.bounds)
+            let w = self.window ?? UIWindow(frame: UIScreen.main.bounds)
+            w.backgroundColor = .black
+            w.clipsToBounds = false
+            w.rootViewController = container
+            self.window = w
+            w.makeKeyAndVisible()
         }
-        window.backgroundColor = .black
-        window.clipsToBounds = false
-        window.rootViewController = rootController
-        self.window = window
-        window.makeKeyAndVisible()
 
-        setupAudioSession()
-        setupRemoteCommands()
-
+        container.refreshSystemChrome()
         WindowVideoSurface.shared.forceFullBleed(reason: "launch")
-        return true
-    }
-
-    func application(
-        _ application: UIApplication,
-        supportedInterfaceOrientationsFor window: UIWindow?
-    ) -> UIInterfaceOrientationMask {
-        .landscape
+        DispatchQueue.main.async {
+            container.refreshSystemChrome()
+            WindowVideoSurface.shared.forceFullBleed(reason: "launch-async")
+        }
     }
 
     private func setupAudioSession() {
@@ -94,20 +143,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
-        refreshWindows()
-        WindowVideoSurface.shared.forceFullBleed(reason: "app-active")
-        WindowVideoSurface.shared.rebindPlayer()
+        refreshChromeAndVideo(reason: "app-active")
         viewModel?.resumeIfAppropriate()
         viewModel?.onAppBecameActive()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            WindowVideoSurface.shared.forceFullBleed(reason: "app-active-delay")
-            WindowVideoSurface.shared.rebindPlayer()
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            WindowVideoSurface.shared.forceFullBleed(reason: "app-active-delay2")
-            WindowVideoSurface.shared.rebindPlayer()
-        }
-        NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
     }
 
     func applicationWillResignActive(_ application: UIApplication) {
@@ -119,27 +157,26 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {
-        refreshWindows()
-        WindowVideoSurface.shared.forceFullBleed(reason: "foreground")
-        WindowVideoSurface.shared.rebindPlayer()
+        refreshChromeAndVideo(reason: "foreground")
         viewModel?.resumeIfAppropriate()
         viewModel?.onAppBecameActive()
-        NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
     }
 
     func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
         URLCache.shared.removeAllCachedResponses()
     }
 
-    private func refreshWindows() {
+    func refreshChromeAndVideo(reason: String) {
+        // 确保主 window 仍是 key（侧栏 overlay 绝不能抢 key）
+        if let window, !window.isKeyWindow {
+            window.makeKeyAndVisible()
+        }
+        rootContainer?.refreshSystemChrome()
         for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) {
-            for window in scene.windows {
+            for window in scene.windows where window.windowLevel <= .normal {
                 window.backgroundColor = .black
                 window.clipsToBounds = false
                 if let root = window.rootViewController {
-                    root.view.backgroundColor = .clear
-                    root.view.isOpaque = false
-                    root.view.clipsToBounds = false
                     root.additionalSafeAreaInsets = .zero
                     root.setNeedsUpdateOfHomeIndicatorAutoHidden()
                     root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
@@ -147,6 +184,46 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 }
             }
         }
+        WindowVideoSurface.shared.forceFullBleed(reason: reason)
+        WindowVideoSurface.shared.rebindPlayer()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            self.rootContainer?.refreshSystemChrome()
+            WindowVideoSurface.shared.forceFullBleed(reason: "\(reason)-delay")
+            WindowVideoSurface.shared.rebindPlayer()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            self.rootContainer?.refreshSystemChrome()
+            WindowVideoSurface.shared.forceFullBleed(reason: "\(reason)-delay2")
+        }
+        NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
+    }
+}
+
+/// Scene 就绪时把 window 绑到正确的 UIWindowScene（小白条/safeArea 依赖这个）
+final class SceneDelegate: NSObject, UIWindowSceneDelegate {
+    func scene(
+        _ scene: UIScene,
+        willConnectTo session: UISceneSession,
+        options connectionOptions: UIScene.ConnectionOptions
+    ) {
+        guard let windowScene = scene as? UIWindowScene else { return }
+        guard let app = UIApplication.shared.delegate as? AppDelegate else { return }
+        if app.window == nil || app.window?.windowScene == nil {
+            app.installMainWindow(application: UIApplication.shared, scene: windowScene)
+        } else if app.window?.windowScene !== windowScene {
+            app.window?.windowScene = windowScene
+            app.window?.frame = windowScene.coordinateSpace.bounds
+            app.window?.makeKeyAndVisible()
+        }
+        app.refreshChromeAndVideo(reason: "scene-connect")
+    }
+
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        (UIApplication.shared.delegate as? AppDelegate)?.refreshChromeAndVideo(reason: "scene-active")
+    }
+
+    func sceneWillEnterForeground(_ scene: UIScene) {
+        (UIApplication.shared.delegate as? AppDelegate)?.refreshChromeAndVideo(reason: "scene-foreground")
     }
 }
 

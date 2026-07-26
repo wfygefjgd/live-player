@@ -74,11 +74,15 @@ final class WindowPanelSurface {
         maskView.frame = bounds
         maskView.alpha = 0
         hostingController?.view.frame = containerView.bounds
+        // 不 makeKey：保持主 window 为 key，Home Indicator 策略不丢
         win.isHidden = false
 
         UIView.animate(withDuration: 0.32, delay: 0, usingSpringWithDamping: 0.88, initialSpringVelocity: 0.2, options: [.curveEaseOut, .allowUserInteraction]) {
             self.containerView.frame = CGRect(x: 0, y: 0, width: self.panelWidth, height: bounds.height)
             self.maskView.alpha = 1
+        }
+        if let app = UIApplication.shared.delegate as? AppDelegate {
+            app.window?.makeKey()
         }
     }
 
@@ -134,10 +138,13 @@ final class WindowPanelSurface {
 
         if overlayWindow == nil || overlayWindow?.windowScene !== scene {
             let win = UIWindow(windowScene: scene)
-            // 高于主界面，低于系统 alert 的典型层级；设置弹窗前会 hide
+            // 高于主界面，低于系统 alert；永不 makeKey，避免抢走 Home Indicator 策略
             win.windowLevel = .alert - 1
             win.backgroundColor = .clear
             win.isHidden = true
+            // 空 root：同样声明隐藏小白条，防止系统问到这个 window 时显示白条
+            let root = PanelRootViewController()
+            win.rootViewController = root
             overlayWindow = win
         }
 
@@ -145,19 +152,43 @@ final class WindowPanelSurface {
         let bounds = win.bounds.size.width > 1 ? win.bounds : scene.coordinateSpace.bounds
         win.frame = bounds
 
-        if maskView.superview !== win {
+        let hostView = win.rootViewController?.view ?? win
+        if maskView.superview !== hostView {
             maskView.removeFromSuperview()
-            win.addSubview(maskView)
+            hostView.addSubview(maskView)
         }
-        maskView.frame = win.bounds
+        maskView.frame = hostView.bounds
 
-        if containerView.superview !== win {
+        if containerView.superview !== hostView {
             containerView.removeFromSuperview()
-            win.addSubview(containerView)
+            hostView.addSubview(containerView)
         }
-        win.bringSubviewToFront(maskView)
-        win.bringSubviewToFront(containerView)
+        hostView.bringSubviewToFront(maskView)
+        hostView.bringSubviewToFront(containerView)
+        // 明确不抢 keyWindow
+        win.isHidden = win.isHidden
         return true
+    }
+}
+
+/// 侧栏 window 的 root：声明隐藏 Home Indicator，且不成为 key
+private final class PanelRootViewController: UIViewController {
+    override var prefersHomeIndicatorAutoHidden: Bool { true }
+    override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
+    override var prefersStatusBarHidden: Bool { true }
+    override var childForHomeIndicatorAutoHidden: UIViewController? { nil }
+    override var childForScreenEdgesDeferringSystemGestures: UIViewController? { nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+        view.isOpaque = false
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        setNeedsUpdateOfHomeIndicatorAutoHidden()
+        setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
     }
 }
 

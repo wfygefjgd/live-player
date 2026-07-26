@@ -137,10 +137,12 @@ final class WindowVideoSurface {
         playerLayer.setNeedsDisplay()
         host.setNeedsLayout()
         host.layoutIfNeeded()
-        // 始终铺满 host，禁止居中偏移（偏移会在小白条出现时把画面顶出黑边）
+        // 画面高度 = host 高度 - 底部外扩黑边（盖小白条），禁止居中偏移
+        let bottomPad: CGFloat = 34
+        let videoH = max(host.bounds.height - bottomPad, lastAppliedSize.height > 1 ? lastAppliedSize.height - bottomPad : host.bounds.height)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        playerLayer.frame = host.bounds
+        playerLayer.frame = CGRect(x: 0, y: 0, width: host.bounds.width, height: videoH)
         playerLayer.videoGravity = .resize
         CATransaction.commit()
     }
@@ -195,11 +197,14 @@ final class WindowVideoSurface {
             window.sendSubviewToBack(host)
         }
 
-        // 物理屏横屏尺寸：覆盖 Home Indicator / 小白条区域，避免 window.bounds 被 inset 裁短
-        let bleed = Self.physicalScreenRect(for: window)
+        // 物理屏 + 底部外扩，确保盖住 Home Indicator 区域（条若短暂出现也压在画面下）
+        var bleed = Self.physicalScreenRect(for: window)
+        let bottomPad: CGFloat = 34
+        bleed.size.height += bottomPad
         guard bleed.width > 1, bleed.height > 1 else { return }
         let ox = (window.bounds.width - bleed.width) / 2
-        let oy = (window.bounds.height - bleed.height) / 2
+        // 顶部对齐，底部多伸出盖小白条
+        let oy = (window.bounds.height - (bleed.height - bottomPad)) / 2
 
         host.isHidden = false
         host.alpha = 1
@@ -213,7 +218,9 @@ final class WindowVideoSurface {
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        playerLayer.frame = host.bounds
+        // 画面仍铺满「逻辑全屏」高度（不含 bottomPad 的可视区），黑底外扩盖白条
+        let videoH = max(bleed.height - bottomPad, window.bounds.height)
+        playerLayer.frame = CGRect(x: 0, y: 0, width: bleed.width, height: videoH)
         playerLayer.videoGravity = .resize
         playerLayer.isHidden = false
         playerLayer.opacity = 1
@@ -360,7 +367,109 @@ struct VideoPlayerView: UIViewRepresentable {
     }
 }
 
-/// 主界面 Hosting：强制隐藏 Home Indicator，负向 safeArea 吃掉小白条
+/// 纯 UIKit 根容器：Home Indicator / 状态栏策略由它说了算。
+/// UIHostingController 作子 VC 时，系统常去问 hosting 内部子节点，导致小白条不隐藏。
+final class FullScreenRootController: UIViewController {
+    private let hosted: UIViewController
+    private var indicatorPulse: Timer?
+
+    init(hosting: UIViewController) {
+        self.hosted = hosting
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var prefersHomeIndicatorAutoHidden: Bool { true }
+    override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
+    override var prefersStatusBarHidden: Bool { true }
+    override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation { .fade }
+    override var shouldAutorotate: Bool { false }
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
+
+    // 关键：不要把策略下发给 hosting 子 VC
+    override var childForHomeIndicatorAutoHidden: UIViewController? { nil }
+    override var childForScreenEdgesDeferringSystemGestures: UIViewController? { nil }
+    override var childForStatusBarHidden: UIViewController? { nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black
+        view.isOpaque = true
+        view.clipsToBounds = false
+        edgesForExtendedLayout = .all
+        extendedLayoutIncludesOpaqueBars = true
+        additionalSafeAreaInsets = .zero
+        if #available(iOS 11.0, *) {
+            view.insetsLayoutMarginsFromSafeArea = false
+        }
+
+        addChild(hosted)
+        hosted.view.translatesAutoresizingMaskIntoConstraints = false
+        hosted.view.backgroundColor = .clear
+        hosted.view.isOpaque = false
+        view.addSubview(hosted.view)
+        NSLayoutConstraint.activate([
+            hosted.view.topAnchor.constraint(equalTo: view.topAnchor),
+            hosted.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            hosted.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            hosted.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+        ])
+        hosted.didMove(toParent: self)
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        refreshSystemChrome()
+        WindowVideoSurface.shared.forceFullBleed(reason: "root-appear")
+        NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
+        startIndicatorPulse()
+        for t in [0.05, 0.15, 0.3, 0.6, 1.0, 2.0, 3.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                self?.refreshSystemChrome()
+                WindowVideoSurface.shared.forceFullBleed(reason: "root-appear-delay")
+                WindowVideoSurface.shared.rebindPlayer()
+            }
+        }
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        indicatorPulse?.invalidate()
+        indicatorPulse = nil
+    }
+
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        additionalSafeAreaInsets = .zero
+        refreshSystemChrome()
+        WindowVideoSurface.shared.forceFullBleed(reason: "safeArea")
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        WindowVideoSurface.shared.forceFullBleed(reason: "root-layout")
+    }
+
+    func refreshSystemChrome() {
+        setNeedsUpdateOfHomeIndicatorAutoHidden()
+        setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+        setNeedsStatusBarAppearanceUpdate()
+    }
+
+    /// 定期提醒系统刷新小白条策略（回前台/手势后系统常会把条拉回来）
+    private func startIndicatorPulse() {
+        indicatorPulse?.invalidate()
+        indicatorPulse = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            self?.refreshSystemChrome()
+        }
+        if let t = indicatorPulse {
+            RunLoop.main.add(t, forMode: .common)
+        }
+    }
+}
+
+/// Hosting 本身也声明隐藏；真正生效靠外层 FullScreenRootController
 final class RootHostingController<Content: View>: UIHostingController<Content> {
     override var prefersHomeIndicatorAutoHidden: Bool { true }
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
@@ -380,8 +489,13 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
         view.clipsToBounds = false
         edgesForExtendedLayout = .all
         extendedLayoutIncludesOpaqueBars = true
+        additionalSafeAreaInsets = .zero
         if #available(iOS 11.0, *) {
             view.insetsLayoutMarginsFromSafeArea = false
+        }
+        // 阻止 SwiftUI safe area 把内容往上顶
+        if #available(iOS 16.4, *) {
+            safeAreaRegions = []
         }
     }
 
@@ -391,18 +505,12 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         setNeedsStatusBarAppearanceUpdate()
         WindowVideoSurface.shared.forceFullBleed(reason: "host-appear")
-        NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
-        for t in [0.05, 0.15, 0.3, 0.6, 1.0, 2.0] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
-                WindowVideoSurface.shared.forceFullBleed(reason: "host-appear-delay")
-                WindowVideoSurface.shared.rebindPlayer()
-            }
-        }
     }
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
-        WindowVideoSurface.shared.forceFullBleed(reason: "safeArea")
+        additionalSafeAreaInsets = .zero
+        WindowVideoSurface.shared.forceFullBleed(reason: "host-safeArea")
     }
 
     override func viewDidLayoutSubviews() {
