@@ -854,9 +854,9 @@ final class PlayerViewModel: ObservableObject {
         userPaused = false
         if !indicatorText.isEmpty { showIndicator("") }
         bumpPlayerLayout()
-        // 出画瞬间：做与「回前台」相同的 hardRemount（iPhone Air 关键）
-        WindowVideoSurface.shared.hardRemount(reason: "player-ready")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+        // 出画：轻量钉 + 一次节流 hard（避免连打闪退）
+        WindowVideoSurface.shared.forceFullBleed(reason: "player-ready")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             WindowVideoSurface.shared.hardRemount(reason: "player-ready-delay")
         }
         updateNowPlaying()

@@ -56,8 +56,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             }
             window.makeKeyAndVisible()
             rootContainer.refreshSystemChrome()
-            WindowVideoSurface.shared.hardRemount(reason: "reinstall-skip")
-            OrientationBootstrap.lockLandscapeAndRefresh()
+            WindowVideoSurface.shared.forceFullBleed(reason: "reinstall-skip")
             return
         }
 
@@ -111,10 +110,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         }
 
         container.refreshSystemChrome()
-        WindowVideoSurface.shared.hardRemount(reason: "launch")
+        WindowVideoSurface.shared.forceFullBleed(reason: "launch")
         DispatchQueue.main.async {
             container.refreshSystemChrome()
-            WindowVideoSurface.shared.hardRemount(reason: "launch-async")
+            WindowVideoSurface.shared.forceFullBleed(reason: "launch-async")
             OrientationBootstrap.lockLandscapeAndRefresh()
         }
     }
@@ -185,26 +184,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) {
             for window in scene.windows where window.windowLevel <= .normal {
                 window.backgroundColor = .black
-                window.clipsToBounds = false
                 if let root = window.rootViewController {
-                    root.additionalSafeAreaInsets = .zero
                     root.setNeedsUpdateOfHomeIndicatorAutoHidden()
                     root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
                     root.setNeedsStatusBarAppearanceUpdate()
                 }
             }
         }
-        // 与「回前台」一致：hardRemount，不是轻量 forceFullBleed
-        WindowVideoSurface.shared.hardRemount(reason: reason)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+        // 先轻量，再节流 hard（避免连打 hardRemount 闪退）
+        WindowVideoSurface.shared.forceFullBleed(reason: reason)
+        WindowVideoSurface.shared.rebindPlayer()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             self.rootContainer?.refreshSystemChrome()
             WindowVideoSurface.shared.hardRemount(reason: "\(reason)-delay")
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            self.rootContainer?.refreshSystemChrome()
-            WindowVideoSurface.shared.hardRemount(reason: "\(reason)-delay2")
-        }
-        NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
     }
 }
 
