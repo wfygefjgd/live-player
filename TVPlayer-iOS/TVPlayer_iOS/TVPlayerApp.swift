@@ -87,23 +87,30 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 existing.windowScene = resolvedScene
                 existing.frame = resolvedScene.coordinateSpace.bounds
                 existing.rootViewController = container
-                existing.backgroundColor = .black
+                // 主窗透明：露出底层独立 video window
+                existing.backgroundColor = .clear
+                existing.isOpaque = false
                 existing.clipsToBounds = false
+                existing.windowLevel = .normal
                 self.window = existing
                 existing.makeKeyAndVisible()
             } else {
                 let w = UIWindow(windowScene: resolvedScene)
                 w.frame = resolvedScene.coordinateSpace.bounds
-                w.backgroundColor = .black
+                w.backgroundColor = .clear
+                w.isOpaque = false
                 w.clipsToBounds = false
+                w.windowLevel = .normal
                 w.rootViewController = container
                 self.window = w
                 w.makeKeyAndVisible()
             }
         } else {
             let w = self.window ?? UIWindow(frame: UIScreen.main.bounds)
-            w.backgroundColor = .black
+            w.backgroundColor = .clear
+            w.isOpaque = false
             w.clipsToBounds = false
+            w.windowLevel = .normal
             w.rootViewController = container
             self.window = w
             w.makeKeyAndVisible()

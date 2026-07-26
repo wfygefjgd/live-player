@@ -10,14 +10,16 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            // 必须透明：真实画面在 keyWindow 底层 AVPlayerLayer，不透明黑底会挡成「有声无画」
+            // 必须透明：真实画面在独立底层 video window，主窗只负责手势/OSD
             Color.clear
                 .ignoresSafeArea(.all, edges: .all)
 
+            // 锚点：触发 setPlayer；不绘制画面
             VideoPlayerView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea(.all, edges: .all)
                 .allowsHitTesting(false)
+                .opacity(0.01)
                 .zIndex(1)
 
             // 手势交互层（长按优先于拖动，避免侧边栏弹不出）
