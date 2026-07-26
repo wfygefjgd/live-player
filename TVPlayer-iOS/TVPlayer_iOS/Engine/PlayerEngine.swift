@@ -5,15 +5,16 @@ import Combine
 @MainActor
 final class PlayerEngine: ObservableObject {
     // MARK: - 配置常量
-    static let startupTimeoutNs: UInt64 = 3_000_000_000      // 3s 起播超时（改为3秒）
-    static let readyProtectNs: UInt64 = 1_000_000_000         // 1s 出画保护（改为1秒）
-    static let errorGraceNs: UInt64 = 1_000_000_000           // 1s 错误宽容（改为1秒）
-    static let silentAudioCheckNs: UInt64 = 3_000_000_000     // 3s 后检测静音
-    static let silentAudioPollIntervalNs: UInt64 = 500_000_000 // 500ms 轮询间隔
+    static let startupTimeoutNs: UInt64 = 5_000_000_000      // 5s 起播超时：给弱网出画机会
+    static let readyProtectNs: UInt64 = 2_500_000_000         // 2.5s 出画保护：避免刚就绪就误判
+    static let errorGraceNs: UInt64 = 1_500_000_000           // 1.5s 错误宽容
+    static let silentAudioCheckNs: UInt64 = 5_000_000_000     // 5s 后检测静音
+    static let silentAudioPollIntervalNs: UInt64 = 800_000_000 // 800ms 轮询
+    static let progressStallThreshold: TimeInterval = 4.5     // 出画后进度停滞阈值
 
-    // 根据网络类型动态调整卡顿阈值 - 更宽松的超时，避免误判
+    // 根据网络类型动态调整卡顿阈值（偏保守，好线不轻易切）
     static var stallTimeoutNs: UInt64 {
-        NetworkMonitor.shared.isWiFi ? 5_000_000_000 : 8_000_000_000  // WiFi: 5s, 蜂窝: 8s
+        NetworkMonitor.shared.isWiFi ? 6_000_000_000 : 9_000_000_000
     }
 
     let player = AVPlayer()
@@ -192,6 +193,8 @@ final class PlayerEngine: ObservableObject {
 
     private func resetState(for token: Int) {
         cancelAllTasks()
+        stopHealthCheck()
+        consecutiveStallCount = 0
         stallWatchEnabled = false
         continuousStall = false
         hasRendered = false
@@ -199,7 +202,12 @@ final class PlayerEngine: ObservableObject {
         silenceCheckScheduled = false
         lastItemTime = .zero
         lastTimeProgressAt = .distantPast
-        healthMonitor?.reset()  // 🆕 重置健康度监控
+        isReady = false
+        healthMonitor?.reset()
+        if let obs = timeObserver {
+            player.removeTimeObserver(obs)
+            timeObserver = nil
+        }
     }
 
     private func cancelAllTasks() {
@@ -251,6 +259,10 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func setupTimeObserver(token: Int) {
+        if let obs = timeObserver {
+            player.removeTimeObserver(obs)
+            timeObserver = nil
+        }
         let interval = CMTime(seconds: 0.5, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
         timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             Task { @MainActor [weak self] in
@@ -294,25 +306,45 @@ final class PlayerEngine: ObservableObject {
 
     private func handleReady(token: Int) {
         guard playToken == token else { return }
-        cancelTask(named: "startup")
         cancelTask(named: "errorGrace")
+        // 不在此取消 startup：AVPlayer READY ≠ 已出画；无进度时仍由 startup 超时兜底
+        player.play()
+        isPlaying = true
+        stallWatchEnabled = false
+
+        scheduleTask(named: "confirmReady", token: token, timeout: 800_000_000) { [weak self] in
+            guard let self, self.playToken == token else { return }
+            if self.hasRendered || self.lastTimeProgressAt != .distantPast {
+                self.markTrulyReady(token: token)
+                return
+            }
+            self.scheduleTask(named: "confirmReady2", token: token, timeout: 1_500_000_000) { [weak self] in
+                guard let self, self.playToken == token else { return }
+                if self.hasRendered || self.lastTimeProgressAt != .distantPast {
+                    self.markTrulyReady(token: token)
+                }
+                // 仍无进度：保留 startup 超时触发换线，避免假 READY 卡住
+            }
+        }
+    }
+
+    private func markTrulyReady(token: Int) {
+        guard playToken == token else { return }
+        cancelTask(named: "startup")
+        cancelTask(named: "confirmReady")
+        cancelTask(named: "confirmReady2")
         isReady = true
         hasRendered = true
         player.play()
         isPlaying = true
         onReady?()
 
-        // 保护期内不检测卡顿
         stallWatchEnabled = false
         scheduleTask(named: "readyProtect", token: token, timeout: Self.readyProtectNs) { [weak self] in
             guard let self, self.playToken == token else { return }
             self.stallWatchEnabled = true
         }
-
-        // 延迟后检测静音
         scheduleSilentAudioCheck(token: token)
-
-        // 🆕 启动综合健康度检查（替代单一的 startStallPolling）
         startHealthCheck(token: token)
     }
 
@@ -407,36 +439,38 @@ final class PlayerEngine: ObservableObject {
 
     // MARK: - Private — Health Monitoring
 
-    /// 🆕 启动综合健康度检查（在 ready 后启动）
+    /// 综合健康度检查（ready 后启动；连续确认才切线）
     private func startHealthCheck(token: Int) {
         stopHealthCheck()
+        consecutiveStallCount = 0
         healthCheckTask = Task { [weak self] in
+            // 出画保护期内不做健康切换
+            try? await Task.sleep(nanoseconds: Self.readyProtectNs)
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)  // 2秒检查一次
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
                 guard let self, self.playToken == token, !Task.isCancelled else { return }
-                guard self.isReady else { continue }
+                guard self.isReady, self.stallWatchEnabled else { continue }
 
-                // 检查是否需要立即切换（严重问题：黑屏+无声音）
                 if let monitor = self.healthMonitor {
-                    let result = monitor.shouldSwitchImmediately()
-                    if result.should {
-                        self.onHealthCritical?(result.reason)
-                        return  // 触发后停止检查
+                    let immediate = monitor.shouldSwitchImmediately()
+                    if immediate.should {
+                        self.onHealthCritical?(immediate.reason)
+                        return
                     }
                 }
 
-                // 记录缓冲事件
                 if let item = self.player.currentItem, item.isPlaybackBufferEmpty {
                     self.healthMonitor?.recordBufferEmpty()
                 }
 
-                // 更严格的卡顿检测：连续3次检测到卡顿才触发
+                // 连续 3 次确认卡顿（约 4.5s+）才切，短暂缓冲不切
                 if self.isStalled() {
                     self.healthMonitor?.recordStall()
                     self.consecutiveStallCount += 1
-                    if self.consecutiveStallCount >= 3 {  // 改为3次，约6秒
+                    if self.consecutiveStallCount >= 3 {
                         self.consecutiveStallCount = 0
                         self.onExtendedStall?()
+                        return
                     }
                 } else {
                     self.consecutiveStallCount = 0
@@ -458,23 +492,28 @@ final class PlayerEngine: ObservableObject {
         watchTasks[name] = nil
     }
 
-    /// 主动检测卡顿（供外部轮询，线程安全）
+    /// 主动检测卡顿：仅在进度长期不推进或持续无法播放时判定
     func isStalled() -> Bool {
         guard player.currentItem != nil else { return true }
-        if player.timeControlStatus == .waitingToPlayAtSpecifiedRate {
-            return true
+        // 正在播且有速率 → 一定不是卡顿
+        if player.timeControlStatus == .playing && player.rate > 0.01 {
+            if hasRendered, lastTimeProgressAt != .distantPast,
+               Date().timeIntervalSince(lastTimeProgressAt) <= Self.progressStallThreshold {
+                return false
+            }
+        }
+        // 持续 waiting 且 rate=0
+        if player.timeControlStatus == .waitingToPlayAtSpecifiedRate && player.rate == 0 {
+            if lastTimeProgressAt == .distantPast {
+                return hasRendered // 声称 ready 却从未推进
+            }
+            return Date().timeIntervalSince(lastTimeProgressAt) > Self.progressStallThreshold
         }
         if player.timeControlStatus == .playing && player.rate == 0 {
             return true
         }
-        let progressAt = lastTimeProgressAt
-        let rendered = hasRendered
-        // 更激进的黑屏检测：2秒无进度即认为卡顿
-        if rendered && progressAt != .distantPast,
-           Date().timeIntervalSince(progressAt) > 2.0 {
-            return true
-        }
-        if rendered && progressAt == .distantPast {
+        if hasRendered, lastTimeProgressAt != .distantPast,
+           Date().timeIntervalSince(lastTimeProgressAt) > Self.progressStallThreshold {
             return true
         }
         return false

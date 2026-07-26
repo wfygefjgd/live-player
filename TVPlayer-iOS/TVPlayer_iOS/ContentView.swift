@@ -23,7 +23,7 @@ struct ContentView: View {
                 .allowsHitTesting(false)
                 .zIndex(1)
 
-            // 手势交互层
+            // 手势交互层（长按优先于拖动，避免侧边栏弹不出）
             Color.clear
                 .ignoresSafeArea(.all, edges: .all)
                 .contentShape(Rectangle())
@@ -32,9 +32,9 @@ struct ContentView: View {
                         vm.showFloat()
                     }
                 }
-                .simultaneousGesture(playerDragGesture())
+                .highPriorityGesture(longPressGesture())
                 .simultaneousGesture(doubleTapGesture())
-                .simultaneousGesture(longPressGesture())
+                .simultaneousGesture(playerDragGesture())
                 .zIndex(2)
 
             if vm.isBootstrapping {
@@ -130,16 +130,13 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             vm.resume()
             vm.onAppBecameActive()
-
-            // 确保 Home Indicator 隐藏
-            DispatchQueue.main.async {
-                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                   let root = windowScene.windows.first?.rootViewController {
-                    root.setNeedsUpdateOfHomeIndicatorAutoHidden()
-                    root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
-                }
+            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+               let root = windowScene.windows.first?.rootViewController {
+                root.setNeedsUpdateOfHomeIndicatorAutoHidden()
+                root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
             }
-
+            // 回前台：强制全屏（你反馈这条路径一直是正常的）
+            WindowVideoSurface.shared.install(reason: "app-active")
             NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
         }
         .sheet(isPresented: $vm.showSourceSheet) {
@@ -171,17 +168,20 @@ struct ContentView: View {
     }
 
     private func longPressGesture() -> some Gesture {
-        LongPressGesture(minimumDuration: 0.5)
+        // 略缩短，且与拖动手势 highPriority 分离，减少“长按被拖动吃掉”
+        LongPressGesture(minimumDuration: 0.45)
             .onEnded { _ in
-                guard !vm.panelVisible else { return }
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                    vm.panelVisible = true
-                }
+                guard !vm.locked else { return }
+                if vm.panelVisible { return }
+                // 先置状态，再强制 window 浮层 show（双保险）
+                vm.panelVisible = true
+                WindowPanelSurface.shared.show()
             }
     }
 
     private func playerDragGesture() -> some Gesture {
-        DragGesture(minimumDistance: 20)
+        // 提高最小位移，避免微抖触发拖动导致长按失败
+        DragGesture(minimumDistance: 28)
             .onChanged { value in
                 guard !vm.panelVisible else { return }
                 let w = max(UIScreen.main.bounds.width, UIScreen.main.bounds.height, 1)
@@ -193,39 +193,26 @@ struct ContentView: View {
             .onEnded { value in
                 guard !vm.panelVisible else { return }
                 let w = max(UIScreen.main.bounds.width, UIScreen.main.bounds.height, 1)
-                let h = max(UIScreen.main.bounds.height, 1)
                 let sx = value.startLocation.x
-                let sy = value.startLocation.y
                 let dx = value.translation.width
                 let dy = value.translation.height
 
-                // 右侧音量控制区域
+                // 右侧音量
                 if sx > w * 0.65 {
                     vm.handleVolumeDrag(translationHeight: dy, ended: true)
                     return
                 }
 
-                // 左右滑动切换线路（全屏幕有效，不再有边缘限制）
+                // 左右滑换线
                 if abs(dx) > abs(dy) && abs(dx) > 50 {
-                    // 手指向右滑（dx>0）= 下一个线路
-                    // 手指向左滑（dx<0）= 上一个线路
                     if dx > 0 { vm.switchSource(direction: 1) }
                     else { vm.switchSource(direction: -1) }
                     return
                 }
 
-                // 上下滑动切换频道（扩大识别区域到整个中间区域，降低门槛）
-                if abs(dy) > abs(dx) && abs(dy) > 30 {
-                    // 放宽识别条件：只要不是在最右侧音量区，都可以切换频道
-                    if sx <= w * 0.65 {
-                        // 手指向上滑（dy<0）= 下一个频道
-                        // 手指向下滑（dy>0）= 上一个频道
-                        if dy < 0 {
-                            vm.nextChannel()
-                        } else {
-                            vm.prevChannel()
-                        }
-                    }
+                // 上下滑换台
+                if abs(dy) > abs(dx) && abs(dy) > 36, sx <= w * 0.65 {
+                    if dy < 0 { vm.nextChannel() } else { vm.prevChannel() }
                 }
             }
     }

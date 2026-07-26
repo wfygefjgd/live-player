@@ -6,8 +6,10 @@ let DEFAULT_SOURCE_URL = "https://ghfast.top/raw.githubusercontent.com/iptv-org/
 private let CHANNEL_OSD_MS: UInt64 = 2_500_000_000
 private let FLOAT_HIDE_MS: UInt64 = 2_500_000_000
 private let INDICATOR_MS: UInt64 = 1_200_000_000
-private let AUTO_SWITCH_COOLDOWN_NS: UInt64 = 4_000_000_000
-private let SILENT_AUDIO_GRACE_NS: UInt64 = 5_000_000_000  // 5s 静音切换冷却
+private let AUTO_SWITCH_COOLDOWN_NS: UInt64 = 1_200_000_000
+private let SILENT_AUDIO_GRACE_NS: UInt64 = 8_000_000_000  // 8s 静音切换冷却，避免好线误切
+private let AUTO_RECOVER_MAX_CHANNELS = 25                 // 连续自动切台上限，防止死循环
+private let PREFERRED_LINE_STABLE_NS: UInt64 = 6_000_000_000 // 稳定播放 6s 后记住好线路
 
 let PRESET_SOURCES: [(name: String, url: String)] = [
     ("BurningC4 CDN", "https://iptv.burningc4.com/TV-IPV4.m3u"),
@@ -64,13 +66,19 @@ final class PlayerViewModel: ObservableObject {
     private var retryTask: Task<Void, Never>?
     private var silentAudioTask: Task<Void, Never>?
 
-    // 🆕 NotificationCenter观察者引用
+    // NotificationCenter 观察者
     private var fusionObserver: NSObjectProtocol?
+    private var firstBatchObserver: NSObjectProtocol?
 
     private var lastVolumeTranslation: CGFloat = 0
     private var lastSilentSwitchAt: Date = .distantPast
     private var lastChannelSwitchAt: Date = .distantPast
     private let channelSwitchDebounceInterval: TimeInterval = 0.3  // 300ms 防抖
+    private var autoRecoverChannelHops = 0
+    private var playbackStable = false
+    private var recoverGeneration = 0
+    private var preferStableTask: Task<Void, Never>?
+    private let reputation = LineReputationStore.shared
 
     func startup() {
         guard !started else { return }
@@ -99,28 +107,47 @@ final class PlayerViewModel: ObservableObject {
         }
 
         restoreSources()
+        reputation.prune()
 
-        // 🆕 优先从 Bundle 加载预验证的频道
-        if let bundleChannels = loadChannelsFromBundle(), !bundleChannels.isEmpty {
-            channels = applyRules(bundleChannels)
-            restoreLastChannelPosition()
-            isBootstrapping = false
-            playCurrent(showOSD: false, resetTried: true)
+        // ① 缓存 / Bundle 立刻出画（信誉排序跳过已知坏线）
+        // ② 后台静默刷新融合，不打断已稳定播放
+        if applyQuickStartChannels() {
+            loadChannels(force: true, silent: true, preferActiveOnly: false)
         } else {
-            // 回退到缓存
-            let cached = applyRules(storage.loadChannels())
-            if !cached.isEmpty {
-                channels = cached
+            isBootstrapping = true
+            bootstrapMessage = "正在加载频道列表..."
+            indicatorText = ""
+            beginBootstrapLoad()
+        }
+    }
+
+    /// 缓存或 Bundle 快速启动：有列表就播，返回是否已有可播数据
+    @discardableResult
+    private func applyQuickStartChannels() -> Bool {
+        if let bundleChannels = loadChannelsFromBundle(), !bundleChannels.isEmpty {
+            let applied = reputation.applyToChannels(bundleChannels)
+            rawChannels = applied
+            channels = applyRules(applied)
+            if !channels.isEmpty {
                 restoreLastChannelPosition()
                 isBootstrapping = false
                 playCurrent(showOSD: false, resetTried: true)
-            } else {
-                isBootstrapping = true
-                bootstrapMessage = "正在加载频道列表..."
-                indicatorText = ""
-                beginBootstrapLoad()
+                return true
             }
         }
+        let cached = storage.loadChannels()
+        if !cached.isEmpty {
+            let applied = reputation.applyToChannels(cached)
+            rawChannels = applied
+            channels = applyRules(applied)
+            if !channels.isEmpty {
+                restoreLastChannelPosition()
+                isBootstrapping = false
+                playCurrent(showOSD: false, resetTried: true)
+                return true
+            }
+        }
+        return false
     }
 
     // 🆕 只加载频道数据，不启动播放器（用于验证界面）
@@ -332,7 +359,9 @@ final class PlayerViewModel: ObservableObject {
             return
         }
         let prevKey = currentChannel?.key
-        rawChannels = loaded.map { Channel(name: $0.name, group: $0.group, key: $0.key, urls: $0.urls) }
+        // 融合结果再套信誉记忆：坏线后置、好线前置（与自动换线不冲突）
+        let reputationApplied = reputation.applyToChannels(loaded)
+        rawChannels = reputationApplied.map { Channel(name: $0.name, group: $0.group, key: $0.key, urls: $0.urls) }
         channels = applyRules(rawChannels)
         guard !channels.isEmpty else {
             if !silent { showIndicator("加载失败") }
@@ -352,15 +381,15 @@ final class PlayerViewModel: ObservableObject {
         }
 
         if silent {
-            if !player.isReady {
+            // 后台刷新：仅未出画时才自动开播，避免打断正在看的台
+            if !player.isReady && !playbackStable {
                 playCurrent(showOSD: false, resetTried: true)
             }
         } else {
             showIndicator("已加载 \(channels.count) 个频道")
-            // 🆕 显示融合结果
             let totalLines = channels.reduce(0) { $0 + $1.sourceCount }
             if totalLines > 1000 {
-                showIndicator("✨ \(channels.count) 个频道，\(totalLines) 条线路")
+                showIndicator("\(channels.count) 台 · \(totalLines) 线")
             }
             playCurrent(showOSD: false, resetTried: true)
         }
@@ -602,135 +631,219 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func playCurrent(showOSD: Bool = true, resetTried: Bool = false) {
-        guard currentChannel != nil, let url = currentUrl, let u = URL(string: url) else {
+        guard var ch = currentChannel else {
             showIndicator("当前频道地址无效")
             return
         }
+        // 用共享信誉重排本台线路（融合与换线同一记忆）
+        let ordered = reputation.orderedURLs(ch.urls, channelKey: ch.key)
+        if ordered != ch.urls {
+            var nc = Channel(name: ch.name, group: ch.group, key: ch.key)
+            nc.addUrls(ordered)
+            if let idx = channels.firstIndex(where: { $0.key == ch.key }) {
+                channels[idx] = nc
+            }
+            ch = nc
+        }
+
         if resetTried {
             triedLineIndices.removeAll()
             cooldownTask?.cancel()
             autoSwitchState = .idle
+            playbackStable = false
+            preferStableTask?.cancel()
+            // 偏好 URL 或第一条未拉黑线
+            if let pref = reputation.preferredURL(forChannelKey: ch.key),
+               let i = ch.urls.firstIndex(of: pref) {
+                currentSourceIndex = i
+            } else if let i = ch.urls.firstIndex(where: { !reputation.isBlacklisted($0) }) {
+                currentSourceIndex = i
+            } else {
+                currentSourceIndex = 0
+            }
         }
-        triedLineIndices.insert(currentSourceIndex)
-        if autoSwitchState == .cooldown {
-            autoSwitchState = .idle
+
+        var guardLoops = 0
+        while guardLoops < ch.sourceCount {
+            guardLoops += 1
+            if currentSourceIndex < 0 || currentSourceIndex >= ch.urls.count {
+                currentSourceIndex = 0
+            }
+            // 自动路径跳过黑名单（手动点台 resetTried 后仍会先试偏好）
+            let raw = ch.urls[currentSourceIndex]
+            if reputation.isBlacklisted(raw), triedLineIndices.count < ch.sourceCount - 1 {
+                triedLineIndices.insert(currentSourceIndex)
+                currentSourceIndex = (currentSourceIndex + 1) % max(ch.sourceCount, 1)
+                continue
+            }
+            if let u = URL(string: raw), let scheme = u.scheme?.lowercased(),
+               scheme == "http" || scheme == "https" || scheme == "rtmp" || scheme == "rtsp" {
+                triedLineIndices.insert(currentSourceIndex)
+                if autoSwitchState == .cooldown { autoSwitchState = .idle }
+                if autoSwitchState == .switching { autoSwitchState = .idle }
+                player.play(url: u)
+                persistLastChannel()
+                if showOSD { showChannelOSD() }
+                showFloat()
+                return
+            }
+            triedLineIndices.insert(currentSourceIndex)
+            currentSourceIndex = (currentSourceIndex + 1) % max(ch.sourceCount, 1)
         }
-        player.play(url: u)
-        persistLastChannel()
-        if showOSD { showChannelOSD() }
-        showFloat()
+        showIndicator("当前频道地址无效")
+        autoSwitchLine(hint: "当前频道地址无效", reason: .hardFail)
     }
 
     private func onPlayerReady() {
         autoSwitchState = .idle
+        playbackStable = true
+        autoRecoverChannelHops = 0
+        isBootstrapping = false
         scheduleHideFloat()
         if !indicatorText.isEmpty { showIndicator("") }
         bumpPlayerLayout()
+        // 真实起播成功才写信誉（延迟确认，避免假 READY）
+        preferStableTask?.cancel()
+        let key = currentChannel?.key
+        let url = currentUrl
+        let gen = recoverGeneration
+        preferStableTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: PREFERRED_LINE_STABLE_NS)
+            guard let self, !Task.isCancelled else { return }
+            guard self.recoverGeneration == gen, self.playbackStable, self.player.isReady else { return }
+            guard let url else { return }
+            // 仍是同一条线才记成功
+            guard self.currentUrl == url else { return }
+            self.reputation.markSuccess(url: url, channelKey: key)
+        }
     }
 
-    private func onPlayerError() { autoSwitchLine(hint: "线路失败，切换下一线路") }
-    private func onStartupTimeout() { autoSwitchLine(hint: "线路超时，切换下一线路") }
-    // 移除了 onPlaybackStall（太快），只保留智能检测
-    private func onExtendedStall() { autoSwitchLine(hint: "画面持续冻结，切换下一线路") }
+    private func onPlayerError() { autoSwitchLine(hint: "线路失败", reason: .hardFail) }
+    private func onStartupTimeout() { autoSwitchLine(hint: "线路超时无画面", reason: .startupTimeout) }
+    private func onExtendedStall() { autoSwitchLine(hint: "画面持续卡顿", reason: .stall) }
 
-    /// 🆕 综合健康度危急处理（黑屏、无声音、网络卡顿等严重问题）
     private func onHealthCritical(_ reason: String) {
-        autoSwitchLine(hint: "检测到\(reason)，切换下一线路")
+        autoSwitchLine(hint: reason, reason: .healthCritical)
     }
 
     // MARK: - 静音检测
 
     private func onSilentAudio() {
+        // 仅当有多条线路时才因“无音轨”换线；单线频道很多源本来就无声轨
+        guard let ch = currentChannel, ch.sourceCount > 1 else { return }
         let now = Date()
         if now.timeIntervalSince(lastSilentSwitchAt) < Double(SILENT_AUDIO_GRACE_NS) / 1e9 {
             return
         }
-        guard let ch = currentChannel, ch.sourceCount > 1 else { return }
+        // 已稳定播放一段时间后的偶发静音检测，再给一次确认窗口
+        guard playbackStable else { return }
         lastSilentSwitchAt = now
-        autoSwitchLine(hint: "当前线路无声音，切换下一线路")
+        autoSwitchLine(hint: "当前线路无声音", reason: .silentAudio)
     }
 
-    /// 自动切线：同频道内连续试完所有线路，如果都失败则切下一频道
-    private func autoSwitchLine(hint: String) {
+    private enum FailReason {
+        case hardFail
+        case startupTimeout
+        case stall
+        case healthCritical
+        case silentAudio
+
+        var isConfirmedBad: Bool {
+            switch self {
+            case .hardFail, .startupTimeout, .stall, .healthCritical, .silentAudio:
+                return true
+            }
+        }
+    }
+
+    /// 自动切线：仅确认坏线才切；同频道试完所有线路后切下一频道，直到出画
+    private func autoSwitchLine(hint: String, reason: FailReason) {
         guard let ch = currentChannel else {
             showIndicator(hint)
             return
         }
-
-        // 如果正在切换中或处于冷却期，不重复触发
-        if autoSwitchState == .switching { return }
-        if autoSwitchState == .cooldown { return }
-
-        // 单线路频道：标记已尝试，进入冷却期
-        if ch.sourceCount <= 1 {
-            triedLineIndices.insert(currentSourceIndex)
-
-            // 判断是否通过健康度检查确认有问题
-            let isHealthIssue = hint.contains("黑屏") || hint.contains("冻结") || hint.contains("卡顿") ||
-                               hint.contains("网络") || hint.contains("无声音") || hint.contains("综合健康度") ||
-                               hint.contains("失败") || hint.contains("超时")
-
-            if isHealthIssue && triedLineIndices.count >= ch.sourceCount {
-                // 通过健康度检查 + 已试过唯一线路 → 切换到下一频道
+        guard reason.isConfirmedBad else {
+            showIndicator(hint)
+            return
+        }
+        // 冷却期只抑制“软问题”重复触发；硬失败/超时必须放行
+        if autoSwitchState == .cooldown {
+            switch reason {
+            case .hardFail, .startupTimeout:
+                cooldownTask?.cancel()
                 autoSwitchState = .idle
-                showIndicator("\(hint)，切换下一频道")
-                beginCooldown()
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    try? await Task.sleep(nanoseconds: 800_000_000)
-                    guard !Task.isCancelled else { return }
-                    self.nextChannel()
+            default:
+                return
+            }
+        }
+        // 不再用 switching 窗口吞掉失败回调（此前 400ms 内失败会卡死）
+
+        playbackStable = false
+        preferStableTask?.cancel()
+        triedLineIndices.insert(currentSourceIndex)
+        // 写入共享信誉：失败线 24h 内优先跳过（融合与下次启动共用）
+        if let failURL = currentUrl {
+            let hard = (reason == .hardFail || reason == .startupTimeout || reason == .stall || reason == .healthCritical)
+            reputation.markFailure(url: failURL, channelKey: ch.key, hard: hard)
+        }
+
+        // 多线路：按信誉顺序找下一条未试过的合法线
+        if ch.sourceCount > 1 {
+            let candidates = reputation.orderedURLs(ch.urls, channelKey: ch.key)
+            for cand in candidates {
+                guard let nxt = ch.urls.firstIndex(of: cand) else { continue }
+                if triedLineIndices.contains(nxt) { continue }
+                if reputation.isBlacklisted(cand), triedLineIndices.count + 1 < ch.sourceCount {
+                    triedLineIndices.insert(nxt)
+                    continue
                 }
-            } else {
-                // 未通过健康度检查或其他原因，只显示提示
-                showIndicator(hint)
-                beginCooldown()
+                guard let u = URL(string: cand),
+                      let scheme = u.scheme?.lowercased(),
+                      scheme == "http" || scheme == "https" || scheme == "rtmp" || scheme == "rtsp" else {
+                    triedLineIndices.insert(nxt)
+                    continue
+                }
+                currentSourceIndex = nxt
+                triedLineIndices.insert(nxt)
+                autoSwitchState = .idle
+                showIndicator("\(hint) · 线路 \(nxt + 1)/\(ch.sourceCount)")
+                player.play(url: u)
+                persistLastChannel()
+                showChannelOSD()
+                return
             }
-            return
         }
 
-        // 多线路频道：查找下一个未试过的线路
-        var nxt = (currentSourceIndex + 1) % ch.sourceCount
-        var scanned = 0
-        while triedLineIndices.contains(nxt), scanned < ch.sourceCount {
-            nxt = (nxt + 1) % ch.sourceCount
-            scanned += 1
-        }
-
-        // 所有线路都试过了 → 切下一个频道
-        if triedLineIndices.count >= ch.sourceCount || scanned >= ch.sourceCount {
-            autoSwitchState = .idle
-            showIndicator("当前频道所有线路不可用，切换下一频道")
+        // 本频道线路已耗尽 → 自动下一频道
+        autoSwitchState = .idle
+        if autoRecoverChannelHops >= AUTO_RECOVER_MAX_CHANNELS {
+            showIndicator("连续多台无可用线路，请手动换台或换源")
             beginCooldown()
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                try? await Task.sleep(nanoseconds: 800_000_000)
-                guard !Task.isCancelled else { return }
-                self.nextChannel()
-            }
             return
         }
-
-        guard let u = URL(string: ch.urls[nxt]) else {
-            triedLineIndices.insert(nxt)
-            autoSwitchState = .idle
-            autoSwitchLine(hint: hint)
-            return
-        }
-        autoSwitchState = .switching
-        currentSourceIndex = nxt
-        triedLineIndices.insert(nxt)
-        showIndicator("\(hint) - 线路 \(nxt + 1)/\(ch.sourceCount)")
-        player.play(url: u)
-        persistLastChannel()
-        showChannelOSD()
+        autoRecoverChannelHops += 1
+        showIndicator("\(hint) · 本台线路不可用，切下一台")
+        // 短延迟避免同帧重入；不进入长冷却，保证恢复链路畅通
+        recoverGeneration += 1
+        let gen = recoverGeneration
         Task { @MainActor [weak self] in
             guard let self else { return }
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            if self.autoSwitchState == .switching {
-                self.autoSwitchState = .idle
-            }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled, self.recoverGeneration == gen else { return }
+            self.autoAdvanceChannel()
         }
+    }
+
+    /// 自动恢复用的切台（不受用户防抖影响，但尊重锁定）
+    private func autoAdvanceChannel() {
+        guard !locked, !channels.isEmpty else { return }
+        cooldownTask?.cancel()
+        autoSwitchState = .idle
+        currentIndex = (currentIndex + 1) % channels.count
+        currentSourceIndex = 0
+        panelVisible = false
+        triedLineIndices.removeAll()
+        playCurrent(resetTried: true)
     }
 
     private func beginCooldown() {
@@ -755,6 +868,8 @@ final class PlayerViewModel: ObservableObject {
             return
         }
         lastChannelSwitchAt = now
+        autoRecoverChannelHops = 0
+        playbackStable = false
 
         cooldownTask?.cancel()
         currentIndex = (currentIndex + 1) % channels.count
@@ -773,6 +888,8 @@ final class PlayerViewModel: ObservableObject {
             return
         }
         lastChannelSwitchAt = now
+        autoRecoverChannelHops = 0
+        playbackStable = false
 
         currentIndex = (currentIndex - 1 + channels.count) % channels.count
         currentSourceIndex = 0
@@ -783,6 +900,8 @@ final class PlayerViewModel: ObservableObject {
 
     func selectChannel(_ ch: Channel) {
         guard let idx = channels.firstIndex(where: { $0.key == ch.key }) else { return }
+        autoRecoverChannelHops = 0
+        playbackStable = false
         currentIndex = idx
         currentSourceIndex = 0
         panelVisible = false
@@ -804,7 +923,7 @@ final class PlayerViewModel: ObservableObject {
         playCurrent(resetTried: true)
     }
 
-    func switchNextLine(hint: String) { autoSwitchLine(hint: hint) }
+    func switchNextLine(hint: String) { autoSwitchLine(hint: hint, reason: .hardFail) }
 
     // MARK: - UI 辅助
 
@@ -935,34 +1054,80 @@ final class PlayerViewModel: ObservableObject {
 
     // MARK: - 智能融合相关
 
-    /// 监听后台优化完成的通知
+    /// 监听首源批次 + 后台全量优化：软合并，不打断稳定播放
     private func setupFusionObserver() {
+        if let observer = fusionObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = firstBatchObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
         fusionObserver = NotificationCenter.default.addObserver(
             forName: .channelsOptimized,
             object: nil,
             queue: .main
         ) { [weak self] notification in
             guard let self else { return }
-            if let optimized = notification.object as? [Channel] {
-                self.channels = self.applyRules(optimized)
-                let totalLines = optimized.reduce(0) { $0 + $1.sourceCount }
-                self.showIndicator("✨ 线路优化完成！\(optimized.count) 个频道，\(totalLines) 条线路")
+            guard let optimized = notification.object as? [Channel] else { return }
+            self.mergeOptimizedChannels(optimized)
+        }
+        firstBatchObserver = NotificationCenter.default.addObserver(
+            forName: .channelsFirstBatch,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self else { return }
+            guard let first = notification.object as? [Channel], !first.isEmpty else { return }
+            // 已有列表在播则忽略；空列表时用首源立刻出画
+            if self.channels.isEmpty || (!self.player.isReady && !self.playbackStable) {
+                self.onChannelsLoaded(first, errorMessage: nil, silent: !self.channels.isEmpty)
             }
         }
     }
 
+    /// 融合后台优化结果软合并：保留当前台/当前线，只更新列表与排序
+    private func mergeOptimizedChannels(_ optimized: [Channel]) {
+        let prevKey = currentChannel?.key
+        let prevURL = currentUrl
+        let applied = reputation.applyToChannels(optimized)
+        rawChannels = applied
+        channels = applyRules(applied)
+        guard !channels.isEmpty else { return }
+
+        if let prevKey, let idx = channels.firstIndex(where: { $0.key == prevKey }) {
+            currentIndex = idx
+            if let prevURL, let li = channels[idx].urls.firstIndex(of: prevURL) {
+                currentSourceIndex = li
+            } else {
+                currentSourceIndex = min(currentSourceIndex, max(0, channels[idx].sourceCount - 1))
+            }
+            // 正在播且稳定：不重播；未就绪才用新排序再试
+            if !player.isReady && !playbackStable {
+                playCurrent(showOSD: false, resetTried: true)
+            }
+        } else if !player.isReady {
+            restoreLastChannelPosition()
+            playCurrent(showOSD: false, resetTried: true)
+        }
+
+        let totalLines = channels.reduce(0) { $0 + $1.sourceCount }
+        showIndicator("线路优化完成 · \(channels.count) 台 / \(totalLines) 线")
+    }
+
     deinit {
-        // 🆕 移除NotificationCenter观察者
         if let observer = fusionObserver {
             NotificationCenter.default.removeObserver(observer)
         }
-        // 取消所有任务
+        if let observer = firstBatchObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
         osdTask?.cancel()
         indTask?.cancel()
         floatTask?.cancel()
         cooldownTask?.cancel()
         retryTask?.cancel()
         silentAudioTask?.cancel()
+        preferStableTask?.cancel()
     }
 
     /// 切换融合模式

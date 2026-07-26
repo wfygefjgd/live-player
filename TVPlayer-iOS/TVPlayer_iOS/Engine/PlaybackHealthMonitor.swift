@@ -52,10 +52,10 @@ final class PlaybackHealthMonitor {
 
     private var audioSession: AVAudioSession { AVAudioSession.sharedInstance() }
 
-    // 配置阈值
-    private let videoFreezeThreshold: TimeInterval = 2.0
-    private let bufferEmptyThreshold = 3
-    private let stallThreshold = 2
+    // 配置阈值（偏保守：避免好线被误切）
+    private let videoFreezeThreshold: TimeInterval = 4.0
+    private let bufferEmptyThreshold = 4
+    private let stallThreshold = 3
 
     // MARK: - 初始化
 
@@ -110,46 +110,41 @@ final class PlaybackHealthMonitor {
         return metrics
     }
 
-    /// 判断是否需要立即切换
+    /// 判断是否需要立即切换（仅严重且持续问题）
     func shouldSwitchImmediately() -> (should: Bool, reason: String) {
         let metrics = getCurrentMetrics()
 
-        // 严重问题：黑屏 + 无声音
-        if metrics.videoHealth == .blackScreen && metrics.audioHealth == .noTrack {
-            return (true, "黑屏无声音")
-        }
-
-        // 严重问题：画面冻结 + 无声音 + 网络卡顿
-        if metrics.videoHealth == .frozen &&
-           metrics.audioHealth != .healthy &&
-           metrics.networkHealth == .stalled {
+        // 已渲染过却长期黑屏/冻结 + 网络卡死
+        if metrics.videoHealth == .frozen && metrics.networkHealth == .stalled {
             return (true, "画面冻结且网络卡顿")
         }
 
-        // 综合健康度为危急
-        if metrics.overallHealth == .critical {
+        // 综合危急：至少视频 + 网络同时异常（避免纯无音轨误切）
+        if metrics.overallHealth == .critical,
+           metrics.videoHealth == .frozen || metrics.videoHealth == .blackScreen,
+           metrics.networkHealth == .stalled {
             return (true, "综合健康度危急")
         }
 
         return (false, "")
     }
 
-    /// 判断是否应该尝试切换线路
+    /// 判断是否应该尝试切换线路（单维度问题需持续证据）
     func shouldSwitchLine() -> (should: Bool, reason: String) {
         let metrics = getCurrentMetrics()
 
-        // 视频问题但有声音
-        if metrics.videoHealth == .frozen && metrics.audioHealth == .healthy {
-            return (true, "视频流问题")
+        // 视频长时间冻结
+        if metrics.videoHealth == .frozen {
+            return (true, "视频流卡死")
         }
 
-        // 音频问题但有画面
-        if metrics.audioHealth == .silent && metrics.videoHealth == .healthy {
-            return (true, "音频流问题")
+        // 有音轨却静音 + 画面也异常时才切（纯视频流无音轨不切）
+        if metrics.audioHealth == .silent && metrics.videoHealth != .healthy {
+            return (true, "音画异常")
         }
 
-        // 网络频繁卡顿
-        if metrics.networkHealth == .stalled {
+        // 频繁卡顿（阈值已提高）
+        if metrics.networkHealth == .stalled && metrics.videoHealth != .healthy {
             return (true, "网络卡顿")
         }
 

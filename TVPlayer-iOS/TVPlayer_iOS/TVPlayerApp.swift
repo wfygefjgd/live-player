@@ -122,26 +122,22 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     // MARK: - 生命周期
 
     func applicationDidBecomeActive(_ application: UIApplication) {
-        // 窗口布局修复
         for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) {
             for window in scene.windows {
                 window.backgroundColor = .black
                 if let root = window.rootViewController {
                     root.view.backgroundColor = .clear
                     root.view.isOpaque = false
-                    // 强制隐藏 Home Indicator
                     root.setNeedsUpdateOfHomeIndicatorAutoHidden()
                     root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
-
-                    // 延迟再次调用，确保生效
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        root.setNeedsUpdateOfHomeIndicatorAutoHidden()
-                        root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
-                    }
                 }
             }
         }
+        // 与冷启动同一条全屏路径
         WindowVideoSurface.shared.install(reason: "app-active")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            WindowVideoSurface.shared.install(reason: "app-active-delay")
+        }
         NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
     }
 

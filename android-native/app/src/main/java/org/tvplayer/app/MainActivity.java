@@ -46,8 +46,10 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -72,11 +74,14 @@ public class MainActivity extends AppCompatActivity {
     };
 
     private static final long CHANNEL_OSD_MS = 2500L;
-    private static final long CHANNEL_SWITCH_TIMEOUT_MS = 3000L;      // 3秒快速切换
-    private static final long STALL_TIMEOUT_MS = 2500L;               // 2.5秒卡顿检测
-    private static final long FAST_FAIL_TIMEOUT_MS = 1500L;           // 1.5秒快速失败
-    private static final long NETWORK_WAIT_RETRY_MS = 500L;           // 0.5秒快速重试
+    private static final long CHANNEL_SWITCH_TIMEOUT_MS = 5000L;      // 5秒起播：给弱网出画机会
+    private static final long STALL_TIMEOUT_MS = 4500L;               // 4.5秒持续卡顿才切
+    private static final long FAST_FAIL_TIMEOUT_MS = 3500L;           // 自动换线后稍短超时
+    private static final long NETWORK_WAIT_RETRY_MS = 500L;
     private static final long FLOAT_BUTTONS_TIMEOUT_MS = 2500L;
+    private static final long SILENT_AUDIO_CHECK_MS = 5000L;          // 出画后再检测无声
+    private static final long READY_PROTECT_MS = 2500L;               // 刚就绪保护期，避免误切
+    private static final int AUTO_RECOVER_MAX_CHANNELS = 25;
 
     private PlayerView playerView;
     private ExoPlayer player;
@@ -119,6 +124,13 @@ public class MainActivity extends AppCompatActivity {
     private String activeSourceUrl = "";
     private boolean autoSwitchingSource = false;
     private boolean currentPlaybackReachedReady = false;
+    private final Set<Integer> triedLineIndices = new HashSet<>();
+    private int autoRecoverChannelHops = 0;
+    private long readyAtMs = 0L;
+    private int consecutiveBufferEvents = 0;
+    private LineReputationStore reputation;
+    private Runnable preferLineRunnable;
+    private static final long PREFER_LINE_STABLE_MS = 6000L;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -148,6 +160,7 @@ public class MainActivity extends AppCompatActivity {
 
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         storage = new StorageHelper(this);
+        reputation = new LineReputationStore(this);
 
         // 初始化网络管理器和检测
         connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
@@ -190,17 +203,64 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onPlaybackStateChanged(int state) {
                 if (state == Player.STATE_READY) {
+                    // 仅在真正可播时确认就绪；避免假 READY
+                    boolean reallyPlaying = player != null
+                            && (player.isPlaying() || player.getPlayWhenReady());
                     waitingForReady = false;
                     autoSwitchingSource = false;
                     currentPlaybackReachedReady = true;
+                    readyAtMs = System.currentTimeMillis();
+                    consecutiveBufferEvents = 0;
+                    autoRecoverChannelHops = 0;
                     cancelStallCheck();
-                    scheduleSilentAudioCheck();
-                    scheduleHideFloatingButtons();
+                    if (reallyPlaying) {
+                        scheduleSilentAudioCheck();
+                        scheduleHideFloatingButtons();
+                        // 真实起播成功 → 延迟写入信誉（与 iOS 一致）
+                        scheduleRememberPreferredLine();
+                    } else {
+                        // READY 但未真正播放：保留卡顿检测兜底
+                        scheduleStallCheck(STALL_TIMEOUT_MS);
+                    }
+                    return;
+                }
+                if (state == Player.STATE_BUFFERING) {
+                    // 起播阶段：不要反复重置超时计时器（之前每次 BUFFERING 都会重装，导致永远不超时）
+                    if (!currentPlaybackReachedReady) {
+                        if (stallRunnable == null) {
+                            scheduleStallCheck(pendingStallTimeoutMs);
+                        }
+                        return;
+                    }
+                    // 已出画后：累计缓冲，连续多次才进入卡顿计时
+                    if (!inReadyProtect()) {
+                        consecutiveBufferEvents++;
+                        if (consecutiveBufferEvents >= 3 && stallRunnable == null) {
+                            scheduleStallCheck(STALL_TIMEOUT_MS);
+                        }
+                    }
                     return;
                 }
                 cancelSilentAudioCheck();
-                if (state == Player.STATE_BUFFERING || state == Player.STATE_IDLE || state == Player.STATE_ENDED) {
-                    scheduleStallCheck(currentPlaybackReachedReady ? STALL_TIMEOUT_MS : pendingStallTimeoutMs);
+                if (state == Player.STATE_IDLE || state == Player.STATE_ENDED) {
+                    if (!currentPlaybackReachedReady) {
+                        if (stallRunnable == null) {
+                            scheduleStallCheck(pendingStallTimeoutMs);
+                        }
+                    } else if (!inReadyProtect() && stallRunnable == null) {
+                        scheduleStallCheck(STALL_TIMEOUT_MS);
+                    }
+                }
+            }
+
+            @Override
+            public void onIsPlayingChanged(boolean isPlaying) {
+                if (isPlaying) {
+                    consecutiveBufferEvents = 0;
+                    // 仅取消“已出画后的卡顿检测”，不起播超时
+                    if (currentPlaybackReachedReady) {
+                        cancelStallCheck();
+                    }
                 }
             }
 
@@ -208,8 +268,10 @@ public class MainActivity extends AppCompatActivity {
             public void onPlayerError(com.google.android.exoplayer2.PlaybackException error) {
                 mainHandler.post(() -> {
                     waitingForReady = false;
+                    autoSwitchingSource = false;
                     cancelStallCheck();
-                    switchToNextPlayableSource("当前线路播放失败，切换下一线路", true);
+                    cancelPreferLineTask();
+                    switchToNextPlayableSource("线路失败", true, true);
                 });
             }
         });
@@ -225,6 +287,8 @@ public class MainActivity extends AppCompatActivity {
             }
             currentIndex = position;
             currentSourceIndex = 0;
+            resetTriedLines();
+            autoRecoverChannelHops = 0;
             playCurrent(true);
         });
     }
@@ -316,6 +380,19 @@ public class MainActivity extends AppCompatActivity {
                 }
                 return true;
             }
+
+            @Override
+            public void onLongPress(MotionEvent e) {
+                if (locked) {
+                    showFloatingButtonsTemporarily();
+                    return;
+                }
+                // 长按打开/关闭左侧频道栏（与 iOS 对齐）
+                if (!panelVisible) {
+                    togglePanel();
+                }
+                showFloatingButtonsTemporarily();
+            }
         });
 
         View.OnTouchListener touchListener = (v, event) -> {
@@ -405,6 +482,16 @@ public class MainActivity extends AppCompatActivity {
     private void togglePanel() {
         panelVisible = !panelVisible;
         leftPanel.setVisibility(panelVisible ? View.VISIBLE : View.GONE);
+        // 面板打开时抬到最前，避免被 PlayerView 或其它层遮挡
+        if (panelVisible && leftPanel != null) {
+            leftPanel.bringToFront();
+            if (btnTogglePanel != null) {
+                btnTogglePanel.bringToFront();
+            }
+            if (btnLock != null) {
+                btnLock.bringToFront();
+            }
+        }
         btnTogglePanel.setText(panelVisible ? "◀" : "▶");
         showFloatingButtonsTemporarily();
     }
@@ -519,11 +606,14 @@ public class MainActivity extends AppCompatActivity {
         waitingForReady = false;
         cancelStallCheck();
 
-        // 先从缓存加载
+        // ① 缓存立刻出画（信誉排序跳过已知坏线）
+        // ② 后台静默刷新多源，不打断已稳定播放
         List<Channel> cached = storage.loadChannels();
-        if (!cached.isEmpty()) {
+        final boolean hasCache = cached != null && !cached.isEmpty();
+        if (hasCache) {
             channels.clear();
             channels.addAll(cached);
+            reputation.applyToChannels(channels);
             adapter.setData(channels);
             status.setText(String.format("已加载 %d 个频道（缓存）", channels.size()));
             playCurrent(false, CHANNEL_SWITCH_TIMEOUT_MS);
@@ -774,15 +864,30 @@ public class MainActivity extends AppCompatActivity {
         return sb.toString();
     }
 
+    private boolean inReadyProtect() {
+        return currentPlaybackReachedReady
+                && readyAtMs > 0
+                && (System.currentTimeMillis() - readyAtMs) < READY_PROTECT_MS;
+    }
+
     private void scheduleStallCheck(long timeoutMs) {
-        if (!waitingForReady || channels.isEmpty()) {
+        if (channels.isEmpty()) {
+            return;
+        }
+        // 已出画且在保护期内：不因短暂缓冲误切
+        if (currentPlaybackReachedReady && inReadyProtect()) {
+            return;
+        }
+        // 起播阶段必须 waiting；已出画后的卡顿检测允许在 BUFFERING 触发
+        if (!waitingForReady && !currentPlaybackReachedReady) {
             return;
         }
         cancelStallCheck();
         final int token = playbackToken;
+        final boolean wasReady = currentPlaybackReachedReady;
         if (!hasNetworkConnection()) {
             stallRunnable = () -> {
-                if (token == playbackToken && waitingForReady) {
+                if (token == playbackToken) {
                     scheduleStallCheck(timeoutMs);
                 }
             };
@@ -790,9 +895,42 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         stallRunnable = () -> {
-            if (token == playbackToken && waitingForReady) {
+            if (token != playbackToken) {
+                return;
+            }
+            // 若已恢复播放则不切
+            if (player != null && player.isPlaying() && player.getPlaybackState() == Player.STATE_READY) {
+                consecutiveBufferEvents = 0;
+                return;
+            }
+            if (wasReady && inReadyProtect()) {
+                return;
+            }
+            // 已出画：需仍处于缓冲/不可播，才确认卡顿
+            if (wasReady) {
+                if (player != null && player.isPlaying()
+                        && player.getPlaybackState() == Player.STATE_READY) {
+                    consecutiveBufferEvents = 0;
+                    return;
+                }
+                // 用户暂停时不自动切
+                if (player != null && !player.getPlayWhenReady()) {
+                    return;
+                }
                 waitingForReady = false;
-                switchToNextPlayableSource("当前线路加载超时，切换下一线路", true);
+                autoSwitchingSource = false;
+                switchToNextPlayableSource("画面持续卡顿", true, true);
+                return;
+            }
+            if (waitingForReady || !currentPlaybackReachedReady) {
+                // 起播超时：仍未真正出画
+                if (player != null && player.isPlaying()
+                        && player.getPlaybackState() == Player.STATE_READY) {
+                    return;
+                }
+                waitingForReady = false;
+                autoSwitchingSource = false;
+                switchToNextPlayableSource("线路超时无画面", true, true);
             }
         };
         mainHandler.postDelayed(stallRunnable, timeoutMs);
@@ -803,6 +941,11 @@ public class MainActivity extends AppCompatActivity {
         if (channels.isEmpty() || currentIndex < 0 || currentIndex >= channels.size()) {
             return;
         }
+        // 单线路频道很多本身无音轨，不因无声误切
+        Channel ch = channels.get(currentIndex);
+        if (ch.getSourceCount() <= 1) {
+            return;
+        }
         final int token = playbackToken;
         silentAudioRunnable = () -> {
             if (token != playbackToken) {
@@ -811,12 +954,15 @@ public class MainActivity extends AppCompatActivity {
             if (player == null || player.getPlaybackState() != Player.STATE_READY) {
                 return;
             }
+            if (!currentPlaybackReachedReady || inReadyProtect()) {
+                return;
+            }
             if (hasAudioTrack()) {
                 return;
             }
-            switchToNextPlayableSource("当前线路无声音，切换下一线路", true);
+            switchToNextPlayableSource("当前线路无声音", true, true);
         };
-        mainHandler.postDelayed(silentAudioRunnable, STALL_TIMEOUT_MS);
+        mainHandler.postDelayed(silentAudioRunnable, SILENT_AUDIO_CHECK_MS);
     }
 
     private void cancelStallCheck() {
@@ -833,18 +979,115 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void resetTriedLines() {
+        triedLineIndices.clear();
+    }
+
+    private void cancelPreferLineTask() {
+        if (preferLineRunnable != null) {
+            mainHandler.removeCallbacks(preferLineRunnable);
+            preferLineRunnable = null;
+        }
+    }
+
+    private void scheduleRememberPreferredLine() {
+        cancelPreferLineTask();
+        if (channels.isEmpty() || currentIndex < 0 || currentIndex >= channels.size()) {
+            return;
+        }
+        final int token = playbackToken;
+        final Channel ch = channels.get(currentIndex);
+        final String key = ch.key;
+        final String url = (currentSourceIndex >= 0 && currentSourceIndex < ch.getSourceCount())
+                ? ch.getUrls().get(currentSourceIndex) : "";
+        preferLineRunnable = () -> {
+            if (token != playbackToken || !currentPlaybackReachedReady) {
+                return;
+            }
+            if (player == null || !player.isPlaying()) {
+                return;
+            }
+            if (url != null && !url.isEmpty()) {
+                reputation.markSuccess(url, key);
+            }
+        };
+        mainHandler.postDelayed(preferLineRunnable, PREFER_LINE_STABLE_MS);
+    }
+
+    private boolean isPlayableUrl(String url) {
+        if (url == null) {
+            return false;
+        }
+        String u = url.trim().toLowerCase();
+        return u.startsWith("http://") || u.startsWith("https://")
+                || u.startsWith("rtmp://") || u.startsWith("rtsp://");
+    }
+
     private void playCurrent(boolean showOsd, long timeoutMs) {
         if (channels.isEmpty() || currentIndex < 0 || currentIndex >= channels.size()) {
             return;
         }
         Channel channel = channels.get(currentIndex);
-        if (currentSourceIndex < 0 || currentSourceIndex >= channel.getSourceCount()) {
-            currentSourceIndex = 0;
+        // 信誉重排：好线靠前、黑名单后置
+        List<String> ordered = reputation.orderedURLs(channel.getUrls(), channel.key);
+        if (!ordered.equals(channel.getUrls())) {
+            Channel nc = new Channel(channel.name, channel.group, channel.key, ordered);
+            channels.set(currentIndex, nc);
+            channel = nc;
+            if (adapter != null) {
+                adapter.setData(channels);
+            }
         }
-        String url = channel.getUrls().isEmpty() ? "" : channel.getUrls().get(currentSourceIndex);
-        if (url == null || url.isEmpty()) {
+        int count = channel.getSourceCount();
+        if (count <= 0) {
             waitingForReady = false;
             showIndicator("当前频道地址无效");
+            switchToNextPlayableSource("当前频道地址无效", true, true);
+            return;
+        }
+
+        // 本台首次尝试：偏好 URL 或首条未拉黑线
+        if (triedLineIndices.isEmpty()) {
+            String pref = reputation.preferredURL(channel.key);
+            if (pref != null) {
+                int pi = channel.getUrls().indexOf(pref);
+                if (pi >= 0) {
+                    currentSourceIndex = pi;
+                }
+            } else {
+                for (int i = 0; i < count; i++) {
+                    if (!reputation.isBlacklisted(channel.getUrls().get(i))) {
+                        currentSourceIndex = i;
+                        break;
+                    }
+                }
+            }
+        }
+        if (currentSourceIndex < 0 || currentSourceIndex >= count) {
+            currentSourceIndex = 0;
+        }
+
+        // 跳过非法 URL / 黑名单（保留至少一条兜底）
+        int guard = 0;
+        String url = "";
+        while (guard < count) {
+            guard++;
+            if (currentSourceIndex < 0 || currentSourceIndex >= count) {
+                currentSourceIndex = 0;
+            }
+            url = channel.getUrls().get(currentSourceIndex);
+            boolean black = reputation.isBlacklisted(url) && triedLineIndices.size() < count - 1;
+            if (isPlayableUrl(url) && !black) {
+                break;
+            }
+            triedLineIndices.add(currentSourceIndex);
+            currentSourceIndex = (currentSourceIndex + 1) % count;
+            url = "";
+        }
+        if (!isPlayableUrl(url)) {
+            waitingForReady = false;
+            showIndicator("当前频道地址无效");
+            switchToNextPlayableSource("当前频道地址无效", true, true);
             return;
         }
 
@@ -854,8 +1097,13 @@ public class MainActivity extends AppCompatActivity {
         waitingForReady = true;
         autoSwitchingSource = false;
         currentPlaybackReachedReady = false;
+        readyAtMs = 0L;
+        consecutiveBufferEvents = 0;
         pendingStallTimeoutMs = timeoutMs;
+        triedLineIndices.add(currentSourceIndex);
         cancelSilentAudioCheck();
+        cancelPreferLineTask();
+        // 起播只装一次超时，避免 BUFFERING 反复重置
         scheduleStallCheck(timeoutMs);
 
         try {
@@ -874,8 +1122,9 @@ public class MainActivity extends AppCompatActivity {
             }
         } catch (Exception e) {
             waitingForReady = false;
+            autoSwitchingSource = false;
             cancelStallCheck();
-            switchToNextPlayableSource("当前线路播放失败，切换下一线路", true);
+            switchToNextPlayableSource("线路失败", true, true);
         }
     }
 
@@ -884,20 +1133,24 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void playNextChannel(boolean showOsd) {
-        if (channels.isEmpty()) {
+        if (channels.isEmpty() || locked) {
             return;
         }
         currentIndex = (currentIndex + 1) % channels.size();
         currentSourceIndex = 0;
+        resetTriedLines();
+        autoRecoverChannelHops = 0;
         playCurrent(showOsd, CHANNEL_SWITCH_TIMEOUT_MS);
     }
 
     private void playPreviousChannel(boolean showOsd) {
-        if (channels.isEmpty()) {
+        if (channels.isEmpty() || locked) {
             return;
         }
         currentIndex = (currentIndex - 1 + channels.size()) % channels.size();
         currentSourceIndex = 0;
+        resetTriedLines();
+        autoRecoverChannelHops = 0;
         playCurrent(showOsd, CHANNEL_SWITCH_TIMEOUT_MS);
     }
 
@@ -915,36 +1168,82 @@ public class MainActivity extends AppCompatActivity {
         }
         int count = channel.getSourceCount();
         currentSourceIndex = (currentSourceIndex + direction + count) % count;
-        playCurrent(showOsd, STALL_TIMEOUT_MS);
+        resetTriedLines();
+        autoRecoverChannelHops = 0;
+        playCurrent(showOsd, CHANNEL_SWITCH_TIMEOUT_MS);
     }
 
+    /** 兼容旧调用 */
     private void switchToNextPlayableSource(String hint, boolean showOsd) {
+        switchToNextPlayableSource(hint, showOsd, true);
+    }
+
+    /**
+     * 自动换线：仅 confirmedBad 时切换；试完本台所有线路后自动下一台，直到出画。
+     */
+    private void switchToNextPlayableSource(String hint, boolean showOsd, boolean confirmedBad) {
+        if (!confirmedBad) {
+            showIndicator(hint);
+            return;
+        }
         if (channels.isEmpty() || currentIndex < 0 || currentIndex >= channels.size()) {
             showIndicator(hint);
             return;
         }
+        // autoSwitchingSource 仅作短互斥；硬失败时强制放行，避免卡死
+        if (autoSwitchingSource) {
+            autoSwitchingSource = false;
+        }
         Channel channel = channels.get(currentIndex);
         int count = channel.getSourceCount();
-        if (count <= 1) {
-            autoSwitchingSource = false;
-            showIndicator(hint);
-            return;
-        }
-        if (autoSwitchingSource) {
-            return;
-        }
-        autoSwitchingSource = true;
         cancelSilentAudioCheck();
-        int original = currentSourceIndex;
-        int next = (currentSourceIndex + 1) % count;
-        if (next == original) {
-            autoSwitchingSource = false;
-            showIndicator(hint);
+        cancelPreferLineTask();
+        triedLineIndices.add(currentSourceIndex);
+        // 写入信誉：失败线 24h 拉黑，避免明天再踩
+        if (currentSourceIndex >= 0 && currentSourceIndex < count) {
+            String failUrl = channel.getUrls().get(currentSourceIndex);
+            reputation.markFailure(failUrl, channel.key, true);
+        }
+
+        // 多线路：按信誉顺序找未试过且合法的下一条
+        if (count > 1) {
+            List<String> candidates = reputation.orderedURLs(channel.getUrls(), channel.key);
+            for (String candidate : candidates) {
+                int next = channel.getUrls().indexOf(candidate);
+                if (next < 0 || triedLineIndices.contains(next)) {
+                    continue;
+                }
+                if (reputation.isBlacklisted(candidate) && triedLineIndices.size() + 1 < count) {
+                    triedLineIndices.add(next);
+                    continue;
+                }
+                if (isPlayableUrl(candidate)) {
+                    autoSwitchingSource = true;
+                    currentSourceIndex = next;
+                    showIndicator(hint + " · 线路 " + (next + 1) + "/" + count);
+                    playCurrent(showOsd, FAST_FAIL_TIMEOUT_MS);
+                    return;
+                }
+                triedLineIndices.add(next);
+            }
+        }
+
+        // 本台线路耗尽 → 自动下一频道
+        autoSwitchingSource = false;
+        if (locked) {
+            showIndicator(hint + " · 已锁定，无法自动换台");
             return;
         }
-        currentSourceIndex = next;
-        showIndicator(hint);
-        playCurrent(showOsd, STALL_TIMEOUT_MS);
+        if (autoRecoverChannelHops >= AUTO_RECOVER_MAX_CHANNELS) {
+            showIndicator("连续多台无可用线路，请手动换台或换源");
+            return;
+        }
+        autoRecoverChannelHops++;
+        showIndicator(hint + " · 本台不可用，切下一台");
+        currentIndex = (currentIndex + 1) % channels.size();
+        currentSourceIndex = 0;
+        resetTriedLines();
+        playCurrent(showOsd, CHANNEL_SWITCH_TIMEOUT_MS);
     }
 
     private boolean hasAudioTrack() {
@@ -953,6 +1252,9 @@ public class MainActivity extends AppCompatActivity {
 
     private List<Channel> applyChannelLineRules(List<Channel> input) {
         List<Channel> output = new ArrayList<>();
+        if (input == null) {
+            return output;
+        }
         for (Channel source : input) {
             if (source == null) {
                 continue;
@@ -1191,8 +1493,19 @@ public class MainActivity extends AppCompatActivity {
                     status.setText("加载失败，请检查网络");
                     showIndicator("所有源均加载失败");
                 } else {
+                    String prevKey = (!channels.isEmpty() && currentIndex >= 0 && currentIndex < channels.size())
+                            ? channels.get(currentIndex).key : null;
+                    String prevUrl = null;
+                    if (prevKey != null && currentSourceIndex >= 0
+                            && currentSourceIndex < channels.get(currentIndex).getSourceCount()) {
+                        prevUrl = channels.get(currentIndex).getUrls().get(currentSourceIndex);
+                    }
+                    boolean wasPlaying = currentPlaybackReachedReady
+                            && player != null && player.isPlaying();
+
                     channels.clear();
                     channels.addAll(applyChannelLineRules(mergedChannels));
+                    reputation.applyToChannels(channels);
                     adapter.setData(channels);
                     storage.saveChannels(channels);
 
@@ -1201,10 +1514,29 @@ public class MainActivity extends AppCompatActivity {
                         channels.size(), finalSuccessCount, totalSources
                     ));
 
+                    // 软合并：尽量回到刚才的台/线
+                    if (prevKey != null) {
+                        for (int i = 0; i < channels.size(); i++) {
+                            if (prevKey.equals(channels.get(i).key)) {
+                                currentIndex = i;
+                                if (prevUrl != null) {
+                                    int li = channels.get(i).getUrls().indexOf(prevUrl);
+                                    currentSourceIndex = li >= 0 ? li : 0;
+                                } else {
+                                    currentSourceIndex = 0;
+                                }
+                                break;
+                            }
+                        }
+                    }
                     if (currentIndex >= channels.size()) {
                         currentIndex = 0;
+                        currentSourceIndex = 0;
                     }
-                    playCurrent(false, CHANNEL_SWITCH_TIMEOUT_MS);
+                    // 已在稳定播放则不重播；否则开播
+                    if (!wasPlaying) {
+                        playCurrent(false, CHANNEL_SWITCH_TIMEOUT_MS);
+                    }
                 }
             });
         });
