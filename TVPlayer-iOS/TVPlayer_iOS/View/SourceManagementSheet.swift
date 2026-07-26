@@ -6,7 +6,6 @@ struct SourceManagementSheet: View {
     @State private var inputUrl = ""
     @State private var showInvalidAlert = false
     @State private var showFusionSettings = false
-    @State private var isRefreshing = false
 
     var body: some View {
         NavigationView {
@@ -48,7 +47,6 @@ struct SourceManagementSheet: View {
 
                 // 源列表
                 List {
-                    // 融合模式设置和刷新按钮
                     Section {
                         Button(action: { showFusionSettings = true }) {
                             HStack {
@@ -65,34 +63,6 @@ struct SourceManagementSheet: View {
                                     .foregroundColor(.secondary)
                             }
                         }
-
-                        // 刷新频道按钮
-                        Button(action: {
-                            Task {
-                                isRefreshing = true
-                                await vm.refreshChannelsFromRemote()
-                                isRefreshing = false
-                            }
-                        }) {
-                            HStack {
-                                if isRefreshing {
-                                    ProgressView()
-                                        .scaleEffect(0.8)
-                                } else {
-                                    Image(systemName: "arrow.clockwise.circle")
-                                        .foregroundColor(.blue)
-                                }
-                                Text("刷新频道列表")
-                                    .foregroundColor(.primary)
-                                Spacer()
-                                if !isRefreshing {
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                        }
-                        .disabled(isRefreshing)
                     }
 
                     Section {
@@ -114,7 +84,7 @@ struct SourceManagementSheet: View {
                 .listStyle(.insetGrouped)
             }
             .padding(.vertical)
-            .navigationTitle("管理直播源")
+            .navigationTitle("切换来源")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {

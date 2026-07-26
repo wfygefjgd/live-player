@@ -72,11 +72,11 @@ final class SmartFusionEngine {
         return await NetworkService.shared.fetchWithCandidates(urls: sourceUrls)
     }
 
-    /// 平衡模式：融合前3个源
+    /// 平衡模式：融合前 5 个源（更激进）
     private func balancedMode(sourceUrls: [String]) async -> ([Channel], String?) {
-        onProgress?("平衡模式：加载前3个源...")
+        onProgress?("平衡模式：加载前5个源...")
 
-        let limitedUrls = Array(sourceUrls.prefix(3))
+        let limitedUrls = Array(sourceUrls.prefix(5))
         let allChannels = await loadAllSources(limitedUrls)
 
         if allChannels.isEmpty {
@@ -113,23 +113,25 @@ final class SmartFusionEngine {
         return (optimized, nil)
     }
 
-    /// 智能模式：首源立刻返回出画 → 后台全量融合（以播放信誉为主，弱化 HEAD 测速）
+    /// 智能模式：前 2 源竞速出画 → 后台全量融合（更激进 + 可重复启动）
     private func smartMode(sourceUrls: [String], requestSession: Int) async -> ([Channel], String?) {
         onProgress?("智能模式：快速启动...")
 
         var firstBatch: [Channel] = []
-        if let firstUrl = sourceUrls.first {
-            let (firstChannels, _) = await NetworkService.shared.fetchWithCandidates(urls: [firstUrl])
+        // 前 2 个源竞速，谁先出结果用谁（更快）
+        let raceUrls = Array(sourceUrls.prefix(2))
+        if !raceUrls.isEmpty {
+            let (firstChannels, _) = await NetworkService.shared.fetchWithCandidates(urls: raceUrls)
             guard requestSession == session else { return ([], nil) }
             if !firstChannels.isEmpty {
                 firstBatch = mergeChannels(firstChannels)
                 onProgress?("已加载 \(firstBatch.count) 个频道，后台继续融合...")
-                // 首批只通过返回值交给 loadChannels，避免与 Notification 双投递
             }
         }
 
         let urls = sourceUrls
-        Task { @MainActor in
+        // 独立 Task：不阻塞首批返回；session 变化则丢弃（支持反复切换融合模式）
+        Task { @MainActor [urls, requestSession] in
             let allChannels = await self.loadAllSources(urls)
             guard requestSession == self.session else { return }
             guard !allChannels.isEmpty else { return }
@@ -163,15 +165,13 @@ final class SmartFusionEngine {
 
     // MARK: - 核心功能
 
-    /// 加载所有源（并发）
+    /// 加载所有源（并发，失败源跳过）
     private func loadAllSources(_ urls: [String]) async -> [Channel] {
-        await withTaskGroup(of: (Int, [Channel]).self) { group in
+        guard !urls.isEmpty else { return [] }
+        return await withTaskGroup(of: (Int, [Channel]).self) { group in
             for (index, url) in urls.enumerated() {
                 group.addTask {
                     do {
-                        await MainActor.run {
-                            self.onProgress?("正在加载源 \(index + 1)/\(urls.count)...")
-                        }
                         let body = try await NetworkService.shared.fetch(url: url)
                         let parsed = M3UParserService.parse(body)
                         return (index, parsed)
@@ -182,8 +182,17 @@ final class SmartFusionEngine {
             }
 
             var allChannels: [Channel] = []
+            var done = 0
             for await (_, channels) in group {
-                allChannels.append(contentsOf: channels)
+                done += 1
+                if !channels.isEmpty {
+                    allChannels.append(contentsOf: channels)
+                }
+                let progress = done
+                let total = urls.count
+                await MainActor.run {
+                    self.onProgress?("正在加载源 \(progress)/\(total)...")
+                }
             }
             return allChannels
         }

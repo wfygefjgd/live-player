@@ -27,8 +27,8 @@ final class WindowVideoSurface {
         host.autoresizingMask = []
         host.clipsToBounds = false
         host.layer.zPosition = -1_000
-        // 等比铺满，避免 .resize 拉伸变形
-        playerLayer.videoGravity = .resizeAspect
+        // 铺满屏幕：裁掉多余边，消除四边黑边/小白条
+        playerLayer.videoGravity = .resizeAspectFill
         playerLayer.backgroundColor = UIColor.black.cgColor
         playerLayer.isOpaque = true
         playerLayer.masksToBounds = false
@@ -114,7 +114,7 @@ final class WindowVideoSurface {
     func setPlayer(_ player: AVPlayer?) {
         boundPlayer = player
         playerLayer.player = player
-        playerLayer.videoGravity = .resizeAspect
+        playerLayer.videoGravity = .resizeAspectFill
         playerLayer.isHidden = false
         playerLayer.opacity = 1
         forceFullBleed(reason: "setPlayer")
@@ -198,25 +198,30 @@ final class WindowVideoSurface {
             window.sendSubviewToBack(host)
         }
 
-        // 物理全屏 + 略外扩，盖住 Home Indicator / 安全区黑边（小白条）
-        let bleed: CGFloat = 2
+        // 物理全屏 + 外扩，盖住 Home Indicator / 安全区（小白条）与四边黑边
+        let bleed: CGFloat = 8
         let bleedRect = full.insetBy(dx: -bleed, dy: -bleed)
         host.isHidden = false
         host.alpha = 1
         host.backgroundColor = .black
         host.clipsToBounds = false
         host.isUserInteractionEnabled = false
-        host.frame = bleedRect
+        // 以 window 中心对齐，保证溢出部分对称盖住安全区
         host.bounds = CGRect(origin: .zero, size: bleedRect.size)
         host.center = CGPoint(x: window.bounds.midX, y: window.bounds.midY)
+        host.frame = CGRect(
+            x: window.bounds.midX - bleedRect.width / 2,
+            y: window.bounds.midY - bleedRect.height / 2,
+            width: bleedRect.width,
+            height: bleedRect.height
+        )
 
         lastAppliedSize = bleedRect.size
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        // 等比完整显示，不裁切（黑边可能出现在两侧/上下，但画面不丢）
         playerLayer.frame = host.bounds
-        playerLayer.videoGravity = .resizeAspect
+        playerLayer.videoGravity = .resizeAspectFill
         playerLayer.isHidden = false
         playerLayer.opacity = 1
         if playerLayer.player == nil {
@@ -285,12 +290,12 @@ final class WindowVideoSurface {
             w = sb.width
             h = sb.height
         }
-        // 仅横屏：长边为宽
-        let lw = max(w, h)
-        let lh = min(w, h)
-        // 至少不小于 window
-        let finalW = max(lw, window.bounds.width)
-        let finalH = max(lh, window.bounds.height)
+        // 与当前 window 方向对齐（横屏：宽>高）
+        let landscape = window.bounds.width >= window.bounds.height
+        if landscape && w < h { swap(&w, &h) }
+        if !landscape && h < w { swap(&w, &h) }
+        let finalW = max(w, window.bounds.width, sb.width)
+        let finalH = max(h, window.bounds.height, sb.height)
         return CGRect(x: 0, y: 0, width: finalW, height: finalH)
     }
 

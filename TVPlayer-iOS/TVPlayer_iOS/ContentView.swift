@@ -8,9 +8,6 @@ struct ContentView: View {
     @State private var numberInput = ""
     @State private var numberInputTask: Task<Void, Never>?
 
-    // 设置菜单
-    @State private var showSettingsMenu = false
-
     var body: some View {
         ZStack {
             // 必须透明：真实画面在 keyWindow 底层 AVPlayerLayer，不透明黑底会挡成「有声无画」
@@ -101,11 +98,11 @@ struct ContentView: View {
             WindowPanelSurface.shared.setPanel(
                 AnyView(
                     ChannelListPanel(onShowSettings: {
-                        // 先降侧栏，再弹菜单，避免被盖住
+                        // 点设置：直接打开「切换来源」，不弹中间菜单
                         vm.panelVisible = false
                         WindowPanelSurface.shared.prepareForModalPresentation()
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                            showSettingsMenu = true
+                            vm.showSourceSheet = true
                         }
                     })
                     .environmentObject(vm)
@@ -119,10 +116,6 @@ struct ContentView: View {
             } else {
                 WindowPanelSurface.shared.hide()
             }
-        }
-        .onChange(of: showSettingsMenu) { open in
-            // 菜单关闭后不自动开栏，由用户长按再开
-            if !open { /* keep panel closed */ }
         }
         .onReceive(NotificationCenter.default.publisher(for: .panelShouldClose)) { _ in
             withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
@@ -166,14 +159,6 @@ struct ContentView: View {
         .sheet(isPresented: $vm.showSourceSheet) {
             SourceManagementSheet()
                 .environmentObject(vm)
-        }
-        .confirmationDialog("功能菜单", isPresented: $showSettingsMenu, titleVisibility: .visible) {
-            Button("切换来源") {
-                vm.showSourceSheet = true
-            }
-            Button("关闭", role: .cancel) {
-                showSettingsMenu = false
-            }
         }
         .then { base in
             if #available(iOS 17.0, *) {

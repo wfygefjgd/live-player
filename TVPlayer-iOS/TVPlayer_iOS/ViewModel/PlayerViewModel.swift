@@ -7,19 +7,16 @@ let DEFAULT_SOURCE_URL = "https://ghfast.top/raw.githubusercontent.com/iptv-org/
 
 private let CHANNEL_OSD_MS: UInt64 = 2_500_000_000
 private let INDICATOR_MS: UInt64 = 1_200_000_000
-private let AUTO_SWITCH_COOLDOWN_NS: UInt64 = 1_200_000_000
-private let SILENT_AUDIO_GRACE_NS: UInt64 = 8_000_000_000  // 8s 静音切换冷却，避免好线误切
-private let AUTO_RECOVER_MAX_CHANNELS = 25                 // 连续自动切台上限，防止死循环
-private let PREFERRED_LINE_STABLE_NS: UInt64 = 6_000_000_000 // 稳定播放 6s 后记住好线路
+private let AUTO_SWITCH_COOLDOWN_NS: UInt64 = 600_000_000
+private let SILENT_AUDIO_GRACE_NS: UInt64 = 5_000_000_000  // 5s 静音切换冷却
+private let AUTO_RECOVER_MAX_CHANNELS = 30                 // 连续自动切台上限
+private let PREFERRED_LINE_STABLE_NS: UInt64 = 5_000_000_000 // 稳定播放 5s 后记住好线路
 
+// 仅保留实测可用的预置源（2026-07 探测：404/403 已剔除）
 let PRESET_SOURCES: [(name: String, url: String)] = [
     ("BurningC4 CDN", "https://iptv.burningc4.com/TV-IPV4.m3u"),
-    ("dongyubin 体育", "https://ghfast.top/raw.githubusercontent.com/dongyubin/IPTV/main/IPTV.m3u"),
-    ("肥羊 4K", "https://ghfast.top/raw.githubusercontent.com/gaotianliuyun/youshandefeiyang/main/live.m3u"),
     ("hujingguang", "https://ghfast.top/raw.githubusercontent.com/hujingguang/ChinaIPTV/main/grouped.m3u8"),
-    ("fanmingming IPv6", "https://ghfast.top/raw.githubusercontent.com/fanmingming/live/main/tv/m3u/ipv6.m3u"),
     ("best-fan 全量", "https://gh-proxy.com/https://raw.githubusercontent.com/best-fan/iptv-sources/main/cn_all.m3u8"),
-    ("kongkongyo CCTV", "https://ghfast.top/raw.githubusercontent.com/kongkongyo/m3u8/main/iptv.m3u"),
     ("iptv-org 中国", "https://ghfast.top/raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u"),
 ]
 
@@ -252,20 +249,33 @@ final class PlayerViewModel: ObservableObject {
 
     // MARK: - 源管理
 
+    /// 历史失效预置（勿再自动加回）
+    private static let deadPresetUrls: Set<String> = [
+        "https://ghfast.top/raw.githubusercontent.com/dongyubin/IPTV/main/IPTV.m3u",
+        "https://ghfast.top/raw.githubusercontent.com/gaotianliuyun/youshandefeiyang/main/live.m3u",
+        "https://ghfast.top/raw.githubusercontent.com/fanmingming/live/main/tv/m3u/ipv6.m3u",
+        "https://ghfast.top/raw.githubusercontent.com/kongkongyo/m3u8/main/iptv.m3u",
+    ]
+
     func restoreSources() {
         var urls = OrderedDictionary<String, Bool>()
         for p in PRESET_SOURCES { urls[p.url] = true }
         for u in storage.loadSourceUrls() {
             let clean = u.trimmingCharacters(in: .whitespaces)
-            if !clean.isEmpty { urls[clean] = true }
+            if clean.isEmpty { continue }
+            if Self.deadPresetUrls.contains(clean) { continue }
+            urls[clean] = true
         }
         sourceUrls = urls.keys
         let selected = storage.loadSelectedSourceUrl().trimmingCharacters(in: .whitespaces)
-        if !selected.isEmpty {
+        if !selected.isEmpty, !Self.deadPresetUrls.contains(selected) {
             activeSourceUrl = selected
             if !sourceUrls.contains(selected) { sourceUrls.append(selected) }
         } else {
             activeSourceUrl = DEFAULT_SOURCE_URL
+        }
+        if !sourceUrls.contains(activeSourceUrl) {
+            sourceUrls.insert(activeSourceUrl, at: 0)
         }
         persistSources()
     }
@@ -1129,7 +1139,7 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    /// 切换融合模式
+    /// 切换融合模式（每次切换强制新一轮融合，避免「第二次不启动」）
     func switchFusionMode(_ mode: FusionMode) {
         fusionMode = mode
         UserDefaults.standard.set(mode.rawValue, forKey: "fusionMode")
@@ -1143,9 +1153,9 @@ final class PlayerViewModel: ObservableObject {
         case .smart: modeName = "智能"
         }
 
-        showIndicator("已切换到\(modeName)模式")
-
-        // 重新加载频道
+        showIndicator("已切换到\(modeName)模式 · 正在融合")
+        bootstrapMessage = "正在按\(modeName)模式融合..."
+        // loadChannels 内部会 invalidateSession；这里不再重复调用，避免 session 错位
         loadChannels(force: true, silent: false, preferActiveOnly: false)
     }
 

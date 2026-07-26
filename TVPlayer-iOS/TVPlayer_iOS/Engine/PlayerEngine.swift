@@ -5,16 +5,16 @@ import Combine
 @MainActor
 final class PlayerEngine: ObservableObject {
     // MARK: - 配置常量
-    static let startupTimeoutNs: UInt64 = 5_000_000_000      // 5s 起播超时：给弱网出画机会
-    static let readyProtectNs: UInt64 = 2_500_000_000         // 2.5s 出画保护：避免刚就绪就误判
-    static let errorGraceNs: UInt64 = 1_500_000_000           // 1.5s 错误宽容
-    static let silentAudioCheckNs: UInt64 = 8_000_000_000     // 8s 后再查静音（HLS 晚选轨）
-    static let silentAudioPollIntervalNs: UInt64 = 1_200_000_000 // 1.2s 二次确认
-    static let progressStallThreshold: TimeInterval = 3.5     // 出画后进度停滞阈值（更快发现冻屏）
+    static let startupTimeoutNs: UInt64 = 4_000_000_000      // 4s 起播超时
+    static let readyProtectNs: UInt64 = 1_500_000_000         // 1.5s 出画保护
+    static let errorGraceNs: UInt64 = 1_000_000_000           // 1s 错误宽容
+    static let silentAudioCheckNs: UInt64 = 6_000_000_000     // 6s 后再查静音
+    static let silentAudioPollIntervalNs: UInt64 = 1_000_000_000 // 1s 二次确认
+    static let progressStallThreshold: TimeInterval = 2.2     // 进度停滞阈值（更快换线）
 
-    // 卡顿等待：可感知冻屏后换线（WiFi 略快）
+    // 卡顿等待：可感知冻屏后换线（WiFi 更快）
     static var stallTimeoutNs: UInt64 {
-        NetworkMonitor.shared.isWiFi ? 4_000_000_000 : 6_000_000_000
+        NetworkMonitor.shared.isWiFi ? 2_500_000_000 : 4_000_000_000
     }
 
     let player = AVPlayer()
@@ -379,9 +379,15 @@ final class PlayerEngine: ObservableObject {
         let token = playToken
         scheduleTask(named: "stall", token: token, timeout: Self.stallTimeoutNs) { [weak self] in
             guard let self, self.playToken == token, self.stallWatchEnabled else { return }
+            // waiting 持续超时即切；不强制 rate==0（部分 HLS 卡死时 rate 仍为 1）
             let waiting = self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate
-            let rateZero = self.player.rate == 0
-            guard waiting, rateZero else {
+            let noProgress = self.hasRendered
+                && self.lastTimeProgressAt != .distantPast
+                && Date().timeIntervalSince(self.lastTimeProgressAt) > Self.progressStallThreshold
+            let frozenPlaying = self.player.timeControlStatus == .playing
+                && self.player.rate > 0.01
+                && noProgress
+            guard waiting || frozenPlaying || self.isStalled() else {
                 self.continuousStall = false
                 return
             }
@@ -447,7 +453,7 @@ final class PlayerEngine: ObservableObject {
             // 出画保护期内不做健康切换
             try? await Task.sleep(nanoseconds: Self.readyProtectNs)
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard let self, self.playToken == token, !Task.isCancelled else { return }
                 guard self.isReady, self.stallWatchEnabled else { continue }
                 // 仅用户暂停跳过；waiting/rate=0 正是卡顿，必须继续检测
@@ -468,7 +474,7 @@ final class PlayerEngine: ObservableObject {
                     self.healthMonitor?.recordBufferEmpty()
                 }
 
-                // 连续 2 次确认卡顿（约 3s+）即切，冻屏更快响应
+                // 连续 2 次确认卡顿（约 2s+）即切
                 if self.isStalled() {
                     self.healthMonitor?.recordStall()
                     self.consecutiveStallCount += 1
