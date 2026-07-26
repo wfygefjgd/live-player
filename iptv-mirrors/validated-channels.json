@@ -12,8 +12,7 @@
       "group": "央视",
       "urls": [
         "http://222.223.41.27:8888/hls/2/index.m3u8",
-        "http://63.141.230.178:82/gslb/zbdq5.m3u8?id=cctv2hd",
-        "http://173.208.212.130:8181/720p/cctv2.m3u8"
+        "http://63.141.230.178:82/gslb/zbdq5.m3u8?id=cctv2hd"
       ]
     },
     {
@@ -38,13 +37,6 @@
       "urls": [
         "http://74.91.26.218:82/live/cctv7hd.m3u8",
         "http://38.75.136.137:98/gslb/dsdqbv/cctv7hd.m3u8?auth=test20251009"
-      ]
-    },
-    {
-      "name": "CCTV-11",
-      "group": "央视",
-      "urls": [
-        "https://xykt-fix.github.io/play/a02b/index.m3u8"
       ]
     },
     {
@@ -584,6 +576,13 @@
       ]
     },
     {
+      "name": "CGTN英语",
+      "group": "央视频道",
+      "urls": [
+        "https://0472.org/hls/cgtn.m3u8"
+      ]
+    },
+    {
       "name": "CGTN记录",
       "group": "央视频道",
       "urls": [
@@ -605,10 +604,10 @@
       ]
     },
     {
-      "name": "CGTN阿语",
+      "name": "CGTN西语",
       "group": "央视频道",
       "urls": [
-        "https://0472.org/hls/cgtna.m3u8"
+        "https://0472.org/hls/cgtnx.m3u8"
       ]
     },
     {
@@ -777,6 +776,13 @@
       "group": "港澳台频道",
       "urls": [
         "http://61.221.215.25:8800/hls/43/index.m3u8"
+      ]
+    },
+    {
+      "name": "CNA",
+      "group": "国际频道",
+      "urls": [
+        "https://d2e1asnsl7br7b.cloudfront.net/7782e205e72f43aeb4a48ec97f66ebbe/index_5.m3u8"
       ]
     },
     {
@@ -1179,20 +1185,6 @@
       ]
     },
     {
-      "name": "河源综合",
-      "group": "广东",
-      "urls": [
-        "http://tmpstream.hyrtv.cn/xwzh/sd/live.m3u8"
-      ]
-    },
-    {
-      "name": "河源公共",
-      "group": "广东",
-      "urls": [
-        "http://tmpstream.hyrtv.cn/hygg/sd/live.m3u8"
-      ]
-    },
-    {
       "name": "番禺综合",
       "group": "广东",
       "urls": [
@@ -1498,6 +1490,13 @@
       "group": "江苏",
       "urls": [
         "http://dafeng-tv-hls.cm.jstv.com/dafeng-tv/dafengyt.m3u8"
+      ]
+    },
+    {
+      "name": "大丰公共频道",
+      "group": "江苏",
+      "urls": [
+        "http://dafeng-tv-hls.cm.jstv.com/dafeng-tv/dafenget.m3u8"
       ]
     },
     {
@@ -1848,6 +1847,13 @@
       "group": "山东",
       "urls": [
         "http://live.yantaitv.cn/live/27f84144e95a4652ae9e5c211b2a6b55/405f3e33ba384aa0a16014d0becd1261-1.m3u8"
+      ]
+    },
+    {
+      "name": "烟台影视频道",
+      "group": "山东",
+      "urls": [
+        "http://live.yantaitv.cn/live/e9f1d9045d474c31884d13fa4ffbbd16/a4a9b3704d854756907845107cc56129-1.m3u8"
       ]
     },
     {
@@ -2645,13 +2651,6 @@
       ]
     },
     {
-      "name": "CGTN (720p)",
-      "group": "其他",
-      "urls": [
-        "https://0472.org/hls/cgtn.m3u8"
-      ]
-    },
-    {
       "name": "CGTN Documentary (1080p)",
       "group": "其他",
       "urls": [
@@ -2663,13 +2662,6 @@
       "group": "其他",
       "urls": [
         "http://play1-qk.nmtv.cn/live/1735546697341033.m3u8"
-      ]
-    },
-    {
-      "name": "CND Film Middle School Channel",
-      "group": "其他",
-      "urls": [
-        "http://live-play.zxstv.com.cn/zhongxuesheng/zhongxuesheng.m3u8"
       ]
     },
     {
@@ -2873,6 +2865,13 @@
       ]
     },
     {
+      "name": "南京教科 (576p)",
+      "group": "其他",
+      "urls": [
+        "http://183.207.248.71/gitv/live1/G_NJJK/G_NJJK"
+      ]
+    },
+    {
       "name": "吉林市新闻综合 [Geo-blocked]",
       "group": "其他",
       "urls": [
@@ -2975,13 +2974,6 @@
       "group": "其他",
       "urls": [
         "http://222.179.155.21:1935/ch0.m3u8"
-      ]
-    },
-    {
-      "name": "河源综合 (540p)",
-      "group": "其他",
-      "urls": [
-        "https://tmpstream.hyrtv.cn/xwzh/sd/live.m3u8"
       ]
     },
     {
@@ -3153,13 +3145,6 @@
       ]
     },
     {
-      "name": "Angel TV Chinese (720p)",
-      "group": "Religious",
-      "urls": [
-        "https://janya-digimix.akamaized.net/vglive-sk-999451/chinese/ngrp:angelchinese_all/playlist.m3u8"
-      ]
-    },
-    {
       "name": "Home Plus",
       "group": "Movies",
       "urls": [
@@ -3176,15 +3161,14 @@
   ],
   "metadata": {
     "total_channels": 2121,
-    "valid_channels": 449,
-    "total_valid_urls": 479,
-    "validated_at": "2026-07-26T23:50:42",
+    "valid_channels": 447,
+    "total_valid_urls": 476,
+    "validated_at": "2026-07-27T00:07:26",
     "max_urls_per_channel": 3,
     "sources": [
       "burningc4-local",
       "zbefine-local",
       "suxuang-local",
-      "BurningC4 CDN",
       "best-fan 全量",
       "iptv-org 中国",
       "iptv-org Pages"

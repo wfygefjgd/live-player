@@ -5,7 +5,7 @@ import MediaPlayer
 
 // 默认 M3U 源：Guovin/iptv-api 每日两次自动采集+测速+筛选的产物。
 // raw 地址由 MirrorResolver 在拉取时自动扩展 jsDelivr/ghproxy 镜像，国内可直连
-let DEFAULT_SOURCE_URL = "https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u"
+let DEFAULT_SOURCE_URL = "https://wfygefjgd.github.io/live-player/iptv-mirrors/validated-channels.m3u"
 
 private let CHANNEL_OSD_MS: UInt64 = 2_500_000_000
 private let INDICATOR_MS: UInt64 = 1_200_000_000
@@ -17,9 +17,15 @@ private let PREFERRED_LINE_STABLE_NS: UInt64 = 5_000_000_000 // 稳定播放 5s 
 // 已筛选列表（JSON，303 台）专用地址，勿当 m3u 源塞进 PRESET
 let VALIDATED_CHANNELS_MIRROR =
     "https://wfygefjgd.github.io/live-player/iptv-mirrors/validated-channels.json"
+let VALIDATED_M3U_MIRROR =
+    "https://wfygefjgd.github.io/live-player/iptv-mirrors/validated-channels.m3u"
+let VALIDATED_M3U_CDN_MIRROR =
+    "https://cdn.jsdelivr.net/gh/wfygefjgd/live-player@main/iptv-mirrors/validated-channels.m3u"
 
 // M3U 预置源（GitHub 系地址拉取时自动扩镜像，见 MirrorResolver）
 let PRESET_SOURCES: [(name: String, url: String)] = [
+    ("Validated GitHub mirror", VALIDATED_M3U_MIRROR),
+    ("Validated jsDelivr mirror", VALIDATED_M3U_CDN_MIRROR),
     ("Guovin 自动筛选源（推荐）", "https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u"),
     ("vbskycn 双栈源", "https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv4.m3u"),
     ("fanmingming IPv6 源", "https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/ipv6.m3u"),

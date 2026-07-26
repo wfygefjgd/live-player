@@ -29,6 +29,7 @@ except ImportError:
 ROOT = Path(__file__).resolve().parents[2]
 MIRROR_DIR = ROOT / "iptv-mirrors"
 OUT_MIRROR = MIRROR_DIR / "validated-channels.json"
+OUT_M3U_MIRROR = MIRROR_DIR / "validated-channels.m3u"
 OUT_SCRIPTS = Path(__file__).resolve().parent / "validated-channels.json"
 OUT_BUNDLE = ROOT / "TVPlayer-iOS" / "TVPlayer_iOS" / "Resources" / "validated-channels.json"
 
@@ -253,6 +254,17 @@ def write_outputs(channels: List[Dict], source_names: List[str], total_before: i
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"[写入] {path} ({len(channels)} 频道)")
+
+
+    m3u_lines = ["#EXTM3U"]
+    for channel in channels:
+        name = channel["name"].replace('"', "'").replace("\r", " ").replace("\n", " ").strip()
+        group = channel.get("group", "其他").replace('"', "'").replace("\r", " ").replace("\n", " ").strip()
+        for url in channel["urls"]:
+            m3u_lines.append(f'#EXTINF:-1 group-title="{group}",{name}')
+            m3u_lines.append(url.strip())
+    OUT_M3U_MIRROR.write_text("\n".join(m3u_lines) + "\n", encoding="utf-8")
+    print(f"[M3U] {OUT_M3U_MIRROR} ({len(channels)} channels)")
 
 
 async def main():

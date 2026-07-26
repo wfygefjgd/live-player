@@ -172,8 +172,6 @@ final class WindowVideoSurface {
     func forceFullBleed(reason: String = "") {
         guard let window = Self.keyWindow() else { return }
 
-        let full = Self.physicalScreenRect(for: window)
-
         window.backgroundColor = .black
         window.clipsToBounds = false
 
@@ -208,32 +206,22 @@ final class WindowVideoSurface {
         }
 
         // host 略外扩盖小白条（黑底）；画面层严格等于物理屏 + 只拉伸不裁切
-        let bleed: CGFloat = 12
-        let hostRect = full.insetBy(dx: -bleed, dy: -bleed)
+        let windowBounds = window.bounds
+        guard windowBounds.width > 1, windowBounds.height > 1 else { return }
         host.isHidden = false
         host.alpha = 1
         host.backgroundColor = .black
-        host.clipsToBounds = false
+        host.clipsToBounds = true
         host.isUserInteractionEnabled = false
-        host.bounds = CGRect(origin: .zero, size: hostRect.size)
-        host.center = CGPoint(x: window.bounds.midX, y: window.bounds.midY)
-        host.frame = CGRect(
-            x: window.bounds.midX - hostRect.width / 2,
-            y: window.bounds.midY - hostRect.height / 2,
-            width: hostRect.width,
-            height: hostRect.height
-        )
+        host.frame = windowBounds
+        host.bounds = CGRect(origin: .zero, size: windowBounds.size)
 
-        lastAppliedSize = full.size
+        lastAppliedSize = windowBounds.size
 
         // 画面：铺满物理屏，强制拉伸(.resize)；不跟 host 一起外扩，避免「又拉又裁」
-        let videoOrigin = CGPoint(
-            x: (hostRect.width - full.width) / 2,
-            y: (hostRect.height - full.height) / 2
-        )
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        playerLayer.frame = CGRect(origin: videoOrigin, size: full.size)
+        playerLayer.frame = host.bounds
         playerLayer.videoGravity = .resize
         playerLayer.isHidden = false
         playerLayer.opacity = 1
