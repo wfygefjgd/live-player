@@ -187,16 +187,11 @@ final class WindowVideoSurface {
             // 负向 additionalSafeArea：把系统 inset 顶掉，布局可延伸进小白条。
             // safeAreaInsets 已含 additionalSafeAreaInsets，须先还原系统值再取负，
             // 否则会在 0 与 -系统值 之间来回翻转，画面被小白条反复上挤
-            let si = root.view.safeAreaInsets
-            let add = root.additionalSafeAreaInsets
-            let neg = UIEdgeInsets(
-                top: -(si.top - add.top),
-                left: -(si.left - add.left),
-                bottom: -(si.bottom - add.bottom),
-                right: -(si.right - add.right)
-            )
-            if root.additionalSafeAreaInsets != neg {
-                root.additionalSafeAreaInsets = neg
+            // Keep UIKit's safe-area model stable. The window-level player is
+            // laid out against the physical screen, so no negative inset is
+            // needed to cover the Home Indicator.
+            if root.additionalSafeAreaInsets != .zero {
+                root.additionalSafeAreaInsets = .zero
             }
             root.setNeedsUpdateOfHomeIndicatorAutoHidden()
             root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
@@ -409,12 +404,10 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
         setNeedsUpdateOfHomeIndicatorAutoHidden()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         setNeedsStatusBarAppearanceUpdate()
-        applyZeroSafeArea()
         WindowVideoSurface.shared.forceFullBleed(reason: "host-appear")
         NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
         for t in [0.05, 0.15, 0.3, 0.6, 1.0, 2.0] {
             DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
-                self?.applyZeroSafeArea()
                 WindowVideoSurface.shared.forceFullBleed(reason: "host-appear-delay")
                 WindowVideoSurface.shared.rebindPlayer()
             }
@@ -423,29 +416,12 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
-        applyZeroSafeArea()
         WindowVideoSurface.shared.forceFullBleed(reason: "safeArea")
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        applyZeroSafeArea()
         WindowVideoSurface.shared.forceFullBleed(reason: "host-layout")
-    }
-
-    private func applyZeroSafeArea() {
-        // safeAreaInsets 已含 additionalSafeAreaInsets，先还原系统值再取负（避免 0/-系统值 震荡）
-        let inset = view.safeAreaInsets
-        let add = additionalSafeAreaInsets
-        let target = UIEdgeInsets(
-            top: -(inset.top - add.top),
-            left: -(inset.left - add.left),
-            bottom: -(inset.bottom - add.bottom),
-            right: -(inset.right - add.right)
-        )
-        if additionalSafeAreaInsets != target {
-            additionalSafeAreaInsets = target
-        }
     }
 }
 
