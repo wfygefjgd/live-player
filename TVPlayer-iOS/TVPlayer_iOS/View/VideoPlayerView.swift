@@ -4,17 +4,16 @@ import UIKit
 import MediaPlayer
 import Combine
 
-// MARK: - 独立底层 Video Window
+// MARK: - 主窗最底层全屏画面（按用户方案）
 //
-// 小白条是系统层，App 内 zPosition 无法压过它；但可以把画面放到
-// 「比主 UI 更低的独立 UIWindow」里，铺满物理屏，与主窗 safeArea 完全脱钩。
-// 主窗透明只负责手势/UI；画面在另一层，不会被小白条「挤布局」。
+// 1. 容器（window / root / SwiftUI）全部透明 —— 底下没有黑底挡画面
+// 2. 画面 host 插在主 window 的 index 0（最低，但不低于容器）
+// 3. host / playerLayer 铺满物理屏，不读 safeArea，不给小白条让位
+// 4. 小白条是系统层，只能浮在上面；布局上不能再挤短画面
 
 final class WindowVideoSurface {
     static let shared = WindowVideoSurface()
 
-    /// 专用画面窗：level 低于主窗，永不 makeKey
-    private var videoWindow: UIWindow?
     private let host = TouchThroughView(frame: .zero)
     private let playerLayer = AVPlayerLayer()
     private var cancellables = Set<AnyCancellable>()
@@ -22,10 +21,12 @@ final class WindowVideoSurface {
     private var isApplying = false
 
     private init() {
+        // host 自身可以是黑的（只作为画面底板），但尺寸必须全屏
         host.backgroundColor = .black
         host.isUserInteractionEnabled = false
-        host.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        host.autoresizingMask = []
         host.clipsToBounds = false
+        host.layer.zPosition = -10_000
 
         playerLayer.videoGravity = .resize
         playerLayer.backgroundColor = UIColor.black.cgColor
@@ -49,7 +50,9 @@ final class WindowVideoSurface {
         for name in names {
             NotificationCenter.default.publisher(for: name)
                 .receive(on: DispatchQueue.main)
-                .sink { [weak self] _ in self?.ensureVideoWindow(reason: name.rawValue) }
+                .sink { [weak self] _ in
+                    self?.pinToBottomFullScreen(reason: name.rawValue)
+                }
                 .store(in: &cancellables)
         }
         NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)
@@ -82,13 +85,13 @@ final class WindowVideoSurface {
                 NotificationCenter.default.post(name: .tvPlayerInterruptionEnded, object: nil)
             }
             rebindPlayer()
-            ensureVideoWindow(reason: "interruptionEnded")
+            pinToBottomFullScreen(reason: "interruptionEnded")
         @unknown default:
             break
         }
     }
 
-    // MARK: - Public API（兼容旧调用名）
+    // MARK: - Public
 
     func setPlayer(_ player: AVPlayer?) {
         boundPlayer = player
@@ -96,7 +99,7 @@ final class WindowVideoSurface {
         playerLayer.videoGravity = .resize
         playerLayer.isHidden = false
         playerLayer.opacity = 1
-        ensureVideoWindow(reason: "setPlayer")
+        pinToBottomFullScreen(reason: "setPlayer")
     }
 
     func rebindPlayer() {
@@ -111,148 +114,145 @@ final class WindowVideoSurface {
     }
 
     func forceFullBleed(reason: String = "") {
-        ensureVideoWindow(reason: reason)
+        pinToBottomFullScreen(reason: reason)
     }
 
     func hardRemount(reason: String = "") {
-        ensureVideoWindow(reason: reason)
+        pinToBottomFullScreen(reason: reason)
         rebindPlayer()
     }
 
     func install(reason: String = "") {
-        ensureVideoWindow(reason: reason)
+        pinToBottomFullScreen(reason: reason)
     }
 
-    // MARK: - 独立 Video Window
+    // MARK: - 钉在主窗最底 + 全透明容器
 
-    private func ensureVideoWindow(reason: String = "") {
+    private func pinToBottomFullScreen(reason: String = "") {
         if isApplying { return }
         isApplying = true
         defer { isApplying = false }
 
-        guard let scene = Self.activeScene() else { return }
-        let screen = scene.screen
-        let full = Self.physicalLandscapeFrame(screen: screen, scene: scene)
+        guard let window = Self.mainWindow() else { return }
 
-        let win: UIWindow
-        if let existing = videoWindow, existing.windowScene === scene {
-            win = existing
-        } else {
-            let created = UIWindow(windowScene: scene)
-            // 比主窗低一层：主窗 UI/手势在上，画面在下
-            created.windowLevel = UIWindow.Level(rawValue: UIWindow.Level.normal.rawValue - 1)
-            created.backgroundColor = .black
-            created.isUserInteractionEnabled = false
-            created.clipsToBounds = false
-            // 空 root，不参与 safeArea 布局链
-            let root = VideoWindowRootController()
-            root.view.backgroundColor = .black
-            created.rootViewController = root
-            videoWindow = created
-            win = created
+        // —— 用户方案：容器全透明，底下不要黑底挡画面 ——
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.clipsToBounds = false
+
+        if let root = window.rootViewController {
+            makeFullyClear(root.view)
+            root.additionalSafeAreaInsets = .zero
+            root.view.insetsLayoutMarginsFromSafeArea = false
+            // 把 root 子树里常见的黑底也清掉（不递归太深，避免卡）
+            clearBlackBackgrounds(in: root.view, depth: 0)
+            root.setNeedsUpdateOfHomeIndicatorAutoHidden()
+            root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+            root.setNeedsStatusBarAppearanceUpdate()
         }
 
-        // 永远铺满物理横屏，不读 safeArea
-        win.frame = full
-        win.bounds = CGRect(origin: .zero, size: full.size)
-        win.isHidden = false
-        // 绝不 makeKey — 主窗保持 key，小白条策略仍由主 root 控制
-
-        if let rootView = win.rootViewController?.view {
-            rootView.frame = win.bounds
-            rootView.backgroundColor = .black
-            if host.superview !== rootView {
-                host.removeFromSuperview()
-                rootView.addSubview(host)
-            }
-        } else if host.superview !== win {
+        // —— 画面在容器最底层（index 0），不低于 window ——
+        if host.superview !== window {
             host.removeFromSuperview()
-            win.addSubview(host)
+            window.insertSubview(host, at: 0)
+        } else {
+            window.sendSubviewToBack(host)
         }
+        host.layer.zPosition = -10_000
 
-        host.frame = win.bounds
-        host.bounds = CGRect(origin: .zero, size: win.bounds.size)
+        // 物理全屏：不读 safeArea，可比 window.bounds 更大以盖住小白条区域
+        let full = Self.physicalFullFrame(for: window)
         host.isHidden = false
         host.alpha = 1
         host.backgroundColor = .black
+        host.clipsToBounds = false
+        host.isUserInteractionEnabled = false
+        host.frame = full
+        host.bounds = CGRect(origin: .zero, size: full.size)
 
         applyLayerFrame()
         if playerLayer.player == nil {
             playerLayer.player = boundPlayer
         }
-
-        // 主窗保持透明，露出底层 video window
-        if let app = UIApplication.shared.delegate as? AppDelegate {
-            app.window?.backgroundColor = .clear
-            app.window?.isOpaque = false
-            app.window?.rootViewController?.view.backgroundColor = .clear
-            app.window?.rootViewController?.view.isOpaque = false
-            // 确保主窗仍在 video 之上且为 key
-            if let main = app.window, !main.isKeyWindow {
-                main.makeKeyAndVisible()
-            }
-            // 主窗 level 正常
-            app.window?.windowLevel = .normal
-        }
     }
 
     private func applyLayerFrame() {
-        let bounds = host.bounds
-        guard bounds.width > 1, bounds.height > 1 else { return }
+        guard host.bounds.width > 1, host.bounds.height > 1 else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        playerLayer.frame = bounds
+        // 画面 = host 全大，不给底部留空
+        playerLayer.frame = host.bounds
         playerLayer.videoGravity = .resize
         playerLayer.isHidden = false
         playerLayer.opacity = 1
         CATransaction.commit()
     }
 
-    /// 物理横屏全屏矩形（scene/screen），不吃 safeArea
-    private static func physicalLandscapeFrame(screen: UIScreen, scene: UIWindowScene) -> CGRect {
+    private func makeFullyClear(_ view: UIView?) {
+        guard let view else { return }
+        view.backgroundColor = .clear
+        view.isOpaque = false
+        view.clipsToBounds = false
+    }
+
+    private func clearBlackBackgrounds(in view: UIView, depth: Int) {
+        guard depth < 6 else { return }
+        // 不改 host / 不改侧栏内容；只清主界面容器黑底
+        if view === host { return }
+        if let bg = view.backgroundColor, bg != .clear {
+            // 纯黑/近黑 → 透明
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            if bg.getRed(&r, green: &g, blue: &b, alpha: &a), r < 0.08, g < 0.08, b < 0.08, a > 0.5 {
+                view.backgroundColor = .clear
+                view.isOpaque = false
+            }
+        }
+        for sub in view.subviews where sub !== host {
+            clearBlackBackgrounds(in: sub, depth: depth + 1)
+        }
+    }
+
+    /// 物理全屏 frame（相对 window）：横屏长边×短边，可略大于 window 以盖 Home Indicator
+    private static func physicalFullFrame(for window: UIWindow) -> CGRect {
+        let screen = window.windowScene?.screen ?? window.screen
         let native = screen.nativeBounds
         let scale = max(screen.scale, 1)
         var w = native.width / scale
         var h = native.height / scale
         if w < 1 || h < 1 {
-            let b = screen.bounds
-            w = b.width
-            h = b.height
+            w = screen.bounds.width
+            h = screen.bounds.height
         }
+        // 横屏
         if w < h { swap(&w, &h) }
-        // 与 scene 坐标对齐：取横屏
-        let coord = scene.coordinateSpace.bounds
-        let cw = max(coord.width, coord.height)
-        let ch = min(coord.width, coord.height)
-        w = max(w, cw)
-        h = max(h, ch)
-        return CGRect(x: 0, y: 0, width: w, height: h)
+        let ww = window.bounds.width
+        let wh = window.bounds.height
+        if ww >= wh {
+            w = max(w, ww)
+            h = max(h, wh)
+        } else {
+            // window 仍是竖的瞬间：仍按横屏物理尺寸画，居中
+            w = max(w, wh)
+            h = max(h, ww)
+        }
+        let ox = (ww - w) / 2
+        let oy = (wh - h) / 2
+        return CGRect(x: ox, y: oy, width: w, height: h)
     }
 
-    private static func activeScene() -> UIWindowScene? {
+    private static func mainWindow() -> UIWindow? {
+        if let app = UIApplication.shared.delegate as? AppDelegate, let w = app.window {
+            return w
+        }
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        return scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
-    }
-}
-
-/// Video window 的 root：不声明复杂策略，只铺黑底
-private final class VideoWindowRootController: UIViewController {
-    override var prefersStatusBarHidden: Bool { true }
-    override var prefersHomeIndicatorAutoHidden: Bool { true }
-    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
-    override var shouldAutorotate: Bool { true }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        view.backgroundColor = .black
-        view.isUserInteractionEnabled = false
-        additionalSafeAreaInsets = .zero
-        view.insetsLayoutMarginsFromSafeArea = false
-    }
-
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        // 不在这里动 player，避免递归；由 ensureVideoWindow 统一钉
+        for scene in scenes where scene.activationState == .foregroundActive {
+            let normals = scene.windows.filter {
+                $0.windowLevel <= .normal && !$0.isHidden
+            }
+            if let key = normals.first(where: \.isKeyWindow) { return key }
+            if let first = normals.first { return first }
+        }
+        return scenes.flatMap(\.windows).first { $0.windowLevel <= .normal }
     }
 }
 
@@ -281,7 +281,6 @@ struct VideoPlayerView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PlayerAnchorView {
         let v = PlayerAnchorView()
-        // 锚点只负责触发；真实画面在独立 video window
         WindowVideoSurface.shared.setPlayer(vm.player.player)
         return v
     }
@@ -292,7 +291,7 @@ struct VideoPlayerView: UIViewRepresentable {
     }
 }
 
-// MARK: - 主 UI 根容器（透明，露出底层 video window）
+// MARK: - 主 UI 根：全透明容器
 
 final class FullScreenRootController: UIViewController {
     private let hosted: UIViewController
@@ -317,7 +316,7 @@ final class FullScreenRootController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        // 主窗必须透明，否则挡住底层 video window
+        // 容器透明（用户方案）：底下露出 window 最底层的画面 host
         view.backgroundColor = .clear
         view.isOpaque = false
         view.clipsToBounds = false
@@ -357,8 +356,8 @@ final class FullScreenRootController: UIViewController {
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
-        // 主窗 safeArea 变化与 video window 无关；仍刷新 chrome + 钉 video 窗
         refreshSystemChrome()
+        // safeArea 变了也不让位：再钉全屏
         WindowVideoSurface.shared.forceFullBleed(reason: "safeArea")
     }
 

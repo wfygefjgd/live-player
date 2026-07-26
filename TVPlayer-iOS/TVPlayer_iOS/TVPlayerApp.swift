@@ -87,11 +87,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 existing.windowScene = resolvedScene
                 existing.frame = resolvedScene.coordinateSpace.bounds
                 existing.rootViewController = container
-                // 主窗透明：露出底层独立 video window
+                // 容器透明：底下是 window 最底层的画面 host（用户方案）
                 existing.backgroundColor = .clear
                 existing.isOpaque = false
                 existing.clipsToBounds = false
-                existing.windowLevel = .normal
                 self.window = existing
                 existing.makeKeyAndVisible()
             } else {
@@ -100,7 +99,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 w.backgroundColor = .clear
                 w.isOpaque = false
                 w.clipsToBounds = false
-                w.windowLevel = .normal
                 w.rootViewController = container
                 self.window = w
                 w.makeKeyAndVisible()
@@ -110,7 +108,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             w.backgroundColor = .clear
             w.isOpaque = false
             w.clipsToBounds = false
-            w.windowLevel = .normal
             w.rootViewController = container
             self.window = w
             w.makeKeyAndVisible()

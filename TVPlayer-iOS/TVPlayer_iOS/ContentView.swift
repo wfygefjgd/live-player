@@ -10,11 +10,10 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            // 必须透明：真实画面在独立底层 video window，主窗只负责手势/OSD
+            // 容器透明：真实画面在 window 最底层 host，SwiftUI 只负责手势/OSD
             Color.clear
                 .ignoresSafeArea(.all, edges: .all)
 
-            // 锚点：触发 setPlayer；不绘制画面
             VideoPlayerView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea(.all, edges: .all)
