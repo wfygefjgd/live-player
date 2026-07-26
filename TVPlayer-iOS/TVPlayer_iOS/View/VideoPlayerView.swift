@@ -41,7 +41,7 @@ final class PlayerSurfaceView: UIView {
         backgroundColor = .black
         isOpaque = true
         clipsToBounds = true
-        playerLayer.videoGravity = .resize
+        playerLayer.videoGravity = .resizeAspectFill
         playerLayer.backgroundColor = UIColor.black.cgColor
     }
 
@@ -52,20 +52,20 @@ final class PlayerSurfaceView: UIView {
         playerLayer.player = player
         playerLayer.isHidden = false
         playerLayer.opacity = 1
-        playerLayer.videoGravity = .resize
+        playerLayer.videoGravity = .resizeAspectFill
         setNeedsLayout()
     }
 
     func rebind() {
         guard let p = boundPlayer else { return }
         if playerLayer.player !== p { playerLayer.player = p }
-        playerLayer.videoGravity = .resize
+        playerLayer.videoGravity = .resizeAspectFill
         // layer 随 bounds 自动布局；无需按 safeArea 缩 frame
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        playerLayer.videoGravity = .resize
+        playerLayer.videoGravity = .resizeAspectFill
     }
 }
 
