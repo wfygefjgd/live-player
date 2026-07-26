@@ -11,24 +11,18 @@ struct ContentView: View {
     @State private var numberInput = ""
     @State private var numberInputTask: Task<Void, Never>?
 
-    /// 横屏物理尺寸：避免启动瞬间仍是 portrait bounds
-    private var physicalScreenSize: CGSize {
-        let b = UIScreen.main.bounds
-        return CGSize(width: max(b.width, b.height), height: min(b.width, b.height))
-    }
-
     var body: some View {
         ZStack {
             // 纯黑背景铺满物理屏
             Color.black
                 .edgesIgnoringSafeArea(.all)
-                .ignoresSafeArea(.all, edges: .all)
+                .ignoresSafeArea()
 
             // 视频视图：强制充满并忽略所有安全区域（可命中，手势层在上层）
             VideoPlayerView()
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                 .edgesIgnoringSafeArea(.all)
-                .ignoresSafeArea(.all, edges: .all)
+                .ignoresSafeArea()
                 .zIndex(1)
 
             // 手势交互层
@@ -36,7 +30,7 @@ struct ContentView: View {
                 .contentShape(Rectangle())
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                 .edgesIgnoringSafeArea(.all)
-                .ignoresSafeArea(.all, edges: .all)
+                .ignoresSafeArea()
                 .highPriorityGesture(longPressGesture())
                 .simultaneousGesture(doubleTapGesture())
                 .simultaneousGesture(playerDragGesture())
@@ -46,12 +40,11 @@ struct ContentView: View {
             floatingChrome()
                 .zIndex(5)
         }
-        // 强制锁死屏幕物理宽高，解开 UIHostingController 中间小框
-        .frame(width: physicalScreenSize.width, height: physicalScreenSize.height)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // 标准自适应铺满，不写死宽高
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .edgesIgnoringSafeArea(.all)
-        .ignoresSafeArea(.all, edges: .all)
-        .background(Color.black.edgesIgnoringSafeArea(.all).ignoresSafeArea(.all, edges: .all))
+        .ignoresSafeArea()
+        .background(Color.black.edgesIgnoringSafeArea(.all).ignoresSafeArea())
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .defersSystemGestures(on: .all)
@@ -173,9 +166,9 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .edgesIgnoringSafeArea(.all)
-        .ignoresSafeArea(.all, edges: .all)
+        .ignoresSafeArea()
         .allowsHitTesting(false)
     }
 
