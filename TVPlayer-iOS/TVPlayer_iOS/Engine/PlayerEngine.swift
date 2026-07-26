@@ -5,16 +5,24 @@ import Combine
 @MainActor
 final class PlayerEngine: ObservableObject {
     // MARK: - 配置常量
-    static let startupTimeoutNs: UInt64 = 4_000_000_000      // 4s 起播超时
-    static let readyProtectNs: UInt64 = 1_500_000_000         // 1.5s 出画保护
-    static let errorGraceNs: UInt64 = 1_000_000_000           // 1s 错误宽容
-    static let silentAudioCheckNs: UInt64 = 6_000_000_000     // 6s 后再查静音
-    static let silentAudioPollIntervalNs: UInt64 = 1_000_000_000 // 1s 二次确认
-    static let progressStallThreshold: TimeInterval = 2.2     // 进度停滞阈值（更快换线）
+    static let startupTimeoutNs: UInt64 = 3_500_000_000      // 3.5s 起播超时
+    static let readyProtectNs: UInt64 = 1_200_000_000         // 1.2s 出画保护
+    static let errorGraceNs: UInt64 = 800_000_000             // 0.8s 错误宽容
+    static let silentAudioCheckNs: UInt64 = 6_000_000_000
+    static let silentAudioPollIntervalNs: UInt64 = 1_000_000_000
+    static let progressStallThreshold: TimeInterval = 1.8
 
-    // 卡顿等待：可感知冻屏后换线（WiFi 更快）
+    /// 网速阈值（KB/s）：≥ 此值暂缓换线；持续低于则快切
+    static let minUsefulSpeedKBps: Double = 50
+    /// 判定「几乎无速度」
+    static let deadSpeedKBps: Double = 5
+    /// 低速持续多久才换线（秒）
+    static let lowSpeedSwitchSeconds: TimeInterval = 2.0
+    /// 无网/无速度多久立刻换（秒）
+    static let zeroSpeedSwitchSeconds: TimeInterval = 1.2
+
     static var stallTimeoutNs: UInt64 {
-        NetworkMonitor.shared.isWiFi ? 2_500_000_000 : 4_000_000_000
+        NetworkMonitor.shared.isWiFi ? 2_000_000_000 : 3_000_000_000
     }
 
     let player = AVPlayer()
@@ -22,28 +30,33 @@ final class PlayerEngine: ObservableObject {
     private var statusObserver: NSKeyValueObservation?
     private var timeObserver: Any?
 
-    // 统一 Task 管理
     private var watchTasks: [String: Task<Void, Never>] = [:]
     private var playToken = 0
 
-    // 🆕 健康度监控
     private var healthMonitor: PlaybackHealthMonitor?
 
-    // 播放状态
     private var stallWatchEnabled = false
     private var continuousStall = false
     private var hasRendered = false
     private var lastItemTime: CMTime = .zero
     private var lastTimeProgressAt: Date = .distantPast
 
-    // 静音检测
     private var hasAudioTrackReported = false
     private var silenceCheckScheduled = false
 
+    // 网速采样
+    private var lastAccessBytes: Int64 = 0
+    private var lastAccessSampleAt: Date = .distantPast
+    private var lastObservedKBps: Double = 0
+    private var lowSpeedSince: Date?
+    private var zeroSpeedSince: Date?
+    private var speedCheckTask: Task<Void, Never>?
+
     @Published var isReady = false
     @Published var isPlaying = false
+    /// 最近采样网速 KB/s（供 UI/调试）
+    @Published var observedSpeedKBps: Double = 0
 
-    // 回调
     var onError: (() -> Void)?
     var onReady: (() -> Void)?
     var onStartupTimeout: (() -> Void)?
@@ -51,6 +64,8 @@ final class PlayerEngine: ObservableObject {
     var onSilentAudio: (() -> Void)?
     var onExtendedStall: (() -> Void)?
     var onHealthCritical: ((String) -> Void)?
+    /// 网速过低/无网触发换线
+    var onLowSpeed: ((String) -> Void)?
 
     private var consecutiveStallCount = 0
     private var healthCheckTask: Task<Void, Never>?
@@ -152,7 +167,8 @@ final class PlayerEngine: ObservableObject {
             timeObserver = nil
         }
         cancelAllTasks()
-        stopHealthCheck()  // 只保留健康度检查
+        stopHealthCheck()
+        stopSpeedCheck()
         cancellables.removeAll()
         player.replaceCurrentItem(with: nil)
         isPlaying = false
@@ -164,6 +180,12 @@ final class PlayerEngine: ObservableObject {
         silenceCheckScheduled = false
         lastItemTime = .zero
         lastTimeProgressAt = .distantPast
+        lastAccessBytes = 0
+        lastAccessSampleAt = .distantPast
+        lastObservedKBps = 0
+        observedSpeedKBps = 0
+        lowSpeedSince = nil
+        zeroSpeedSince = nil
     }
 
     var volume: Float {
@@ -183,6 +205,7 @@ final class PlayerEngine: ObservableObject {
     private func resetState(for token: Int) {
         cancelAllTasks()
         stopHealthCheck()
+        stopSpeedCheck()
         consecutiveStallCount = 0
         stallWatchEnabled = false
         continuousStall = false
@@ -191,6 +214,12 @@ final class PlayerEngine: ObservableObject {
         silenceCheckScheduled = false
         lastItemTime = .zero
         lastTimeProgressAt = .distantPast
+        lastAccessBytes = 0
+        lastAccessSampleAt = .distantPast
+        lastObservedKBps = 0
+        observedSpeedKBps = 0
+        lowSpeedSince = nil
+        zeroSpeedSince = nil
         isReady = false
         healthMonitor?.reset()
         if let obs = timeObserver {
@@ -336,6 +365,7 @@ final class PlayerEngine: ObservableObject {
         }
         scheduleSilentAudioCheck(token: token)
         startHealthCheck(token: token)
+        startSpeedCheck(token: token)
     }
 
     private func handleItemFailed(token: Int) {
@@ -379,7 +409,12 @@ final class PlayerEngine: ObservableObject {
         let token = playToken
         scheduleTask(named: "stall", token: token, timeout: Self.stallTimeoutNs) { [weak self] in
             guard let self, self.playToken == token, self.stallWatchEnabled else { return }
-            // waiting 持续超时即切；不强制 rate==0（部分 HLS 卡死时 rate 仍为 1）
+            // 有够用网速时暂缓换线（正在缓冲加载）
+            let speed = self.sampleObservedSpeedKBps()
+            if speed >= Self.minUsefulSpeedKBps {
+                self.continuousStall = false
+                return
+            }
             let waiting = self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate
             let noProgress = self.hasRendered
                 && self.lastTimeProgressAt != .distantPast
@@ -450,15 +485,22 @@ final class PlayerEngine: ObservableObject {
         stopHealthCheck()
         consecutiveStallCount = 0
         healthCheckTask = Task { [weak self] in
-            // 出画保护期内不做健康切换
             try? await Task.sleep(nanoseconds: Self.readyProtectNs)
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                try? await Task.sleep(nanoseconds: 800_000_000)
                 guard let self, self.playToken == token, !Task.isCancelled else { return }
                 guard self.isReady, self.stallWatchEnabled else { continue }
-                // 仅用户暂停跳过；waiting/rate=0 正是卡顿，必须继续检测
                 if self.player.timeControlStatus == .paused {
                     self.consecutiveStallCount = 0
+                    continue
+                }
+
+                // 有够用的网速时：不因短暂 waiting 误切（用户要求：有速度先等）
+                let speed = self.sampleObservedSpeedKBps()
+                if speed >= Self.minUsefulSpeedKBps {
+                    self.consecutiveStallCount = 0
+                    self.lowSpeedSince = nil
+                    self.zeroSpeedSince = nil
                     continue
                 }
 
@@ -474,7 +516,6 @@ final class PlayerEngine: ObservableObject {
                     self.healthMonitor?.recordBufferEmpty()
                 }
 
-                // 连续 2 次确认卡顿（约 2s+）即切
                 if self.isStalled() {
                     self.healthMonitor?.recordStall()
                     self.consecutiveStallCount += 1
@@ -490,10 +531,119 @@ final class PlayerEngine: ObservableObject {
         }
     }
 
-    /// 🆕 停止健康度检查
     private func stopHealthCheck() {
         healthCheckTask?.cancel()
         healthCheckTask = nil
+    }
+
+    // MARK: - 网速驱动换线
+
+    /// 起播后即采样 accessLog；无网/无速快切，有速暂缓，低速持续再切
+    private func startSpeedCheck(token: Int) {
+        stopSpeedCheck()
+        speedCheckTask = Task { [weak self] in
+            // 起播阶段也采样（不必等 ready）
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard let self, self.playToken == token, !Task.isCancelled else { return }
+                if self.player.timeControlStatus == .paused { continue }
+
+                let speed = self.sampleObservedSpeedKBps()
+                let netOK = NetworkMonitor.shared.isSatisfied
+
+                // (a) 网络未就绪 或 几乎无速度 → 累计后立刻换
+                if !netOK || speed < Self.deadSpeedKBps {
+                    if self.zeroSpeedSince == nil { self.zeroSpeedSince = Date() }
+                    self.lowSpeedSince = nil
+                    let elapsed = Date().timeIntervalSince(self.zeroSpeedSince ?? Date())
+                    // 已出画且仍无速：更快；未出画用起播超时兜底，这里略放宽
+                    let need = self.hasRendered || self.isReady
+                        ? Self.zeroSpeedSwitchSeconds
+                        : max(Self.zeroSpeedSwitchSeconds, 2.0)
+                    if elapsed >= need {
+                        self.zeroSpeedSince = nil
+                        let hint = !netOK ? "网络未连接" : "无网速"
+                        self.onLowSpeed?(hint)
+                        return
+                    }
+                    continue
+                }
+
+                self.zeroSpeedSince = nil
+
+                // (b) 有够用速度 → 暂缓，不切
+                if speed >= Self.minUsefulSpeedKBps {
+                    self.lowSpeedSince = nil
+                    continue
+                }
+
+                // (c) 50KB 以下：持续一段时间再切
+                if self.lowSpeedSince == nil { self.lowSpeedSince = Date() }
+                let lowElapsed = Date().timeIntervalSince(self.lowSpeedSince ?? Date())
+                if lowElapsed >= Self.lowSpeedSwitchSeconds {
+                    self.lowSpeedSince = nil
+                    self.onLowSpeed?(String(format: "网速偏低 %.0fKB/s", speed))
+                    return
+                }
+            }
+        }
+    }
+
+    private func stopSpeedCheck() {
+        speedCheckTask?.cancel()
+        speedCheckTask = nil
+    }
+
+    /// 从 AVPlayerItemAccessLog 估算 KB/s
+    @discardableResult
+    func sampleObservedSpeedKBps() -> Double {
+        guard let item = player.currentItem,
+              let log = item.accessLog(),
+              let last = log.events.last else {
+            observedSpeedKBps = lastObservedKBps
+            return lastObservedKBps
+        }
+
+        let bytes = last.numberOfBytesTransferred
+        let now = Date()
+
+        // 优先用 observedBitrate（bits/s）
+        let bitrate = last.observedBitrate
+        if bitrate > 0 {
+            let kbps = bitrate / 8.0 / 1024.0
+            lastObservedKBps = kbps
+            observedSpeedKBps = kbps
+            lastAccessBytes = bytes
+            lastAccessSampleAt = now
+            return kbps
+        }
+
+        // 差分 bytes / 时间
+        if lastAccessSampleAt != .distantPast, lastAccessBytes > 0, bytes >= lastAccessBytes {
+            let dt = now.timeIntervalSince(lastAccessSampleAt)
+            if dt > 0.2 {
+                let delta = Double(bytes - lastAccessBytes)
+                let kbps = (delta / dt) / 1024.0
+                lastObservedKBps = kbps
+                observedSpeedKBps = kbps
+                lastAccessBytes = bytes
+                lastAccessSampleAt = now
+                return kbps
+            }
+        } else {
+            lastAccessBytes = bytes
+            lastAccessSampleAt = now
+        }
+
+        // 缓冲中但尚无 log：用 buffer 是否在涨作弱信号
+        if item.isPlaybackLikelyToKeepUp {
+            lastObservedKBps = max(lastObservedKBps, Self.minUsefulSpeedKBps)
+        } else if item.isPlaybackBufferEmpty {
+            lastObservedKBps = min(lastObservedKBps, Self.deadSpeedKBps)
+        }
+        observedSpeedKBps = lastObservedKBps
+        return lastObservedKBps
     }
 
     // MARK: - Private — Task Helpers

@@ -27,8 +27,8 @@ final class WindowVideoSurface {
         host.autoresizingMask = []
         host.clipsToBounds = false
         host.layer.zPosition = -1_000
-        // 铺满屏幕：裁掉多余边，消除四边黑边/小白条
-        playerLayer.videoGravity = .resizeAspectFill
+        // 强制拉伸铺满整屏（允许变形，无黑边、不按比例裁切）
+        playerLayer.videoGravity = .resize
         playerLayer.backgroundColor = UIColor.black.cgColor
         playerLayer.isOpaque = true
         playerLayer.masksToBounds = false
@@ -114,7 +114,7 @@ final class WindowVideoSurface {
     func setPlayer(_ player: AVPlayer?) {
         boundPlayer = player
         playerLayer.player = player
-        playerLayer.videoGravity = .resizeAspectFill
+        playerLayer.videoGravity = .resize
         playerLayer.isHidden = false
         playerLayer.opacity = 1
         forceFullBleed(reason: "setPlayer")
@@ -198,15 +198,14 @@ final class WindowVideoSurface {
             window.sendSubviewToBack(host)
         }
 
-        // 物理全屏 + 外扩，盖住 Home Indicator / 安全区（小白条）与四边黑边
-        let bleed: CGFloat = 8
+        // 物理全屏 + 大外扩，强制盖住 Home Indicator / 小白条
+        let bleed: CGFloat = 24
         let bleedRect = full.insetBy(dx: -bleed, dy: -bleed)
         host.isHidden = false
         host.alpha = 1
         host.backgroundColor = .black
         host.clipsToBounds = false
         host.isUserInteractionEnabled = false
-        // 以 window 中心对齐，保证溢出部分对称盖住安全区
         host.bounds = CGRect(origin: .zero, size: bleedRect.size)
         host.center = CGPoint(x: window.bounds.midX, y: window.bounds.midY)
         host.frame = CGRect(
@@ -221,7 +220,7 @@ final class WindowVideoSurface {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         playerLayer.frame = host.bounds
-        playerLayer.videoGravity = .resizeAspectFill
+        playerLayer.videoGravity = .resize
         playerLayer.isHidden = false
         playerLayer.opacity = 1
         if playerLayer.player == nil {

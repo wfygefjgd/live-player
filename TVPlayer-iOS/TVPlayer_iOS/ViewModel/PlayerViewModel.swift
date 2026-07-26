@@ -89,11 +89,11 @@ final class PlayerViewModel: ObservableObject {
         player.onReady = { [weak self] in self?.onPlayerReady() }
         player.onError = { [weak self] in self?.onPlayerError() }
         player.onStartupTimeout = { [weak self] in self?.onStartupTimeout() }
-        // 卡顿：timeControl waiting 超时 + 健康度扩展卡顿，双路径都要换线
         player.onPlaybackStall = { [weak self] in self?.onPlaybackStall() }
         player.onSilentAudio = { [weak self] in self?.onSilentAudio() }
         player.onExtendedStall = { [weak self] in self?.onExtendedStall() }
         player.onHealthCritical = { [weak self] reason in self?.onHealthCritical(reason) }
+        player.onLowSpeed = { [weak self] reason in self?.onLowSpeed(reason) }
 
         NetworkMonitor.shared.onSatisfied = { [weak self] in self?.onNetworkBecameAvailable() }
         NetworkMonitor.shared.onConnectionTypeChanged = { [weak self] type in
@@ -809,6 +809,11 @@ final class PlayerViewModel: ObservableObject {
         autoSwitchLine(hint: reason, reason: .healthCritical)
     }
 
+    private func onLowSpeed(_ reason: String) {
+        guard !userPaused, !panelVisible else { return }
+        autoSwitchLine(hint: reason, reason: .lowSpeed)
+    }
+
     // MARK: - 静音检测
 
     private func onSilentAudio() {
@@ -831,10 +836,11 @@ final class PlayerViewModel: ObservableObject {
         case stall
         case healthCritical
         case silentAudio
+        case lowSpeed
 
         var isConfirmedBad: Bool {
             switch self {
-            case .hardFail, .startupTimeout, .stall, .healthCritical, .silentAudio:
+            case .hardFail, .startupTimeout, .stall, .healthCritical, .silentAudio, .lowSpeed:
                 return true
             }
         }
@@ -869,7 +875,8 @@ final class PlayerViewModel: ObservableObject {
         triedLineIndices.insert(currentSourceIndex)
         // 写入共享信誉：失败线 24h 内优先跳过（融合与下次启动共用）
         if let failURL = currentUrl {
-            let hard = (reason == .hardFail || reason == .startupTimeout || reason == .stall || reason == .healthCritical)
+            let hard = (reason == .hardFail || reason == .startupTimeout || reason == .stall
+                        || reason == .healthCritical || reason == .lowSpeed)
             reputation.markFailure(url: failURL, channelKey: ch.key, hard: hard)
         }
 
