@@ -1,8 +1,9 @@
 import SwiftUI
 import AVKit
+import UIKit
 
 /// SwiftUI Edge-to-Edge 全屏播放页
-/// - 视频：.ignoresSafeArea() 贴物理边，Home Indicator 浮在画面上
+/// - 根节点强制物理屏宽高，双重 ignoresSafeArea 解开 Hosting 约束
 /// - 仅浮动 OSD/提示：用 safeAreaInsets 抬高（不缩视频）
 struct ContentView: View {
     @EnvironmentObject private var vm: PlayerViewModel
@@ -10,37 +11,47 @@ struct ContentView: View {
     @State private var numberInput = ""
     @State private var numberInputTask: Task<Void, Never>?
 
-    var body: some View {
-        // 最外层：无 padding / cornerRadius / 固定宽度，强制物理全屏
-        ZStack {
-            Color.black
-                .ignoresSafeArea(.all)
+    /// 横屏物理尺寸：避免启动瞬间仍是 portrait bounds
+    private var physicalScreenSize: CGSize {
+        let b = UIScreen.main.bounds
+        return CGSize(width: max(b.width, b.height), height: min(b.width, b.height))
+    }
 
-            // —— 视频：Edge-to-Edge，禁止 Safe Area 缩进 ——
+    var body: some View {
+        ZStack {
+            // 纯黑背景铺满物理屏
+            Color.black
+                .edgesIgnoringSafeArea(.all)
+                .ignoresSafeArea(.all, edges: .all)
+
+            // 视频视图：强制充满并忽略所有安全区域（可命中，手势层在上层）
             VideoPlayerView()
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-                .ignoresSafeArea(.all)
-                .allowsHitTesting(false)
+                .edgesIgnoringSafeArea(.all)
+                .ignoresSafeArea(.all, edges: .all)
                 .zIndex(1)
 
-            // 手势全屏
+            // 手势交互层
             Color.clear
                 .contentShape(Rectangle())
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-                .ignoresSafeArea(.all)
+                .edgesIgnoringSafeArea(.all)
+                .ignoresSafeArea(.all, edges: .all)
                 .highPriorityGesture(longPressGesture())
                 .simultaneousGesture(doubleTapGesture())
                 .simultaneousGesture(playerDragGesture())
                 .zIndex(2)
 
-            // —— 浮动控制层：才用 safe area 避让（视频不受影响）——
+            // 浮动控制层
             floatingChrome()
                 .zIndex(5)
         }
-        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-        .ignoresSafeArea(.all)
-        .background(Color.black.ignoresSafeArea(.all))
-        // SwiftUI：隐藏状态栏 + 系统叠层 + 延迟边缘手势
+        // 强制锁死屏幕物理宽高，解开 UIHostingController 中间小框
+        .frame(width: physicalScreenSize.width, height: physicalScreenSize.height)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .edgesIgnoringSafeArea(.all)
+        .ignoresSafeArea(.all, edges: .all)
+        .background(Color.black.edgesIgnoringSafeArea(.all).ignoresSafeArea(.all, edges: .all))
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .defersSystemGestures(on: .all)
@@ -162,6 +173,9 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .edgesIgnoringSafeArea(.all)
+        .ignoresSafeArea(.all, edges: .all)
         .allowsHitTesting(false)
     }
 
@@ -170,6 +184,7 @@ struct ContentView: View {
         root.setNeedsUpdateOfHomeIndicatorAutoHidden()
         root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         root.setNeedsStatusBarAppearanceUpdate()
+        (root as? FullScreenRootController)?.forcePhysicalFullScreen()
     }
 
     private func longPressGesture() -> some Gesture {

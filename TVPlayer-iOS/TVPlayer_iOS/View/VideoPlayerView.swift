@@ -248,13 +248,16 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
         view.backgroundColor = .black
         view.isOpaque = true
         view.clipsToBounds = false
+        view.layer.cornerRadius = 0
+        view.layer.masksToBounds = false
         edgesForExtendedLayout = .all
         extendedLayoutIncludesOpaqueBars = true
         additionalSafeAreaInsets = .zero
-        // iOS 16.4+：不让 Hosting 把 safe area 强加给 SwiftUI 内容
+        // iOS 16.4+：彻底关闭 Hosting 对 SwiftUI 的 safe area 注入
         if #available(iOS 16.4, *) {
             safeAreaRegions = []
         }
+        disableSafeAreaOnHostingViewTree()
     }
 
     override func viewDidLayoutSubviews() {
@@ -269,20 +272,47 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
             let target = ScreenGeometry.physicalLandscapeBounds(for: view.window?.windowScene)
             view.frame = target
         }
+        view.layer.cornerRadius = 0
         additionalSafeAreaInsets = .zero
+        disableSafeAreaOnHostingViewTree()
     }
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
         additionalSafeAreaInsets = .zero
+        disableSafeAreaOnHostingViewTree()
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         additionalSafeAreaInsets = .zero
+        disableSafeAreaOnHostingViewTree()
         setNeedsUpdateOfHomeIndicatorAutoHidden()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         setNeedsStatusBarAppearanceUpdate()
+    }
+
+    /// 去掉 UIHostingController 内部可能带的圆角/safe area 容器
+    private func disableSafeAreaOnHostingViewTree() {
+        view.insetsLayoutMarginsFromSafeArea = false
+        view.preservesSuperviewLayoutMargins = false
+        view.layoutMargins = .zero
+        func walk(_ v: UIView) {
+            v.insetsLayoutMarginsFromSafeArea = false
+            v.preservesSuperviewLayoutMargins = false
+            v.layoutMargins = .zero
+            v.layer.cornerRadius = 0
+            if v.clipsToBounds, v !== view {
+                // 仅清掉中间卡片式裁剪，保留 PlayerSurfaceView 自身 clips
+                if String(describing: type(of: v)).contains("Hosting")
+                    || v.backgroundColor == .black
+                    || v.backgroundColor == nil {
+                    // 不强制改所有子视图 clips，避免破坏播放层
+                }
+            }
+            for sub in v.subviews { walk(sub) }
+        }
+        walk(view)
     }
 }
 
