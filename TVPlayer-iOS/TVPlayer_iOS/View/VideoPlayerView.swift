@@ -4,10 +4,11 @@ import UIKit
 import MediaPlayer
 import Combine
 
-// MARK: - 窗口级全屏画面（防崩溃版）
+// MARK: - 霸道全屏画面层
 //
-// 1.5.42 闪退原因：hardRemount → layoutIfNeeded → viewDidLayoutSubviews → hardRemount 递归爆栈。
-// 本版：防重入 + 节流；layout 只调 forceFullBleed；hardRemount 仅在回前台/出画/旋转结束调用。
+// 策略：锁定物理横屏尺寸，不给 Home Indicator / safeArea 让位。
+// 小白条只能浮在画面上，不能挤走/缩短画面。
+// 不做网络/频繁 remount（会闪屏）。
 
 final class WindowVideoSurface {
     static let shared = WindowVideoSurface()
@@ -15,27 +16,24 @@ final class WindowVideoSurface {
     private let host = TouchThroughView(frame: .zero)
     private let playerLayer = AVPlayerLayer()
     private var cancellables = Set<AnyCancellable>()
-    private var delayItems: [DispatchWorkItem] = []
     private weak var boundPlayer: AVPlayer?
-    private var lastAppliedSize: CGSize = .zero
 
-    /// 防重入
-    private var isRemounting = false
-    private var isLayingOut = false
-    private var lastRemountAt: Date = .distantPast
-    private let remountMinInterval: TimeInterval = 0.25
+    /// 锁定后 frame 不再随 safeArea 收缩
+    private var locked = false
+    private var lockedSize: CGSize = .zero
+    private var isApplying = false
 
     private init() {
         host.backgroundColor = .black
         host.isUserInteractionEnabled = false
-        host.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        host.clipsToBounds = true
+        host.autoresizingMask = []
+        host.clipsToBounds = false
         host.layer.zPosition = -1_000
 
         playerLayer.videoGravity = .resize
         playerLayer.backgroundColor = UIColor.black.cgColor
         playerLayer.isOpaque = true
-        playerLayer.masksToBounds = true
+        playerLayer.masksToBounds = false
         host.layer.addSublayer(playerLayer)
 
         setupNotifications()
@@ -43,27 +41,22 @@ final class WindowVideoSurface {
     }
 
     private func setupNotifications() {
-        // 回前台：轻量 + 一次 hard（带节流）
-        for name in [UIApplication.didBecomeActiveNotification, UIApplication.willEnterForegroundNotification] {
+        // 仅方向/回前台时重新钉锁定尺寸，不 hardRemount
+        let names: [Notification.Name] = [
+            UIApplication.didBecomeActiveNotification,
+            UIApplication.willEnterForegroundNotification,
+            UIDevice.orientationDidChangeNotification,
+            UIWindow.didBecomeKeyNotification,
+            .tvPlayerNeedsRelayout
+        ]
+        for name in names {
             NotificationCenter.default.publisher(for: name)
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] _ in
-                    self?.forceFullBleed(reason: name.rawValue)
-                    self?.hardRemount(reason: name.rawValue)
+                    self?.pinLocked(reason: name.rawValue)
                 }
                 .store(in: &cancellables)
         }
-        for name in [UIDevice.orientationDidChangeNotification, UIWindow.didBecomeKeyNotification, .tvPlayerNeedsRelayout] {
-            NotificationCenter.default.publisher(for: name)
-                .receive(on: DispatchQueue.main)
-                .sink { [weak self] _ in self?.forceFullBleed(reason: name.rawValue) }
-                .store(in: &cancellables)
-        }
-        NotificationCenter.default.publisher(for: .tvPlayerHardRemount)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.hardRemount(reason: "notify") }
-            .store(in: &cancellables)
-
         NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] note in self?.handleInterruption(note) }
@@ -93,8 +86,8 @@ final class WindowVideoSurface {
             if should {
                 NotificationCenter.default.post(name: .tvPlayerInterruptionEnded, object: nil)
             }
-            forceFullBleed(reason: "interruptionEnded")
             rebindPlayer()
+            pinLocked(reason: "interruptionEnded")
         @unknown default:
             break
         }
@@ -108,8 +101,8 @@ final class WindowVideoSurface {
         playerLayer.videoGravity = .resize
         playerLayer.isHidden = false
         playerLayer.opacity = 1
-        forceFullBleed(reason: "setPlayer")
-        scheduleLightPasses()
+        lockToPhysicalScreenIfNeeded()
+        pinLocked(reason: "setPlayer")
     }
 
     func rebindPlayer() {
@@ -120,113 +113,60 @@ final class WindowVideoSurface {
         playerLayer.isHidden = false
         playerLayer.opacity = 1
         playerLayer.videoGravity = .resize
-        guard host.bounds.width > 1, host.bounds.height > 1 else { return }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        playerLayer.frame = host.bounds
-        CATransaction.commit()
+        applyLayerFrame()
     }
 
-    /// 安全 hardRemount：防重入、节流；禁止在 layout 回调链里同步 layoutIfNeeded
+    /// 兼容旧调用：等同 pinLocked（不再做会闪屏的 hard remount）
     func hardRemount(reason: String = "") {
-        if isRemounting || isLayingOut { return }
-        let now = Date()
-        if now.timeIntervalSince(lastRemountAt) < remountMinInterval {
-            // 合并到稍后一次
-            DispatchQueue.main.asyncAfter(deadline: .now() + remountMinInterval) { [weak self] in
-                self?.hardRemount(reason: "deferred-\(reason)")
-            }
-            return
-        }
-        lastRemountAt = now
-        isRemounting = true
-        defer { isRemounting = false }
-
-        guard let window = Self.mainWindow() else {
-            forceFullBleed(reason: "hard-no-window")
-            return
-        }
-
-        let p = boundPlayer
-        // 不断开 player 太久，避免黑屏；仅重挂 frame
-        // 若需要断绑：仅在回前台 reason 时做
-        let shouldDetachPlayer = reason.contains("active") || reason.contains("foreground") || reason.contains("ready")
-        if shouldDetachPlayer {
-            playerLayer.player = nil
-        }
-
-        if host.superview !== window {
-            host.removeFromSuperview()
-            window.insertSubview(host, at: 0)
-        } else {
-            window.sendSubviewToBack(host)
-        }
-
-        window.backgroundColor = .black
-        window.clipsToBounds = false
-
-        let rect = Self.fullScreenRect(for: window)
-        guard rect.width > 1, rect.height > 1 else { return }
-
-        host.isHidden = false
-        host.alpha = 1
-        host.backgroundColor = .black
-        host.clipsToBounds = true
-        host.isUserInteractionEnabled = false
-        host.layer.zPosition = -1_000
-        host.frame = rect
-        host.bounds = CGRect(origin: .zero, size: rect.size)
-        lastAppliedSize = rect.size
-
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        playerLayer.frame = host.bounds
-        playerLayer.videoGravity = .resize
-        playerLayer.isHidden = false
-        playerLayer.opacity = 1
-        CATransaction.commit()
-
-        if shouldDetachPlayer {
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.playerLayer.player = p ?? self.boundPlayer
-                self.rebindPlayer()
-            }
-        } else {
-            playerLayer.player = p ?? boundPlayer
-            rebindPlayer()
-        }
-
-        // 只跟 2 次轻量钉，避免风暴
-        for t in [0.15, 0.4] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
-                self?.forceFullBleed(reason: "hard-follow")
-                self?.rebindPlayer()
-            }
-        }
+        lockToPhysicalScreenIfNeeded()
+        pinLocked(reason: reason)
+        rebindPlayer()
     }
 
-    func cleanup() {
-        delayItems.forEach { $0.cancel() }
-        delayItems.removeAll()
-    }
-
-    deinit {
-        cleanup()
-        cancellables.removeAll()
+    func forceFullBleed(reason: String = "") {
+        lockToPhysicalScreenIfNeeded()
+        pinLocked(reason: reason)
     }
 
     func install(reason: String = "") {
-        forceFullBleed(reason: reason)
+        lockToPhysicalScreenIfNeeded()
+        pinLocked(reason: reason)
     }
 
-    /// 轻量全屏：绝不调用 hardRemount，避免 layout 递归
-    func forceFullBleed(reason: String = "") {
-        if isLayingOut { return }
-        isLayingOut = true
-        defer { isLayingOut = false }
+    // MARK: - 锁定物理全屏
+
+    /// 只在未锁定或尺寸明显变化（真旋转）时更新锁定尺寸
+    private func lockToPhysicalScreenIfNeeded(force: Bool = false) {
+        let size = Self.physicalLandscapeSize(for: Self.mainWindow())
+        guard size.width > 1, size.height > 1 else { return }
+        if force || !locked || lockedSize == .zero {
+            lockedSize = size
+            locked = true
+            return
+        }
+        // 仅当长短边对调（真旋转）才改锁定，safeArea 变化绝不改
+        let wasLandscape = lockedSize.width >= lockedSize.height
+        let nowLandscape = size.width >= size.height
+        if wasLandscape != nowLandscape {
+            lockedSize = size
+        } else {
+            // 同方向：取更大值，永不缩小（霸道）
+            lockedSize = CGSize(
+                width: max(lockedSize.width, size.width),
+                height: max(lockedSize.height, size.height)
+            )
+        }
+        locked = true
+    }
+
+    private func pinLocked(reason: String = "") {
+        if isApplying { return }
+        isApplying = true
+        defer { isApplying = false }
 
         guard let window = Self.mainWindow() else { return }
+        lockToPhysicalScreenIfNeeded()
+        guard lockedSize.width > 1, lockedSize.height > 1 else { return }
 
         window.backgroundColor = .black
         window.clipsToBounds = false
@@ -236,12 +176,13 @@ final class WindowVideoSurface {
             root.view.isOpaque = false
             root.view.clipsToBounds = false
             root.view.insetsLayoutMarginsFromSafeArea = false
-            // 不在这里 layoutIfNeeded / hardRemount
+            // 不改 additionalSafeArea，不 layoutIfNeeded
             root.setNeedsUpdateOfHomeIndicatorAutoHidden()
             root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
             root.setNeedsStatusBarAppearanceUpdate()
         }
 
+        // 挂到主 window 最底层
         host.layer.zPosition = -1_000
         if host.superview !== window {
             host.removeFromSuperview()
@@ -250,55 +191,58 @@ final class WindowVideoSurface {
             window.sendSubviewToBack(host)
         }
 
-        let rect = Self.fullScreenRect(for: window)
-        guard rect.width > 1, rect.height > 1 else { return }
+        // 霸道：frame = 锁定物理尺寸，相对 window 居中；可溢出 window 盖住小白条区域
+        let ox = (window.bounds.width - lockedSize.width) / 2
+        let oy = (window.bounds.height - lockedSize.height) / 2
+        let frame = CGRect(x: ox, y: oy, width: lockedSize.width, height: lockedSize.height)
 
         host.isHidden = false
         host.alpha = 1
         host.backgroundColor = .black
-        host.clipsToBounds = true
+        host.clipsToBounds = false
         host.isUserInteractionEnabled = false
-        host.frame = rect
-        host.bounds = CGRect(origin: .zero, size: rect.size)
-        lastAppliedSize = rect.size
+        host.frame = frame
+        host.bounds = CGRect(origin: .zero, size: lockedSize)
 
+        applyLayerFrame()
+        if playerLayer.player == nil {
+            playerLayer.player = boundPlayer
+        }
+    }
+
+    private func applyLayerFrame() {
+        guard host.bounds.width > 1, host.bounds.height > 1 else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         playerLayer.frame = host.bounds
         playerLayer.videoGravity = .resize
         playerLayer.isHidden = false
         playerLayer.opacity = 1
-        if playerLayer.player == nil {
-            playerLayer.player = boundPlayer
-        }
         CATransaction.commit()
     }
 
-    private func scheduleLightPasses() {
-        delayItems.forEach { $0.cancel() }
-        delayItems.removeAll()
-        for t in [0.05, 0.2, 0.5] {
-            let item = DispatchWorkItem { [weak self] in
-                self?.forceFullBleed(reason: "delay")
-                self?.rebindPlayer()
-            }
-            delayItems.append(item)
-            DispatchQueue.main.asyncAfter(deadline: .now() + t, execute: item)
+    /// 物理横屏尺寸（nativeBounds），无视 safeArea / Home Indicator
+    private static func physicalLandscapeSize(for window: UIWindow?) -> CGSize {
+        let screen = window?.windowScene?.screen ?? window?.screen ?? UIScreen.main
+        let native = screen.nativeBounds
+        let scale = max(screen.scale, 1)
+        var w = native.width / scale
+        var h = native.height / scale
+        if w < 1 || h < 1 {
+            let b = screen.bounds
+            w = b.width
+            h = b.height
         }
-    }
-
-    /// 与 window 同向全屏（不改 window.frame，避免系统崩溃）
-    private static func fullScreenRect(for window: UIWindow) -> CGRect {
-        let wb = window.bounds
-        if wb.width > 1, wb.height > 1 {
-            return CGRect(origin: .zero, size: wb.size)
+        // 强制横屏：宽 = 长边
+        if w < h { swap(&w, &h) }
+        // 与 window 取大，永不小于当前窗
+        if let window {
+            let ww = max(window.bounds.width, window.bounds.height)
+            let wh = min(window.bounds.width, window.bounds.height)
+            w = max(w, ww)
+            h = max(h, wh)
         }
-        let screen = window.windowScene?.screen ?? window.screen
-        let b = screen.bounds
-        let long = max(b.width, b.height)
-        let short = min(b.width, b.height)
-        // 默认横屏目标
-        return CGRect(x: 0, y: 0, width: long, height: short)
+        return CGSize(width: w, height: h)
     }
 
     private static func mainWindow() -> UIWindow? {
@@ -317,6 +261,7 @@ final class WindowVideoSurface {
 
 private final class TouchThroughView: UIView {
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? { nil }
+    // 不在 layoutSubviews 里动 playerLayer，避免被系统 layout 带跑
 }
 
 final class PlayerAnchorView: UIView {
@@ -333,12 +278,6 @@ final class PlayerAnchorView: UIView {
         super.didMoveToWindow()
         WindowVideoSurface.shared.forceFullBleed(reason: "anchor-window")
     }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        // 只轻量，绝不 hardRemount
-        WindowVideoSurface.shared.forceFullBleed(reason: "anchor-layout")
-    }
 }
 
 struct VideoPlayerView: UIViewRepresentable {
@@ -353,7 +292,6 @@ struct VideoPlayerView: UIViewRepresentable {
     func updateUIView(_ uiView: PlayerAnchorView, context: Context) {
         WindowVideoSurface.shared.setPlayer(vm.player.player)
         _ = vm.playerLayoutEpoch
-        WindowVideoSurface.shared.forceFullBleed(reason: "swiftui-update")
     }
 }
 
@@ -408,10 +346,6 @@ final class FullScreenRootController: UIViewController {
         super.viewDidAppear(animated)
         refreshSystemChrome()
         WindowVideoSurface.shared.forceFullBleed(reason: "root-appear")
-        // 出画后延迟一次 hard（不在 layout 里）
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            WindowVideoSurface.shared.hardRemount(reason: "root-appear-delay")
-        }
     }
 
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
@@ -419,19 +353,19 @@ final class FullScreenRootController: UIViewController {
         coordinator.animate(alongsideTransition: { _ in
             WindowVideoSurface.shared.forceFullBleed(reason: "transition")
         }, completion: { _ in
-            WindowVideoSurface.shared.hardRemount(reason: "transition-end")
+            WindowVideoSurface.shared.forceFullBleed(reason: "transition-end")
         })
     }
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
+        // safeArea 变了也不让位：仍钉锁定尺寸
         refreshSystemChrome()
-        WindowVideoSurface.shared.forceFullBleed(reason: "safeArea")
+        WindowVideoSurface.shared.forceFullBleed(reason: "safeArea-ignore")
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        // 禁止 hardRemount，否则递归闪退
         WindowVideoSurface.shared.forceFullBleed(reason: "root-layout")
     }
 
@@ -474,11 +408,6 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         setNeedsStatusBarAppearanceUpdate()
         WindowVideoSurface.shared.forceFullBleed(reason: "host-appear")
-    }
-
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        WindowVideoSurface.shared.forceFullBleed(reason: "host-layout")
     }
 }
 

@@ -117,15 +117,6 @@ final class PlayerViewModel: ObservableObject {
             self?.onConnectionTypeChanged(type)
         }
 
-        // 启动时网络已通：延迟再跑一次「回前台级」重载（等本地网络权限/横屏落稳）
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_200_000_000)
-            guard let self, !Task.isCancelled else { return }
-            if NetworkMonitor.shared.isSatisfied {
-                self.reloadSurfaceLikeForeground(reason: "startup-net")
-            }
-        }
-
         restoreSources()
         reputation.prune()
 
@@ -244,8 +235,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func onNetworkBecameAvailable() {
-        // 网络恢复 = 与「退后台再进」同一套画面重载（iPhone Air 小白条/缺底边）
-        reloadSurfaceLikeForeground(reason: "network-up")
+        // 只恢复频道加载，不重载画面（避免闪屏）
         if channels.isEmpty {
             bootstrapMessage = "网络已连接，加载频道..."
             isBootstrapping = true
@@ -258,44 +248,15 @@ final class PlayerViewModel: ObservableObject {
         switch type {
         case .cellular:
             showIndicator("当前使用蜂窝网络")
-            // 蜂窝就绪时也钉一次画面（本机首次授权网络常走这条）
-            reloadSurfaceLikeForeground(reason: "net-cellular")
-        case .wifi:
-            reloadSurfaceLikeForeground(reason: "net-wifi")
-        case .wired, .unknown:
+        case .wifi, .wired, .unknown:
             break
         }
     }
 
     func onAppBecameActive() {
-        recoverPlaybackAfterForeground(reason: "app-active")
-    }
-
-    /// 与回前台相同的画面 + 播放恢复（网络接入/回前台共用）
-    func reloadSurfaceLikeForeground(reason: String) {
-        bumpPlayerLayout()
-        if let app = UIApplication.shared.delegate as? AppDelegate {
-            app.refreshChromeAndVideo(reason: reason)
-        } else {
-            WindowVideoSurface.shared.forceFullBleed(reason: reason)
-            WindowVideoSurface.shared.rebindPlayer()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                WindowVideoSurface.shared.hardRemount(reason: "\(reason)-hard")
-            }
-        }
-        // 延迟再钉一次（等网络栈/权限弹窗关掉后 window bounds 稳定）
-        let gen = recoverGeneration
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 400_000_000)
-            guard let self, self.recoverGeneration == gen else { return }
-            WindowVideoSurface.shared.forceFullBleed(reason: "\(reason)-late")
-            WindowVideoSurface.shared.rebindPlayer()
-            WindowVideoSurface.shared.hardRemount(reason: "\(reason)-late-hard")
-        }
-    }
-
-    private func recoverPlaybackAfterForeground(reason: String) {
-        reloadSurfaceLikeForeground(reason: reason)
+        // 只恢复播放，画面层已锁定物理全屏，不再 remount 风暴
+        WindowVideoSurface.shared.forceFullBleed(reason: "app-active")
+        WindowVideoSurface.shared.rebindPlayer()
         if channels.isEmpty {
             retryLoadSources()
             return
@@ -307,21 +268,6 @@ final class PlayerViewModel: ObservableObject {
         }
         if !player.isPlaying {
             player.resume()
-            bumpPlayerLayout()
-        }
-        let gen = recoverGeneration
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 900_000_000)
-            guard let self, self.recoverGeneration == gen, !self.userPaused else { return }
-            if !self.player.isReady || self.player.player.currentItem == nil {
-                self.playCurrent(showOSD: false, resetTried: false)
-            } else if !self.player.isPlaying {
-                self.player.resume()
-                self.bumpPlayerLayout()
-            }
-            WindowVideoSurface.shared.forceFullBleed(reason: "recover-\(reason)")
-            WindowVideoSurface.shared.rebindPlayer()
-            WindowVideoSurface.shared.hardRemount(reason: "recover-\(reason)-hard")
         }
     }
 
@@ -338,10 +284,10 @@ final class PlayerViewModel: ObservableObject {
         NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
     }
 
-    /// 供 hardRemount / 模拟回前台调用
     func bumpLayoutForRemount() {
         bumpPlayerLayout()
-        WindowVideoSurface.shared.hardRemount(reason: "vm-remount")
+        WindowVideoSurface.shared.forceFullBleed(reason: "vm-pin")
+        WindowVideoSurface.shared.rebindPlayer()
     }
 
     // MARK: - 源管理
@@ -893,11 +839,8 @@ final class PlayerViewModel: ObservableObject {
         userPaused = false
         if !indicatorText.isEmpty { showIndicator("") }
         bumpPlayerLayout()
-        // 出画：轻量钉 + 一次节流 hard（避免连打闪退）
         WindowVideoSurface.shared.forceFullBleed(reason: "player-ready")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            WindowVideoSurface.shared.hardRemount(reason: "player-ready-delay")
-        }
+        WindowVideoSurface.shared.rebindPlayer()
         updateNowPlaying()
         UIApplication.shared.isIdleTimerDisabled = true
         preferStableTask?.cancel()

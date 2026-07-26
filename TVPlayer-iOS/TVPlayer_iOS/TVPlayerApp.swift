@@ -181,23 +181,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             window.makeKeyAndVisible()
         }
         rootContainer?.refreshSystemChrome()
-        for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) {
-            for window in scene.windows where window.windowLevel <= .normal {
-                window.backgroundColor = .black
-                if let root = window.rootViewController {
-                    root.setNeedsUpdateOfHomeIndicatorAutoHidden()
-                    root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
-                    root.setNeedsStatusBarAppearanceUpdate()
-                }
-            }
-        }
-        // 先轻量，再节流 hard（避免连打 hardRemount 闪退）
+        // 只钉锁定全屏，不 hardRemount（防闪屏）
         WindowVideoSurface.shared.forceFullBleed(reason: reason)
         WindowVideoSurface.shared.rebindPlayer()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            self.rootContainer?.refreshSystemChrome()
-            WindowVideoSurface.shared.hardRemount(reason: "\(reason)-delay")
-        }
     }
 }
 
