@@ -4,11 +4,11 @@ import UIKit
 import MediaPlayer
 import Combine
 
-// MARK: - 窗口级全屏画面（主流横屏播放器做法）
+// MARK: - 窗口级全屏画面
 //
-// 正确做法：AVPlayerLayer 一开始就铺满整个 window/screen，
-// Home Indicator 浮在画面之上；隐藏后无需“补画面”。
-// 错误做法（旧版）：底部留 34pt 黑边等小白条 → 条消失后黑边仍在。
+// iPhone Air 反馈：仅「退后台再进」画面才正确。
+// 根因：AVPlayerLayer 在首次横屏落稳前 frame/绑定是脏的；回前台会 rebind。
+// 对策：hardRemount = 卸层 → 按物理横屏尺寸重挂 → player 置 nil 再绑回（等同回前台）。
 
 final class WindowVideoSurface {
     static let shared = WindowVideoSurface()
@@ -20,19 +20,20 @@ final class WindowVideoSurface {
     private weak var boundPlayer: AVPlayer?
     private var displayLink: CADisplayLink?
     private var displayLinkTicks = 0
+    private var lastSize: CGSize = .zero
+    private var remountGeneration = 0
 
     private init() {
         host.backgroundColor = .black
         host.isUserInteractionEnabled = false
         host.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        host.clipsToBounds = true
+        host.clipsToBounds = false
         host.layer.zPosition = -1_000
 
-        // 铺满整屏拉伸（与常见横屏直播/监控一致；不留黑边）
         playerLayer.videoGravity = .resize
         playerLayer.backgroundColor = UIColor.black.cgColor
         playerLayer.isOpaque = true
-        playerLayer.masksToBounds = true
+        playerLayer.masksToBounds = false
         host.layer.addSublayer(playerLayer)
 
         setupNotifications()
@@ -40,26 +41,41 @@ final class WindowVideoSurface {
     }
 
     private func setupNotifications() {
-        let notes: [Notification.Name] = [
+        let hardNames: [Notification.Name] = [
             UIApplication.didBecomeActiveNotification,
             UIApplication.willEnterForegroundNotification,
-            UIDevice.orientationDidChangeNotification,
-            UIWindow.didBecomeKeyNotification,
             UIScene.didActivateNotification,
-            .tvPlayerNeedsRelayout
+            .tvPlayerHardRemount
         ]
-        for name in notes {
+        for name in hardNames {
             NotificationCenter.default.publisher(for: name)
                 .receive(on: DispatchQueue.main)
-                .sink { [weak self] _ in
-                    self?.forceFullBleed(reason: name.rawValue)
-                }
+                .sink { [weak self] _ in self?.hardRemount(reason: name.rawValue) }
+                .store(in: &cancellables)
+        }
+        let softNames: [Notification.Name] = [
+            UIDevice.orientationDidChangeNotification,
+            UIWindow.didBecomeKeyNotification,
+            .tvPlayerNeedsRelayout
+        ]
+        for name in softNames {
+            NotificationCenter.default.publisher(for: name)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in self?.forceFullBleed(reason: name.rawValue) }
                 .store(in: &cancellables)
         }
 
         NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] note in self?.handleInterruption(note) }
+            .store(in: &cancellables)
+
+        // 窗口坐标变化（横竖/分屏/Air 形态）
+        NotificationCenter.default.publisher(for: UIScene.geometryDidChangeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.hardRemount(reason: "geometry")
+            }
             .store(in: &cancellables)
     }
 
@@ -86,8 +102,7 @@ final class WindowVideoSurface {
             if should {
                 NotificationCenter.default.post(name: .tvPlayerInterruptionEnded, object: nil)
             }
-            forceFullBleed(reason: "interruptionEnded")
-            rebindPlayer()
+            hardRemount(reason: "interruptionEnded")
         @unknown default:
             break
         }
@@ -96,13 +111,14 @@ final class WindowVideoSurface {
     // MARK: - Player
 
     func setPlayer(_ player: AVPlayer?) {
+        let changed = boundPlayer !== player
         boundPlayer = player
-        playerLayer.player = player
-        playerLayer.videoGravity = .resize
-        playerLayer.isHidden = false
-        playerLayer.opacity = 1
-        forceFullBleed(reason: "setPlayer")
-        schedulePasses()
+        if changed {
+            hardRemount(reason: "setPlayer")
+        } else {
+            forceFullBleed(reason: "setPlayer-same")
+            rebindPlayer()
+        }
     }
 
     func rebindPlayer() {
@@ -113,11 +129,102 @@ final class WindowVideoSurface {
         playerLayer.isHidden = false
         playerLayer.opacity = 1
         playerLayer.videoGravity = .resize
-        // 始终与 host 同大：不裁短、不居中偏移
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         playerLayer.frame = host.bounds
         CATransaction.commit()
+    }
+
+    /// 等同「退后台再进」：卸掉 layer 宿主 → 按物理横屏尺寸重挂 → player 断绑再绑
+    func hardRemount(reason: String = "") {
+        remountGeneration &+= 1
+        let gen = remountGeneration
+        guard let window = Self.mainWindow() else {
+            forceFullBleed(reason: "hard-no-window")
+            return
+        }
+
+        // 1) 断开 player，避免脏 frame 粘在 layer 上
+        let p = boundPlayer
+        playerLayer.player = nil
+
+        // 2) 卸下 host
+        host.removeFromSuperview()
+
+        // 3) 目标矩形：优先当前 window（回前台时 window 已正确）；否则物理横屏
+        window.backgroundColor = .black
+        window.clipsToBounds = false
+        window.layoutIfNeeded()
+
+        let target = Self.landscapeScreenRect(for: window)
+        // 相对 window 铺满；若 window 仍偏小则用 target 外扩（盖满物理屏）
+        let hostFrame: CGRect
+        if window.bounds.width >= target.width - 1, window.bounds.height >= target.height - 1 {
+            hostFrame = window.bounds
+        } else {
+            let ox = (window.bounds.width - target.width) / 2
+            let oy = (window.bounds.height - target.height) / 2
+            hostFrame = CGRect(x: ox, y: oy, width: target.width, height: target.height)
+        }
+
+        if let root = window.rootViewController {
+            root.view.backgroundColor = .clear
+            root.view.isOpaque = false
+            root.view.clipsToBounds = false
+            root.view.insetsLayoutMarginsFromSafeArea = false
+            root.additionalSafeAreaInsets = .zero
+            root.setNeedsUpdateOfHomeIndicatorAutoHidden()
+            root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+            root.setNeedsStatusBarAppearanceUpdate()
+            root.view.setNeedsLayout()
+            root.view.layoutIfNeeded()
+        }
+
+        // 4) 重挂 host 铺满
+        host.frame = hostFrame
+        host.bounds = CGRect(origin: .zero, size: hostFrame.size)
+        host.backgroundColor = .black
+        host.isHidden = false
+        host.alpha = 1
+        host.clipsToBounds = false
+        host.layer.zPosition = -1_000
+        window.insertSubview(host, at: 0)
+        window.sendSubviewToBack(host)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.frame = host.bounds
+        playerLayer.videoGravity = .resize
+        playerLayer.isHidden = false
+        playerLayer.opacity = 1
+        CATransaction.commit()
+
+        lastSize = host.bounds.size
+
+        // 5) 下一 runloop 再绑 player（关键：模拟回前台时的 rebind 时机）
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.remountGeneration == gen else { return }
+            self.playerLayer.player = p ?? self.boundPlayer
+            self.playerLayer.videoGravity = .resize
+            self.playerLayer.frame = self.host.bounds
+            self.playerLayer.isHidden = false
+            self.playerLayer.opacity = 1
+            if self.playerLayer.isReadyForDisplay, let pl = self.playerLayer.player {
+                NotificationCenter.default.post(
+                    name: Notification.Name("tvPlayerVideoRendered"),
+                    object: pl
+                )
+            }
+        }
+
+        // 6) 随后几帧再钉（旋转/Air 动画未结束）
+        for t in [0.05, 0.12, 0.28, 0.5, 0.9] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                guard let self, self.remountGeneration == gen else { return }
+                self.forceFullBleed(reason: "hard-follow-\(t)")
+                self.rebindPlayer()
+            }
+        }
     }
 
     func cleanup() {
@@ -134,13 +241,18 @@ final class WindowVideoSurface {
     }
 
     func install(reason: String = "") {
-        forceFullBleed(reason: reason)
+        hardRemount(reason: reason)
     }
-
-    // MARK: - 全屏：与 window 同大（含 Home Indicator 区域）
 
     func forceFullBleed(reason: String = "") {
         guard let window = Self.mainWindow() else { return }
+
+        let target = Self.landscapeScreenRect(for: window)
+        // 尺寸跳变（竖→横或 Air 安全区变化）→ 走 hardRemount
+        if lastSize.width > 1, abs(lastSize.width - target.width) > 2 || abs(lastSize.height - target.height) > 2 {
+            hardRemount(reason: "size-jump-\(reason)")
+            return
+        }
 
         window.backgroundColor = .black
         window.clipsToBounds = false
@@ -150,13 +262,11 @@ final class WindowVideoSurface {
             root.view.isOpaque = false
             root.view.clipsToBounds = false
             root.view.insetsLayoutMarginsFromSafeArea = false
-            // 不改 additionalSafeArea（避免布局震荡）；画面不依赖 safe area
             root.setNeedsUpdateOfHomeIndicatorAutoHidden()
             root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
             root.setNeedsStatusBarAppearanceUpdate()
         }
 
-        // 挂到主 window 最底层（不要挂到侧栏 overlay）
         host.layer.zPosition = -1_000
         if host.superview !== window {
             host.removeFromSuperview()
@@ -165,18 +275,17 @@ final class WindowVideoSurface {
             window.sendSubviewToBack(host)
         }
 
-        // 关键：frame = 整窗 bounds（已是物理屏；含小白条区域）
-        // 不要 bottomPad，不要把画面缩短 34pt
-        let rect = Self.fullScreenRect(for: window)
+        let rect = window.bounds
         guard rect.width > 1, rect.height > 1 else { return }
 
         host.isHidden = false
         host.alpha = 1
         host.backgroundColor = .black
-        host.clipsToBounds = true
+        host.clipsToBounds = false
         host.isUserInteractionEnabled = false
         host.frame = rect
         host.bounds = CGRect(origin: .zero, size: rect.size)
+        lastSize = rect.size
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -200,11 +309,11 @@ final class WindowVideoSurface {
             || reason.contains("foreground")
             || reason.contains("appear")
             || reason.contains("setPlayer")
-            || reason.contains("orientation")
-            || reason.contains("launch")
             || reason.contains("ready")
             || reason.contains("scene")
             || reason.contains("recover")
+            || reason.contains("sim-fg")
+            || reason.contains("hard")
         if heavy {
             schedulePasses()
             startBriefDisplayLink()
@@ -225,7 +334,7 @@ final class WindowVideoSurface {
         displayLinkTicks += 1
         forceFullBleed(reason: "displayLink")
         rebindPlayer()
-        if displayLinkTicks >= 45 {
+        if displayLinkTicks >= 60 {
             displayLink?.invalidate()
             displayLink = nil
         }
@@ -234,7 +343,6 @@ final class WindowVideoSurface {
     func schedulePasses() {
         delayItems.forEach { $0.cancel() }
         delayItems.removeAll()
-        // 起播/回前台几帧内再钉一次，避免系统改 bounds
         for t in [0.0, 0.05, 0.15, 0.35, 0.7, 1.2] {
             let item = DispatchWorkItem { [weak self] in
                 self?.forceFullBleed(reason: "delay-\(t)")
@@ -245,21 +353,21 @@ final class WindowVideoSurface {
         }
     }
 
-    /// 全屏矩形：与 window 同向，取 window / screen 较大者，不缩安全区
-    private static func fullScreenRect(for window: UIWindow) -> CGRect {
+    /// 物理横屏全尺寸：宽=长边，高=短边（不读 safeArea）
+    private static func landscapeScreenRect(for window: UIWindow) -> CGRect {
         let screen = window.windowScene?.screen ?? window.screen
-        var w = max(window.bounds.width, screen.bounds.width)
-        var h = max(window.bounds.height, screen.bounds.height)
-        let landscape = window.bounds.width >= window.bounds.height
-        if landscape && w < h { swap(&w, &h) }
-        if !landscape && h < w { swap(&w, &h) }
-        // 原点相对 window：铺满 window；若 screen 更大则略外扩居中
-        let ox = (window.bounds.width - w) / 2
-        let oy = (window.bounds.height - h) / 2
-        return CGRect(x: ox, y: oy, width: w, height: h)
+        let b = screen.bounds
+        let longSide = max(b.width, b.height)
+        let shortSide = min(b.width, b.height)
+        // window 已是横屏且与 screen 接近 → 用 window（与回前台一致）
+        if window.bounds.width >= window.bounds.height,
+           window.bounds.width > 100,
+           abs(window.bounds.width - longSide) < 4 {
+            return CGRect(origin: .zero, size: window.bounds.size)
+        }
+        return CGRect(x: 0, y: 0, width: longSide, height: shortSide)
     }
 
-    /// 主播放 window：优先 AppDelegate.window，绝不选侧栏高 level window
     private static func mainWindow() -> UIWindow? {
         if let app = UIApplication.shared.delegate as? AppDelegate, let w = app.window {
             return w
@@ -296,7 +404,7 @@ final class PlayerAnchorView: UIView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        WindowVideoSurface.shared.forceFullBleed(reason: "anchor-window")
+        WindowVideoSurface.shared.hardRemount(reason: "anchor-window")
     }
 
     override func layoutSubviews() {
@@ -321,12 +429,11 @@ struct VideoPlayerView: UIViewRepresentable {
     }
 }
 
-// MARK: - 根容器（Home Indicator 策略）
+// MARK: - 根容器
 
-/// 纯 UIKit 根：策略不经过 UIHostingController 内部子节点。
-/// 画面由 WindowVideoSurface 铺满 window；小白条只浮在画面上，不占布局。
 final class FullScreenRootController: UIViewController {
     private let hosted: UIViewController
+    private var lastBounds: CGSize = .zero
 
     init(hosting: UIViewController) {
         self.hosted = hosting
@@ -339,7 +446,6 @@ final class FullScreenRootController: UIViewController {
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
     override var prefersStatusBarHidden: Bool { true }
     override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation { .fade }
-    /// 启动竖→横冲击期间必须允许旋转
     override var shouldAutorotate: Bool { true }
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
         OrientationBootstrap.allowedMask
@@ -364,7 +470,6 @@ final class FullScreenRootController: UIViewController {
         hosted.view.backgroundColor = .clear
         hosted.view.isOpaque = false
         view.addSubview(hosted.view)
-        // 钉死在父 view 四边，不用 safeAreaLayoutGuide（否则底部会空一截）
         NSLayoutConstraint.activate([
             hosted.view.topAnchor.constraint(equalTo: view.topAnchor),
             hosted.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -377,27 +482,43 @@ final class FullScreenRootController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         refreshSystemChrome()
-        WindowVideoSurface.shared.forceFullBleed(reason: "root-appear")
+        WindowVideoSurface.shared.hardRemount(reason: "root-appear")
         NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
-        for t in [0.1, 0.3, 0.8] {
+        // 出画前也按「回前台」节奏多钉几次
+        for t in [0.2, 0.5, 1.0, 1.5] {
             DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
                 self?.refreshSystemChrome()
-                WindowVideoSurface.shared.forceFullBleed(reason: "root-appear-delay")
-                WindowVideoSurface.shared.rebindPlayer()
+                WindowVideoSurface.shared.hardRemount(reason: "root-appear-\(t)")
             }
         }
     }
 
+    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        coordinator.animate(alongsideTransition: { _ in
+            WindowVideoSurface.shared.forceFullBleed(reason: "transition")
+        }, completion: { _ in
+            // 旋转结束 = 最接近「回前台」的时机
+            WindowVideoSurface.shared.hardRemount(reason: "transition-end")
+            OrientationBootstrap.simulateForegroundRecovery(reason: "transition-end")
+        })
+    }
+
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
-        // 系统 safe area 变化时只刷新画面与 chrome，不改 additionalSafeArea
         refreshSystemChrome()
-        WindowVideoSurface.shared.forceFullBleed(reason: "safeArea")
+        WindowVideoSurface.shared.hardRemount(reason: "safeArea")
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        WindowVideoSurface.shared.forceFullBleed(reason: "root-layout")
+        let s = view.bounds.size
+        if abs(s.width - lastBounds.width) > 1 || abs(s.height - lastBounds.height) > 1 {
+            lastBounds = s
+            WindowVideoSurface.shared.hardRemount(reason: "root-bounds-change")
+        } else {
+            WindowVideoSurface.shared.forceFullBleed(reason: "root-layout")
+        }
     }
 
     func refreshSystemChrome() {
@@ -440,7 +561,7 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
         setNeedsUpdateOfHomeIndicatorAutoHidden()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         setNeedsStatusBarAppearanceUpdate()
-        WindowVideoSurface.shared.forceFullBleed(reason: "host-appear")
+        WindowVideoSurface.shared.hardRemount(reason: "host-appear")
     }
 
     override func viewDidLayoutSubviews() {
@@ -483,4 +604,5 @@ extension Notification.Name {
     static let tvPlayerNeedsRelayout = Notification.Name("tvPlayerNeedsRelayout")
     static let tvPlayerInterruptionBegan = Notification.Name("tvPlayerInterruptionBegan")
     static let tvPlayerInterruptionEnded = Notification.Name("tvPlayerInterruptionEnded")
+    static let tvPlayerHardRemount = Notification.Name("tvPlayerHardRemount")
 }

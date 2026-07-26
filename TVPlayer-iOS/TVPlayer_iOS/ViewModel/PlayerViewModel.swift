@@ -299,6 +299,12 @@ final class PlayerViewModel: ObservableObject {
         NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
     }
 
+    /// 供 hardRemount / 模拟回前台调用
+    func bumpLayoutForRemount() {
+        bumpPlayerLayout()
+        WindowVideoSurface.shared.hardRemount(reason: "vm-remount")
+    }
+
     // MARK: - 源管理
 
     /// 历史失效预置（勿再自动加回）
@@ -848,9 +854,13 @@ final class PlayerViewModel: ObservableObject {
         userPaused = false
         if !indicatorText.isEmpty { showIndicator("") }
         bumpPlayerLayout()
+        // 出画瞬间：做与「回前台」相同的 hardRemount（iPhone Air 关键）
+        WindowVideoSurface.shared.hardRemount(reason: "player-ready")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            WindowVideoSurface.shared.hardRemount(reason: "player-ready-delay")
+        }
         updateNowPlaying()
         UIApplication.shared.isIdleTimerDisabled = true
-        // 真实起播成功才写信誉（延迟确认，避免假 READY）
         preferStableTask?.cancel()
         let key = currentChannel?.key
         let url = currentUrl

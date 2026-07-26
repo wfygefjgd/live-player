@@ -36,8 +36,15 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         supportedInterfaceOrientationsFor window: UIWindow?
     ) -> UIInterfaceOrientationMask {
-        // 启动竖屏冲击 → 再锁横屏（见 OrientationBootstrap）
-        OrientationBootstrap.allowedMask
+        .landscape
+    }
+
+    /// 模拟 didBecomeActive 里对播放器的恢复（不真正进后台）
+    func simulateBecomeActiveRecovery() {
+        viewModel?.resumeIfAppropriate()
+        // 不走完整 onAppBecameActive 重拉线路，只钉画面
+        viewModel?.bumpLayoutForRemount()
+        WindowVideoSurface.shared.hardRemount(reason: "sim-become-active")
     }
 
     func installMainWindow(application: UIApplication, scene: UIWindowScene? = nil) {
@@ -49,8 +56,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             }
             window.makeKeyAndVisible()
             rootContainer.refreshSystemChrome()
-            WindowVideoSurface.shared.forceFullBleed(reason: "reinstall-skip")
-            OrientationBootstrap.schedulePortraitToLandscapeShock(after: 0.28)
+            WindowVideoSurface.shared.hardRemount(reason: "reinstall-skip")
+            OrientationBootstrap.lockLandscapeAndRefresh()
             return
         }
 
@@ -104,12 +111,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         }
 
         container.refreshSystemChrome()
-        WindowVideoSurface.shared.forceFullBleed(reason: "launch")
+        WindowVideoSurface.shared.hardRemount(reason: "launch")
         DispatchQueue.main.async {
             container.refreshSystemChrome()
-            WindowVideoSurface.shared.forceFullBleed(reason: "launch-async")
-            // 黑屏竖屏 → ~0.28s 切横屏，冲击 safe area / 小白条布局
-            OrientationBootstrap.schedulePortraitToLandscapeShock(after: 0.28)
+            WindowVideoSurface.shared.hardRemount(reason: "launch-async")
+            OrientationBootstrap.lockLandscapeAndRefresh()
         }
     }
 
@@ -172,7 +178,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     func refreshChromeAndVideo(reason: String) {
-        // 确保主 window 仍是 key（侧栏 overlay 绝不能抢 key）
         if let window, !window.isKeyWindow {
             window.makeKeyAndVisible()
         }
@@ -189,16 +194,15 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 }
             }
         }
-        WindowVideoSurface.shared.forceFullBleed(reason: reason)
-        WindowVideoSurface.shared.rebindPlayer()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+        // 与「回前台」一致：hardRemount，不是轻量 forceFullBleed
+        WindowVideoSurface.shared.hardRemount(reason: reason)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
             self.rootContainer?.refreshSystemChrome()
-            WindowVideoSurface.shared.forceFullBleed(reason: "\(reason)-delay")
-            WindowVideoSurface.shared.rebindPlayer()
+            WindowVideoSurface.shared.hardRemount(reason: "\(reason)-delay")
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             self.rootContainer?.refreshSystemChrome()
-            WindowVideoSurface.shared.forceFullBleed(reason: "\(reason)-delay2")
+            WindowVideoSurface.shared.hardRemount(reason: "\(reason)-delay2")
         }
         NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
     }
