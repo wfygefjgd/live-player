@@ -3,7 +3,7 @@ import AVKit
 import UIKit
 import MediaPlayer
 
-let DEFAULT_SOURCE_URL = "https://ghfast.top/raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u"
+let DEFAULT_SOURCE_URL = "https://wfygefjgd.github.io/live-player/iptv-mirrors/validated-channels.json"
 
 private let CHANNEL_OSD_MS: UInt64 = 2_500_000_000
 private let INDICATOR_MS: UInt64 = 1_200_000_000
@@ -14,10 +14,10 @@ private let PREFERRED_LINE_STABLE_NS: UInt64 = 5_000_000_000 // 稳定播放 5s 
 
 // 仅保留实测可用的预置源（2026-07 探测：404/403 已剔除）
 let PRESET_SOURCES: [(name: String, url: String)] = [
-    ("BurningC4 CDN", "https://iptv.burningc4.com/TV-IPV4.m3u"),
-    ("hujingguang", "https://ghfast.top/raw.githubusercontent.com/hujingguang/ChinaIPTV/main/grouped.m3u8"),
-    ("best-fan 全量", "https://gh-proxy.com/https://raw.githubusercontent.com/best-fan/iptv-sources/main/cn_all.m3u8"),
-    ("iptv-org 中国", "https://ghfast.top/raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u"),
+    ("已筛选频道", "https://wfygefjgd.github.io/live-player/iptv-mirrors/validated-channels.json"),
+    ("BurningC4 中国源", "https://wfygefjgd.github.io/live-player/iptv-mirrors/burningc4-chinese-iptv.m3u"),
+    ("zbefine 2026 维护源", "https://wfygefjgd.github.io/live-player/iptv-mirrors/zbefine-iptv.m3u"),
+    ("suxuang IPv6 源", "https://wfygefjgd.github.io/live-player/iptv-mirrors/suxuang-myiptv.m3u"),
 ]
 
 private enum AutoSwitchState {
@@ -40,8 +40,8 @@ final class PlayerViewModel: ObservableObject {
     @Published var bootstrapMessage = "正在连接网络..."
     @Published var playerLayoutEpoch: Int = 0
 
-    // 智能融合相关（默认智能：首源先出画 + 后台全量融合）
-    @Published var fusionMode: FusionMode = .smart
+    // 智能融合相关（默认关闭：仅使用单一源）
+    @Published var fusionMode: FusionMode = .off
     private let fusionEngine = SmartFusionEngine.shared
 
     let player = PlayerEngine()
@@ -1194,13 +1194,13 @@ final class PlayerViewModel: ObservableObject {
         loadChannels(force: true, silent: false, preferActiveOnly: false)
     }
 
-    /// 从 UserDefaults 恢复融合模式设置（无记录时保持 .smart）
+    /// 从 UserDefaults 恢复融合模式设置（无记录时保持 .off）
     func restoreFusionMode() {
         if let saved = UserDefaults.standard.string(forKey: "fusionMode"),
            let mode = FusionMode(rawValue: saved) {
             fusionMode = mode
         } else {
-            fusionMode = .smart
+            fusionMode = .off
         }
     }
 }
