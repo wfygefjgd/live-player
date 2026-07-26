@@ -70,13 +70,6 @@ final class WindowVideoSurface {
             .sink { [weak self] note in self?.handleInterruption(note) }
             .store(in: &cancellables)
 
-        // 窗口坐标变化（横竖/分屏/Air 形态）
-        NotificationCenter.default.publisher(for: UIScene.geometryDidChangeNotification)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.hardRemount(reason: "geometry")
-            }
-            .store(in: &cancellables)
     }
 
     private func setupAudioSession() {
