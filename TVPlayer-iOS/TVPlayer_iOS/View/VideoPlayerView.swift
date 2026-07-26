@@ -137,16 +137,12 @@ final class WindowVideoSurface {
         playerLayer.setNeedsDisplay()
         host.setNeedsLayout()
         host.layoutIfNeeded()
-        // 不把 layer 撑满 host（host 有 bleed）；保持 forceFullBleed 设的 video 矩形
-        if lastAppliedSize.width > 1, lastAppliedSize.height > 1 {
-            let ox = (host.bounds.width - lastAppliedSize.width) / 2
-            let oy = (host.bounds.height - lastAppliedSize.height) / 2
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            playerLayer.frame = CGRect(x: ox, y: oy, width: lastAppliedSize.width, height: lastAppliedSize.height)
-            playerLayer.videoGravity = .resize
-            CATransaction.commit()
-        }
+        // 始终铺满 host，禁止居中偏移（偏移会在小白条出现时把画面顶出黑边）
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.frame = host.bounds
+        playerLayer.videoGravity = .resize
+        CATransaction.commit()
     }
 
     func cleanup() {
@@ -182,12 +178,7 @@ final class WindowVideoSurface {
             if #available(iOS 11.0, *) {
                 root.view.insetsLayoutMarginsFromSafeArea = false
             }
-            // 负向 additionalSafeArea：把系统 inset 顶掉，布局可延伸进小白条。
-            // safeAreaInsets 已含 additionalSafeAreaInsets，须先还原系统值再取负，
-            // 否则会在 0 与 -系统值 之间来回翻转，画面被小白条反复上挤
-            // Keep UIKit's safe-area model stable. The window-level player is
-            // laid out against the physical screen, so no negative inset is
-            // needed to cover the Home Indicator.
+            // 禁止负向 additionalSafeArea 震荡；画面走物理屏，不依赖 UIKit safe area
             if root.additionalSafeAreaInsets != .zero {
                 root.additionalSafeAreaInsets = .zero
             }
@@ -196,7 +187,6 @@ final class WindowVideoSurface {
             root.setNeedsStatusBarAppearanceUpdate()
         }
 
-        // 挂到 keyWindow 最底层；zPosition 低于 panel
         host.layer.zPosition = -1_000
         if host.superview !== window {
             host.removeFromSuperview()
@@ -205,20 +195,22 @@ final class WindowVideoSurface {
             window.sendSubviewToBack(host)
         }
 
-        // host 略外扩盖小白条（黑底）；画面层严格等于物理屏 + 只拉伸不裁切
-        let windowBounds = window.bounds
-        guard windowBounds.width > 1, windowBounds.height > 1 else { return }
+        // 物理屏横屏尺寸：覆盖 Home Indicator / 小白条区域，避免 window.bounds 被 inset 裁短
+        let bleed = Self.physicalScreenRect(for: window)
+        guard bleed.width > 1, bleed.height > 1 else { return }
+        let ox = (window.bounds.width - bleed.width) / 2
+        let oy = (window.bounds.height - bleed.height) / 2
+
         host.isHidden = false
         host.alpha = 1
         host.backgroundColor = .black
-        host.clipsToBounds = true
+        host.clipsToBounds = false
         host.isUserInteractionEnabled = false
-        host.frame = windowBounds
-        host.bounds = CGRect(origin: .zero, size: windowBounds.size)
+        host.frame = CGRect(x: ox, y: oy, width: bleed.width, height: bleed.height)
+        host.bounds = CGRect(origin: .zero, size: bleed.size)
 
-        lastAppliedSize = windowBounds.size
+        lastAppliedSize = bleed.size
 
-        // 画面：铺满物理屏，强制拉伸(.resize)；不跟 host 一起外扩，避免「又拉又裁」
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         playerLayer.frame = host.bounds
@@ -229,14 +221,13 @@ final class WindowVideoSurface {
             playerLayer.player = boundPlayer
         }
         CATransaction.commit()
+
         if playerLayer.isReadyForDisplay, let player = playerLayer.player {
             NotificationCenter.default.post(
                 name: Notification.Name("tvPlayerVideoRendered"),
                 object: player
             )
         }
-
-        // 侧栏在独立 window，不依赖 ensureOnTop 抢主 window
 
         let heavy = reason.contains("active")
             || reason.contains("foreground")
@@ -245,6 +236,7 @@ final class WindowVideoSurface {
             || reason.contains("orientation")
             || reason.contains("launch")
             || reason.contains("ready")
+            || reason.contains("recover")
         if heavy {
             schedulePasses()
             startBriefDisplayLink()

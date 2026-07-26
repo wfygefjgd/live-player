@@ -173,7 +173,10 @@ final class PlayerEngine: ObservableObject {
     func resume() {
         guard player.currentItem != nil else { return }
         player.play()
+        player.rate = 1.0
         isPlaying = true
+        WindowVideoSurface.shared.rebindPlayer()
+        WindowVideoSurface.shared.forceFullBleed(reason: "engine-resume")
     }
 
     func stop() {

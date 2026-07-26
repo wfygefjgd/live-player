@@ -51,8 +51,8 @@ jobs:
             VERSION=${VERSION%-ios}
             echo "version=$VERSION" >> $GITHUB_OUTPUT
           else
-            # 从 project.yml 读取版本号
-            VERSION=$(grep "MARKETING_VERSION:" TVPlayer-iOS/project.yml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+            # 优先读 target 级 MARKETING_VERSION（最后一次出现）
+            VERSION=$(grep 'MARKETING_VERSION:' TVPlayer-iOS/project.yml | tail -1 | sed 's/.*"\(.*\)".*/\1/')
             echo "version=$VERSION" >> $GITHUB_OUTPUT
           fi
 

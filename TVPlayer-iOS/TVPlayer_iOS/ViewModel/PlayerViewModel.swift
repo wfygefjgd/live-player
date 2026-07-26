@@ -258,6 +258,31 @@ final class PlayerViewModel: ObservableObject {
         bumpPlayerLayout()
         if channels.isEmpty {
             retryLoadSources()
+            return
+        }
+        // 回前台黑屏：item 丢失 / 未出画 / 非用户暂停时强制续播或重拉当前线
+        if userPaused { return }
+        if player.player.currentItem == nil {
+            playCurrent(showOSD: false, resetTried: false)
+            return
+        }
+        if !player.isPlaying {
+            player.resume()
+            bumpPlayerLayout()
+        }
+        // 有声无画或假 ready：短延迟仍未出画则重拉当前线路
+        let gen = recoverGeneration
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            guard let self, self.recoverGeneration == gen, !self.userPaused else { return }
+            if !self.player.isReady || self.player.player.currentItem == nil {
+                self.playCurrent(showOSD: false, resetTried: false)
+            } else if !self.player.isPlaying {
+                self.player.resume()
+                self.bumpPlayerLayout()
+            }
+            WindowVideoSurface.shared.forceFullBleed(reason: "recover-active")
+            WindowVideoSurface.shared.rebindPlayer()
         }
     }
 
@@ -565,7 +590,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func restoreLastChannelPosition() {
-        // 有用户上次关闭时的频道 → 恢复；否则永远默认 CCTV-1
+        // 默认第一台永远 CCTV1（语言无关）；有上次记录则恢复
         let key = storage.loadLastChannelKey()
         if !key.isEmpty, let idx = channels.firstIndex(where: { $0.key == key }) {
             currentIndex = idx
@@ -577,29 +602,37 @@ final class PlayerViewModel: ObservableObject {
         currentSourceIndex = 0
     }
 
-    /// 默认台：CCTV-1 / 综合 优先，再任意央视，否则 0
+    /// 默认台：CCTV1（语言无关：CCTV-1 / 中央一台 / 央视综合…）
     private func indexOfPreferredDefaultChannel() -> Int {
-        let preds: [(Channel) -> Bool] = [
-            { ch in
-                let n = ch.name.uppercased().replacingOccurrences(of: " ", with: "")
-                let k = ch.key.uppercased()
-                return n.contains("CCTV-1") || n.contains("CCTV1") || n.hasPrefix("CCTV1")
-                    || k == "CCTV1" || k == "CCTV-1" || k.hasPrefix("CCTV1")
-                    || (ch.name.contains("综合") && (n.contains("CCTV") || ch.name.contains("央视")))
-            },
-            { ch in
-                ch.name.uppercased().contains("CCTV") || ch.name.contains("央视") || ch.key.uppercased().contains("CCTV")
-            },
-        ]
-        for pred in preds {
-            if let i = channels.firstIndex(where: pred) { return i }
+        if let i = channels.firstIndex(where: { Self.isCCTV1Channel($0) }) {
+            return i
+        }
+        if let i = channels.firstIndex(where: {
+            $0.key.lowercased().hasPrefix("cctv") || $0.name.uppercased().contains("CCTV") || $0.name.contains("央视")
+        }) {
+            return i
         }
         return 0
     }
 
+    /// 识别 CCTV1，忽略语言/空格/横线；排除 CCTV10–17
+    private static func isCCTV1Channel(_ ch: Channel) -> Bool {
+        if M3UParserService.cctvNumber(from: ch.key) == 1 { return true }
+        if M3UParserService.cctvNumber(from: ch.name) == 1 { return true }
+        let n = ch.name.replacingOccurrences(of: " ", with: "")
+        if n.contains("中央一台") || n.contains("央视一台") || n.contains("中央一") { return true }
+        if (n.contains("综合") || n.contains("綜合"))
+            && (n.contains("央视") || n.contains("中央") || n.uppercased().contains("CCTV")) {
+            // 综合台通常即 CCTV-1
+            let num = M3UParserService.cctvNumber(from: ch.key)
+            if num == Int.max || num == 1 { return true }
+        }
+        return false
+    }
+
     /// 与侧栏一致的浏览顺序（收藏→央视→…），上下滑/超时切台都按此序，避免「乱跳」
     func browseOrderedChannels() -> [Channel] {
-        sections(search: "").flatMap(\.channels)
+        ensureCCTV1FirstInBrowseOrder(sections(search: "").flatMap(\.channels))
     }
 
     private func advanceChannel(delta: Int, userInitiated: Bool) {
@@ -677,6 +710,9 @@ final class PlayerViewModel: ObservableObject {
 
         func sortChannels(_ arr: [Channel]) -> [Channel] {
             arr.sorted { a, b in
+                let a1 = isCCTV1Channel(a)
+                let b1 = isCCTV1Channel(b)
+                if a1 != b1 { return a1 && !b1 }
                 let na = M3UParserService.cctvNumber(from: a.key)
                 let nb = M3UParserService.cctvNumber(from: b.key)
                 if na != Int.max || nb != Int.max {
@@ -1032,6 +1068,14 @@ final class PlayerViewModel: ObservableObject {
         playCurrent(resetTried: true)
     }
 
+    /// 侧栏「第一个」展示位：始终把 CCTV1 顶到列表最前（不影响分组结构，仅浏览序）
+    func ensureCCTV1FirstInBrowseOrder(_ list: [Channel]) -> [Channel] {
+        guard let cctv1 = list.first(where: { Self.isCCTV1Channel($0) }) else { return list }
+        var rest = list.filter { $0.key != cctv1.key }
+        rest.insert(cctv1, at: 0)
+        return rest
+    }
+
     func switchSource(direction: Int) {
         if panelVisible { return }
         guard let ch = currentChannel, ch.sourceCount > 1 else {
@@ -1105,13 +1149,23 @@ final class PlayerViewModel: ObservableObject {
         updateNowPlaying()
     }
 
-    /// 回前台：仅在非用户暂停时续播
+    /// 回前台：非用户暂停时续播；item 丢失则重拉
     func resumeIfAppropriate() {
-        guard !userPaused, player.isReady, !player.isPlaying else { return }
-        player.resume()
+        guard !userPaused else { return }
         UIApplication.shared.isIdleTimerDisabled = true
+        if player.player.currentItem == nil {
+            if currentChannel != nil {
+                playCurrent(showOSD: false, resetTried: false)
+            }
+            return
+        }
+        if !player.isPlaying {
+            player.resume()
+        }
         bumpPlayerLayout()
         updateNowPlaying()
+        WindowVideoSurface.shared.rebindPlayer()
+        WindowVideoSurface.shared.forceFullBleed(reason: "resume-fg")
     }
 
     func noteInterruptionBegan() {

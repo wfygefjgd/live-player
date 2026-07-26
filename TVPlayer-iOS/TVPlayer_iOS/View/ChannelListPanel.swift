@@ -115,7 +115,8 @@ struct ChannelListPanel: View {
     }
 
     private func rowBackground(for ch: Channel) -> Color {
-        if vm.channels.firstIndex(where: { $0.key == ch.key }) == vm.currentIndex {
+        // 高亮当前台（按 key，不依赖 raw 下标）
+        if ch.key == vm.currentChannel?.key {
             return Color(red: 0.035, green: 0.278, blue: 0.443)
         }
         return Color(white: 0.12)
