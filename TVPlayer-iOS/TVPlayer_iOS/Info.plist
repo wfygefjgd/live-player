@@ -33,6 +33,8 @@
     <true/>
     <key>UIViewControllerBasedStatusBarAppearance</key>
     <true/>
+    <key>UIPreferredHomeIndicatorAutoHidden</key>
+    <true/>
     <key>UIRequiresFullScreen</key>
     <true/>
     <key>UIInterfaceStyle</key>

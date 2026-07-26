@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 频道信息 OSD — 渐入渐出 + 缩放动画
+/// 浮动频道 OSD — 外层已用 safeArea 抬高，此处不再额外大 padding
 struct ChannelOSDView: View {
     let text: String
 
@@ -17,14 +17,14 @@ struct ChannelOSDView: View {
                         Capsule()
                             .fill(Color.black.opacity(0.5))
                     )
-                    .padding(.top, 48)
                     .transition(.asymmetric(
                         insertion: .scale(scale: 0.9).combined(with: .opacity),
                         removal: .opacity
                     ))
                     .animation(.easeOut(duration: 0.2), value: text)
             }
-            Spacer()
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity)
     }
 }

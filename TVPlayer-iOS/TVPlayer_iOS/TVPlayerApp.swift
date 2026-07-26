@@ -55,6 +55,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 .environmentObject(viewModel)
                 .preferredColorScheme(.dark)
                 .statusBarHidden(true)
+                .persistentSystemOverlays(.hidden)
+                .defersSystemGestures(on: .all)
         )
         let hosting = RootHostingController(rootView: rootView)
         let container = FullScreenRootController(hosting: hosting)
@@ -112,6 +114,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
+        rootContainer?.refreshSystemChrome()
         viewModel?.resumeIfAppropriate()
         viewModel?.onAppBecameActive()
         WindowVideoSurface.shared.rebindPlayer()

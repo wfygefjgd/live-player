@@ -1,98 +1,58 @@
 import SwiftUI
 import AVKit
 
+/// 对应 Flutter：
+/// - 播放器外无 SafeArea
+/// - 根贴物理边（SizedBox.expand）
+/// - immersiveSticky 由 Root VC 负责
+/// - 仅浮动控制/OSD 用 safeArea.bottom 抬高
 struct ContentView: View {
     @EnvironmentObject private var vm: PlayerViewModel
 
-    // 数字键选台
     @State private var numberInput = ""
     @State private var numberInputTask: Task<Void, Never>?
 
     var body: some View {
-        ZStack {
-            // 方案 A：黑底 + 画面在 safe area 内（给小白条让路）
-            Color.black
+        GeometryReader { geo in
+            let bottomPad = max(geo.safeAreaInsets.bottom, 0)
+            let topPad = max(geo.safeAreaInsets.top, 0)
 
-            VideoPlayerView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .allowsHitTesting(false)
-                .zIndex(1)
+            ZStack {
+                Color.black
+                    .ignoresSafeArea(.all)
 
-            // 手势交互层（长按优先于拖动，避免侧边栏弹不出）
-            Color.clear
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    // 单击：无角标模式下不做事（避免误触）；面板关闭时保持干净画面
-                }
-                .highPriorityGesture(longPressGesture())
-                .simultaneousGesture(doubleTapGesture())
-                .simultaneousGesture(playerDragGesture())
-                .zIndex(2)
-
-            if vm.isBootstrapping {
-                VStack(spacing: 10) {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .tint(.white)
-                    Text(vm.bootstrapMessage)
-                        .foregroundColor(.white.opacity(0.9))
-                        .font(.subheadline)
-                        .multilineTextAlignment(.center)
-                }
-                .padding(20)
-                .background(Color.black.opacity(0.55))
-                .cornerRadius(12)
-                .zIndex(9)
-            } else if vm.channels.isEmpty {
-                VStack(spacing: 12) {
-                    Text("暂无频道")
-                        .foregroundColor(.white)
-                    Button("重新加载源") { vm.retryLoadSources() }
-                        .buttonStyle(.borderedProminent)
-                }
-                .padding(24)
-                .background(Color.black.opacity(0.55))
-                .cornerRadius(12)
-                .zIndex(8)
-            }
-
-            ChannelOSDView(text: vm.channelOSD)
-                .allowsHitTesting(false)
-                .zIndex(5)
-            if !vm.isBootstrapping {
-                IndicatorView(text: vm.indicatorText)
+                // 视频：贴物理屏，不给 Home Indicator 让位
+                VideoPlayerView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .ignoresSafeArea(.all)
                     .allowsHitTesting(false)
+                    .zIndex(1)
+
+                // 手势层：全屏
+                Color.clear
+                    .contentShape(Rectangle())
+                    .ignoresSafeArea(.all)
+                    .highPriorityGesture(longPressGesture())
+                    .simultaneousGesture(doubleTapGesture())
+                    .simultaneousGesture(playerDragGesture())
+                    .zIndex(2)
+
+                // 浮动控制/提示层：仅这里用 padding 避让小白条
+                floatingChrome(topPad: topPad, bottomPad: bottomPad)
                     .zIndex(5)
             }
-
-            // 数字键选台输入显示
-            if !numberInput.isEmpty {
-                VStack {
-                    Text(numberInput)
-                        .font(.system(size: 60, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 12)
-                        .background(Color.black.opacity(0.7))
-                        .cornerRadius(16)
-                    Text("按数字键选台")
-                        .font(.caption)
-                        .foregroundColor(.white.opacity(0.7))
-                }
-                .zIndex(70)
-            }
-
+            .frame(width: geo.size.width, height: geo.size.height)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black)
-        // 方案 A：不 ignoresSafeArea，整体在安全区内，给 Home Indicator 让路
+        .ignoresSafeArea(.all)
+        .background(Color.black.ignoresSafeArea(.all))
+        .statusBarHidden(true)
+        .persistentSystemOverlays(.hidden)
+        .defersSystemGestures(on: .all)
         .onAppear {
             vm.startup()
-
             WindowPanelSurface.shared.setPanel(
                 AnyView(
                     ChannelListPanel(onShowSettings: {
-                        // 点设置：直接打开「切换来源」，不弹中间菜单
                         vm.panelVisible = false
                         WindowPanelSurface.shared.prepareForModalPresentation()
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -117,13 +77,18 @@ struct ContentView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
-            // 不 pause：支持后台音频 / 锁屏续播
             cancelNumberInput()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             vm.resumeIfAppropriate()
             vm.onAppBecameActive()
             WindowVideoSurface.shared.rebindPlayer()
+            // 再刷一次 immersive（≈ sticky）
+            if let root = (UIApplication.shared.delegate as? AppDelegate)?.window?.rootViewController {
+                root.setNeedsUpdateOfHomeIndicatorAutoHidden()
+                root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+                root.setNeedsStatusBarAppearanceUpdate()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .tvPlayerRemotePlay)) { _ in
             vm.resume()
@@ -156,8 +121,68 @@ struct ContentView: View {
         }
     }
 
+    /// 浮动层：对应 Flutter 控制栏 MediaQuery.padding.bottom
+    @ViewBuilder
+    private func floatingChrome(topPad: CGFloat, bottomPad: CGFloat) -> some View {
+        ZStack {
+            if vm.isBootstrapping {
+                VStack(spacing: 10) {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .tint(.white)
+                    Text(vm.bootstrapMessage)
+                        .foregroundColor(.white.opacity(0.9))
+                        .font(.subheadline)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(20)
+                .background(Color.black.opacity(0.55))
+                .cornerRadius(12)
+            } else if vm.channels.isEmpty {
+                VStack(spacing: 12) {
+                    Text("暂无频道")
+                        .foregroundColor(.white)
+                    Button("重新加载源") { vm.retryLoadSources() }
+                        .buttonStyle(.borderedProminent)
+                }
+                .padding(24)
+                .background(Color.black.opacity(0.55))
+                .cornerRadius(12)
+            }
+
+            VStack {
+                ChannelOSDView(text: vm.channelOSD)
+                    .padding(.top, max(12, topPad + 8))
+                Spacer(minLength: 0)
+                if !vm.isBootstrapping {
+                    IndicatorView(text: vm.indicatorText)
+                        .padding(.bottom, max(12, bottomPad + 8))
+                }
+            }
+            .allowsHitTesting(false)
+
+            if !numberInput.isEmpty {
+                VStack {
+                    Spacer()
+                    Text(numberInput)
+                        .font(.system(size: 60, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 12)
+                        .background(Color.black.opacity(0.7))
+                        .cornerRadius(16)
+                    Text("按数字键选台")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.7))
+                    Spacer().frame(height: max(24, bottomPad + 16))
+                }
+                .allowsHitTesting(false)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private func longPressGesture() -> some Gesture {
-        // 略缩短，且与拖动手势 highPriority 分离，减少“长按被拖动吃掉”
         LongPressGesture(minimumDuration: 0.45)
             .onEnded { _ in
                 if vm.panelVisible {
@@ -173,7 +198,6 @@ struct ContentView: View {
     }
 
     private func playerDragGesture() -> some Gesture {
-        // 提高最小位移，避免微抖触发拖动导致长按失败
         DragGesture(minimumDistance: 28)
             .onChanged { value in
                 guard !vm.panelVisible else { return }
@@ -181,7 +205,6 @@ struct ContentView: View {
                 let sx = value.startLocation.x
                 let dy = value.translation.height
                 guard abs(dy) > abs(value.translation.width) else { return }
-                // 仅右侧调音量；亮度交给系统；左+中竖滑换台
                 if sx > w * 0.65 {
                     vm.handleVolumeDrag(translationHeight: dy, ended: false)
                 }
@@ -197,15 +220,11 @@ struct ContentView: View {
                     vm.handleVolumeDrag(translationHeight: dy, ended: true)
                     return
                 }
-
-                // 左右滑换线（全屏，除右侧正在调音量外）
                 if abs(dx) > abs(dy) && abs(dx) > 50 {
                     if dx > 0 { vm.switchSource(direction: 1) }
                     else { vm.switchSource(direction: -1) }
                     return
                 }
-
-                // 左+中区竖滑换台
                 if abs(dy) > abs(dx) && abs(dy) > 36, sx <= w * 0.65 {
                     if dy < 0 { vm.nextChannel() } else { vm.prevChannel() }
                 }
@@ -221,8 +240,6 @@ struct ContentView: View {
             }
     }
 
-    // MARK: - 数字键选台
-
     @available(iOS 17.0, *)
     private func handleKeyPress(_ press: KeyPress) -> KeyPress.Result {
         guard !vm.panelVisible else { return .ignored }
@@ -231,53 +248,27 @@ struct ContentView: View {
             appendNumber(digit)
             return .handled
         }
-
         if press.key == .return {
             confirmNumberInput()
             return .handled
         }
-
         if press.key == .escape {
             cancelNumberInput()
             return .handled
         }
-        if press.key == .delete {
-            if !numberInput.isEmpty {
-                numberInput.removeLast()
-                if numberInput.isEmpty {
-                    cancelNumberInput()
-                }
-                return .handled
-            }
-        }
-
-        if press.key == .upArrow {
-            vm.prevChannel()
+        if press.key == .delete, !numberInput.isEmpty {
+            numberInput.removeLast()
+            if numberInput.isEmpty { cancelNumberInput() }
             return .handled
         }
-        if press.key == .downArrow {
-            vm.nextChannel()
-            return .handled
-        }
-
-        if press.key == .leftArrow {
-            vm.switchSource(direction: -1)
-            return .handled
-        }
-        if press.key == .rightArrow {
-            vm.switchSource(direction: 1)
-            return .handled
-        }
-
+        if press.key == .upArrow { vm.prevChannel(); return .handled }
+        if press.key == .downArrow { vm.nextChannel(); return .handled }
+        if press.key == .leftArrow { vm.switchSource(direction: -1); return .handled }
+        if press.key == .rightArrow { vm.switchSource(direction: 1); return .handled }
         if press.characters == " " {
-            if vm.player.isPlaying {
-                vm.pause()
-            } else {
-                vm.resume()
-            }
+            if vm.player.isPlaying { vm.pause() } else { vm.resume() }
             return .handled
         }
-
         return .ignored
     }
 
@@ -287,13 +278,9 @@ struct ContentView: View {
         numberInputTask = Task {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard !Task.isCancelled else { return }
-            await MainActor.run {
-                confirmNumberInput()
-            }
+            await MainActor.run { confirmNumberInput() }
         }
-        if numberInput.count >= 4 {
-            confirmNumberInput()
-        }
+        if numberInput.count >= 4 { confirmNumberInput() }
     }
 
     private func confirmNumberInput() {

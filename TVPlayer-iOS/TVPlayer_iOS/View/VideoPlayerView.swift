@@ -2,10 +2,12 @@ import SwiftUI
 import AVKit
 import UIKit
 import MediaPlayer
-import Combine
 
-// MARK: - 方案 A：让路（safe area）
-// 画面只铺在安全区内，底边主动留给系统 Home Indicator，不与系统抢层、不改 safeArea。
+// MARK: - 对应 Flutter 方案
+// - 无 SafeArea 包播放器
+// - 根布局贴物理屏（SizedBox.expand / Positioned.fill）
+// - immersiveSticky ≈ prefersHomeIndicatorAutoHidden + 隐藏状态栏
+// - 视频贴底铺满；仅浮动控制层用 safeArea.bottom 抬高
 
 final class PlayerSurfaceView: UIView {
     private let playerLayer = AVPlayerLayer()
@@ -15,6 +17,7 @@ final class PlayerSurfaceView: UIView {
         super.init(frame: frame)
         backgroundColor = .black
         isOpaque = true
+        clipsToBounds = true
         playerLayer.videoGravity = .resize
         playerLayer.backgroundColor = UIColor.black.cgColor
         layer.addSublayer(playerLayer)
@@ -32,9 +35,7 @@ final class PlayerSurfaceView: UIView {
 
     func rebind() {
         guard let p = boundPlayer else { return }
-        if playerLayer.player !== p {
-            playerLayer.player = p
-        }
+        if playerLayer.player !== p { playerLayer.player = p }
         playerLayer.frame = bounds
         playerLayer.videoGravity = .resize
     }
@@ -49,31 +50,15 @@ final class PlayerSurfaceView: UIView {
     }
 }
 
-/// 兼容旧调用名：内部转到当前 surface
 final class WindowVideoSurface {
     static let shared = WindowVideoSurface()
     weak var surface: PlayerSurfaceView?
 
-    func setPlayer(_ player: AVPlayer?) {
-        surface?.setPlayer(player)
-    }
-
-    func rebindPlayer() {
-        surface?.rebind()
-    }
-
-    // 以下为空实现：清掉历史 hack 调用点，避免再改布局
-    func forceFullBleed(reason: String = "") {
-        surface?.rebind()
-    }
-
-    func hardRemount(reason: String = "") {
-        surface?.rebind()
-    }
-
-    func install(reason: String = "") {
-        surface?.rebind()
-    }
+    func setPlayer(_ player: AVPlayer?) { surface?.setPlayer(player) }
+    func rebindPlayer() { surface?.rebind() }
+    func forceFullBleed(reason: String = "") { surface?.rebind() }
+    func hardRemount(reason: String = "") { surface?.rebind() }
+    func install(reason: String = "") { surface?.rebind() }
 }
 
 struct VideoPlayerView: UIViewRepresentable {
@@ -93,7 +78,7 @@ struct VideoPlayerView: UIViewRepresentable {
     }
 }
 
-// MARK: - 根控制器（普通横屏，尊重系统 safe area）
+// MARK: - 根：内容延伸到系统栏后面（≈ extendBody / extendBodyBehindAppBar）
 
 final class FullScreenRootController: UIViewController {
     private let hosted: UIViewController
@@ -105,49 +90,80 @@ final class FullScreenRootController: UIViewController {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    // ≈ SystemChrome.setEnabledSystemUIMode(immersiveSticky)
+    override var prefersHomeIndicatorAutoHidden: Bool { true }
+    override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
     override var prefersStatusBarHidden: Bool { true }
     override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation { .fade }
     override var shouldAutorotate: Bool { true }
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
-    // 方案 A：不强制隐藏 Home Indicator，让系统正常占位
-    override var prefersHomeIndicatorAutoHidden: Bool { false }
+    override var childForHomeIndicatorAutoHidden: UIViewController? { nil }
+    override var childForScreenEdgesDeferringSystemGestures: UIViewController? { nil }
+    override var childForStatusBarHidden: UIViewController? { nil }
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
         view.isOpaque = true
+        edgesForExtendedLayout = .all
+        extendedLayoutIncludesOpaqueBars = true
 
         addChild(hosted)
         hosted.view.translatesAutoresizingMaskIntoConstraints = false
         hosted.view.backgroundColor = .black
         view.addSubview(hosted.view)
-        // 钉在 safe area 内 = 给小白条让路
-        let guide = view.safeAreaLayoutGuide
+        // 贴物理边 = Positioned.fill / SizedBox.expand（不用 safeAreaLayoutGuide）
         NSLayoutConstraint.activate([
-            hosted.view.topAnchor.constraint(equalTo: guide.topAnchor),
-            hosted.view.bottomAnchor.constraint(equalTo: guide.bottomAnchor),
-            hosted.view.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
-            hosted.view.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
+            hosted.view.topAnchor.constraint(equalTo: view.topAnchor),
+            hosted.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            hosted.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            hosted.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
         ])
         hosted.didMove(toParent: self)
     }
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        setNeedsUpdateOfHomeIndicatorAutoHidden()
+        setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+        setNeedsStatusBarAppearanceUpdate()
+    }
+
     func refreshSystemChrome() {
+        setNeedsUpdateOfHomeIndicatorAutoHidden()
+        setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
         setNeedsStatusBarAppearanceUpdate()
     }
 }
 
 final class RootHostingController<Content: View>: UIHostingController<Content> {
+    override var prefersHomeIndicatorAutoHidden: Bool { true }
+    override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
     override var prefersStatusBarHidden: Bool { true }
     override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation { .fade }
     override var shouldAutorotate: Bool { true }
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
-    override var prefersHomeIndicatorAutoHidden: Bool { false }
+    override var childForHomeIndicatorAutoHidden: UIViewController? { nil }
+    override var childForScreenEdgesDeferringSystemGestures: UIViewController? { nil }
+    override var childForStatusBarHidden: UIViewController? { nil }
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
         view.isOpaque = true
+        edgesForExtendedLayout = .all
+        extendedLayoutIncludesOpaqueBars = true
+        if #available(iOS 16.4, *) {
+            // 不把 safe area 强加给 SwiftUI 视频层
+            safeAreaRegions = []
+        }
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        setNeedsUpdateOfHomeIndicatorAutoHidden()
+        setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+        setNeedsStatusBarAppearanceUpdate()
     }
 }
 
