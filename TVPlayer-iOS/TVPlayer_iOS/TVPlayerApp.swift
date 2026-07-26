@@ -51,7 +51,11 @@ struct RootView: UIViewControllerRepresentable {
 @main
 final class AppDelegate: NSObject, UIApplicationDelegate {
 
-    private var window: UIWindow?
+    // UIApplicationDelegate exposes this property to the application lifecycle.
+    // Keep it internal so UIKit can satisfy the protocol requirement while the
+    // delegate retains the real top-level window for safe-area/home-indicator
+    // policy updates.
+    var window: UIWindow?
 
     private var wasPlayingBeforeInterruption = false
 
