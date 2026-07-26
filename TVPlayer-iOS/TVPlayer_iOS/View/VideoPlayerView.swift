@@ -339,8 +339,11 @@ final class FullScreenRootController: UIViewController {
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
     override var prefersStatusBarHidden: Bool { true }
     override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation { .fade }
-    override var shouldAutorotate: Bool { false }
-    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
+    /// 启动竖→横冲击期间必须允许旋转
+    override var shouldAutorotate: Bool { true }
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        OrientationBootstrap.allowedMask
+    }
 
     override var childForHomeIndicatorAutoHidden: UIViewController? { nil }
     override var childForScreenEdgesDeferringSystemGestures: UIViewController? { nil }
@@ -409,8 +412,10 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
     override var prefersStatusBarHidden: Bool { true }
     override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation { .fade }
-    override var shouldAutorotate: Bool { false }
-    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
+    override var shouldAutorotate: Bool { true }
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        OrientationBootstrap.allowedMask
+    }
 
     override var childForHomeIndicatorAutoHidden: UIViewController? { nil }
     override var childForScreenEdgesDeferringSystemGestures: UIViewController? { nil }

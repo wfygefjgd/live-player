@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        OrientationBootstrap.resetForColdLaunch()
         setupAudioSession()
         setupRemoteCommands()
         // scene 可能尚未就绪：先建，再在 scene 回调里绑 windowScene
@@ -35,7 +36,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         supportedInterfaceOrientationsFor window: UIWindow?
     ) -> UIInterfaceOrientationMask {
-        .landscape
+        // 启动竖屏冲击 → 再锁横屏（见 OrientationBootstrap）
+        OrientationBootstrap.allowedMask
     }
 
     func installMainWindow(application: UIApplication, scene: UIWindowScene? = nil) {
@@ -48,6 +50,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             window.makeKeyAndVisible()
             rootContainer.refreshSystemChrome()
             WindowVideoSurface.shared.forceFullBleed(reason: "reinstall-skip")
+            OrientationBootstrap.schedulePortraitToLandscapeShock(after: 0.28)
             return
         }
 
@@ -105,6 +108,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         DispatchQueue.main.async {
             container.refreshSystemChrome()
             WindowVideoSurface.shared.forceFullBleed(reason: "launch-async")
+            // 黑屏竖屏 → ~0.28s 切横屏，冲击 safe area / 小白条布局
+            OrientationBootstrap.schedulePortraitToLandscapeShock(after: 0.28)
         }
     }
 
