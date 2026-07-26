@@ -6,6 +6,9 @@ on:
       - 'v*-ios'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-latest
@@ -69,9 +72,11 @@ jobs:
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: TVPlayer-iOS/build/TVPlayer-v${{ steps.get_version.outputs.version }}-ios.ipa
           body_path: RELEASE_NOTES_iOS_v${{ steps.get_version.outputs.version }}.md
+          name: TVPlayer iOS v${{ steps.get_version.outputs.version }}
+          generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
