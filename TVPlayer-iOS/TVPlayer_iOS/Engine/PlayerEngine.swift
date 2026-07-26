@@ -8,8 +8,8 @@ final class PlayerEngine: ObservableObject {
     static let startupTimeoutNs: UInt64 = 5_000_000_000      // 5s 起播超时：给弱网出画机会
     static let readyProtectNs: UInt64 = 2_500_000_000         // 2.5s 出画保护：避免刚就绪就误判
     static let errorGraceNs: UInt64 = 1_500_000_000           // 1.5s 错误宽容
-    static let silentAudioCheckNs: UInt64 = 5_000_000_000     // 5s 后检测静音
-    static let silentAudioPollIntervalNs: UInt64 = 800_000_000 // 800ms 轮询
+    static let silentAudioCheckNs: UInt64 = 8_000_000_000     // 8s 后再查静音（HLS 晚选轨）
+    static let silentAudioPollIntervalNs: UInt64 = 1_200_000_000 // 1.2s 二次确认
     static let progressStallThreshold: TimeInterval = 4.5     // 出画后进度停滞阈值
 
     // 根据网络类型动态调整卡顿阈值（偏保守，好线不轻易切）
@@ -63,34 +63,23 @@ final class PlayerEngine: ObservableObject {
         setupCacheCleanup()  // 🆕 设置AVPlayer缓存清理
     }
 
-    // 🆕 设置AVPlayer缓存清理
+    private var memoryWarningObserver: NSObjectProtocol?
+
+    // 内存紧张时仅清 URL 缓存；切勿在后台清空 currentItem（会中断后台音频）
     private func setupCacheCleanup() {
-        // App进入后台时清理播放器缓存
-        NotificationCenter.default.addObserver(
-            forName: UIApplication.didEnterBackgroundNotification,
+        memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.clearPlayerCache()
-            }
+        ) { _ in
+            URLCache.shared.removeAllCachedResponses()
         }
-    }
-
-    // 🆕 清理AVPlayer缓存
-    private func clearPlayerCache() {
-        // 清理AVAssetCache
-        if let item = player.currentItem,
-           let asset = item.asset as? AVURLAsset {
-            asset.resourceLoader.setDelegate(nil, queue: nil)
-        }
-
-        // 清理旧的播放项
-        player.replaceCurrentItem(with: nil)
     }
 
     deinit {
-        NotificationCenter.default.removeObserver(self)
+        if let memoryWarningObserver {
+            NotificationCenter.default.removeObserver(memoryWarningObserver)
+        }
         statusObserver?.invalidate()
         if let obs = timeObserver {
             player.removeTimeObserver(obs)
@@ -219,21 +208,16 @@ final class PlayerEngine: ObservableObject {
 
     @discardableResult
     private func scheduleTask(named name: String, token: Int, timeout: UInt64, action: @escaping @MainActor () -> Void) -> Task<Void, Never> {
-        // 同名任务取消
         if let existing = watchTasks[name] {
             existing.cancel()
         }
-        let task = Task { [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: timeout)
-                guard !Task.isCancelled else { return }
-                guard let self else { return }
-                guard self.playToken == token else { return }
-                action()
-            } catch {
-                // Cancelled
-            }
-            self?.watchTasks[name] = nil
+        let task = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: timeout)
+            guard !Task.isCancelled else { return }
+            guard let self else { return }
+            guard self.playToken == token else { return }
+            action()
+            self.watchTasks[name] = nil
         }
         watchTasks[name] = task
         return task
@@ -336,13 +320,19 @@ final class PlayerEngine: ObservableObject {
         isReady = true
         hasRendered = true
         player.play()
+        player.rate = 1.0
         isPlaying = true
         onReady?()
+        // 出画后强制重绑画面层，消除「有声无画 / 被小白条裁切」
+        NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
+        WindowVideoSurface.shared.rebindPlayer()
+        WindowVideoSurface.shared.forceFullBleed(reason: "player-ready")
 
         stallWatchEnabled = false
         scheduleTask(named: "readyProtect", token: token, timeout: Self.readyProtectNs) { [weak self] in
             guard let self, self.playToken == token else { return }
             self.stallWatchEnabled = true
+            WindowVideoSurface.shared.forceFullBleed(reason: "ready-protect")
         }
         scheduleSilentAudioCheck(token: token)
         startHealthCheck(token: token)
@@ -415,18 +405,25 @@ final class PlayerEngine: ObservableObject {
     private func pollAudioTrack(token: Int) {
         guard playToken == token, isReady, !hasAudioTrackReported else { return }
 
-        if !hasAudioTrackPresent() {
+        // 有音轨则结束；无音轨再等一轮，避免起播瞬间 tracks 为空
+        if hasAudioTrackPresent() {
             hasAudioTrackReported = true
-            onSilentAudio?()
             return
         }
 
-        // 再轮询一次确认
         scheduleTask(named: "silentRecheck", token: token, timeout: Self.silentAudioPollIntervalNs) { [weak self] in
             guard let self, self.playToken == token, self.isReady else { return }
-            if !self.hasAudioTrackPresent() {
+            if self.hasAudioTrackPresent() {
                 self.hasAudioTrackReported = true
-                self.onSilentAudio?()
+                return
+            }
+            // 第三次再确认
+            self.scheduleTask(named: "silentRecheck2", token: token, timeout: Self.silentAudioPollIntervalNs) { [weak self] in
+                guard let self, self.playToken == token, self.isReady else { return }
+                self.hasAudioTrackReported = true
+                if !self.hasAudioTrackPresent() {
+                    self.onSilentAudio?()
+                }
             }
         }
     }
@@ -434,7 +431,10 @@ final class PlayerEngine: ObservableObject {
     private func hasAudioTrackPresent() -> Bool {
         guard let item = player.currentItem else { return false }
         let audioTracks = item.tracks.filter { $0.assetTrack?.mediaType == .audio }
-        return !audioTracks.isEmpty
+        if !audioTracks.isEmpty { return true }
+        // asset 级兜底（tracks 尚未挂上时）
+        let assetAudios = item.asset.tracks(withMediaType: .audio)
+        return !assetAudios.isEmpty
     }
 
     // MARK: - Private — Health Monitoring
@@ -450,6 +450,11 @@ final class PlayerEngine: ObservableObject {
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 guard let self, self.playToken == token, !Task.isCancelled else { return }
                 guard self.isReady, self.stallWatchEnabled else { continue }
+                // 用户暂停：绝不自动换线
+                if self.player.timeControlStatus == .paused || self.player.rate < 0.01 {
+                    self.consecutiveStallCount = 0
+                    continue
+                }
 
                 if let monitor = self.healthMonitor {
                     let immediate = monitor.shouldSwitchImmediately()
@@ -492,9 +497,12 @@ final class PlayerEngine: ObservableObject {
         watchTasks[name] = nil
     }
 
-    /// 主动检测卡顿：仅在进度长期不推进或持续无法播放时判定
+    /// 主动检测卡顿：仅在「应在播」却长期不推进时判定；用户暂停不算卡顿
     func isStalled() -> Bool {
         guard player.currentItem != nil else { return true }
+        if player.timeControlStatus == .paused {
+            return false
+        }
         // 正在播且有速率 → 一定不是卡顿
         if player.timeControlStatus == .playing && player.rate > 0.01 {
             if hasRendered, lastTimeProgressAt != .distantPast,
@@ -505,7 +513,7 @@ final class PlayerEngine: ObservableObject {
         // 持续 waiting 且 rate=0
         if player.timeControlStatus == .waitingToPlayAtSpecifiedRate && player.rate == 0 {
             if lastTimeProgressAt == .distantPast {
-                return hasRendered // 声称 ready 却从未推进
+                return hasRendered
             }
             return Date().timeIntervalSince(lastTimeProgressAt) > Self.progressStallThreshold
         }

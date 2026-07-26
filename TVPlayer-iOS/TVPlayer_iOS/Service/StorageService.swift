@@ -142,14 +142,14 @@ final class StorageService {
         }
     }
 
+    /// 同步写入，保证随后 isLineHidden / applyRules 立刻可见
     func hideLine(_ url: String) {
         let clean = url.trimmingCharacters(in: .whitespaces)
         guard !clean.isEmpty else { return }
-        queue.async(flags: .barrier) { [weak self] in
-            guard let self else { return }
-            var lines = Set(self.defaults.stringArray(forKey: self.kHiddenLines) ?? [])
+        queue.sync(flags: .barrier) {
+            var lines = Set(defaults.stringArray(forKey: kHiddenLines) ?? [])
             lines.insert(clean)
-            self.defaults.set(Array(lines), forKey: self.kHiddenLines)
+            defaults.set(Array(lines), forKey: kHiddenLines)
         }
     }
 

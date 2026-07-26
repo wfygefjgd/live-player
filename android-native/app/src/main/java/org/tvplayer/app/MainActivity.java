@@ -17,6 +17,7 @@ import android.view.KeyEvent;
 import android.view.GestureDetector;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.Button;
@@ -78,25 +79,25 @@ public class MainActivity extends AppCompatActivity {
     private static final long STALL_TIMEOUT_MS = 4500L;               // 4.5秒持续卡顿才切
     private static final long FAST_FAIL_TIMEOUT_MS = 3500L;           // 自动换线后稍短超时
     private static final long NETWORK_WAIT_RETRY_MS = 500L;
-    private static final long FLOAT_BUTTONS_TIMEOUT_MS = 2500L;
-    private static final long SILENT_AUDIO_CHECK_MS = 5000L;          // 出画后再检测无声
+    private static final long SILENT_AUDIO_CHECK_MS = 8000L;          // 8s 后再查无声，减少误切
     private static final long READY_PROTECT_MS = 2500L;               // 刚就绪保护期，避免误切
     private static final int AUTO_RECOVER_MAX_CHANNELS = 25;
 
     private PlayerView playerView;
     private ExoPlayer player;
     private View leftPanel;
-    private Button btnTogglePanel;
-    private Button btnLock;
     private TextView status;
     private TextView channelLabel;
     private TextView indicator;
+    private TextView gestureHint;
+    private View btnSourceManage;
     private RecyclerView channelList;
 
     private final List<Channel> channels = new ArrayList<>();
     private final List<String> sourceUrls = new ArrayList<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final ExecutorService netPool = Executors.newFixedThreadPool(2);
+    private final ExecutorService netPool = Executors.newFixedThreadPool(
+            Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors() - 1)));
 
     private ChannelAdapter adapter;
     private AudioManager audioManager;
@@ -106,13 +107,13 @@ public class MainActivity extends AppCompatActivity {
     private Runnable hideChannelLabelRunnable;
     private Runnable stallRunnable;
     private Runnable silentAudioRunnable;
-    private Runnable hideFloatingButtonsRunnable;
+    private Runnable hideGestureHintRunnable;
 
     private int currentIndex = 0;
     private int currentSourceIndex = 0;
     private boolean panelVisible = false;
-    private boolean locked = false;
     private boolean loading = false;
+    private int loadGeneration = 0;
     private boolean waitingForReady = false;
     private float brightness = 0.5f;
     private long pendingStallTimeoutMs = CHANNEL_SWITCH_TIMEOUT_MS;
@@ -131,6 +132,9 @@ public class MainActivity extends AppCompatActivity {
     private LineReputationStore reputation;
     private Runnable preferLineRunnable;
     private static final long PREFER_LINE_STABLE_MS = 6000L;
+
+    /** 融合模式：off / fast / balanced / complete / smart（与 iOS 对齐） */
+    private String fusionMode = "smart";
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -167,6 +171,10 @@ public class MainActivity extends AppCompatActivity {
         checkNetworkSpeed();
 
         restoreSourceState();
+        fusionMode = storage.loadFusionMode();
+        if (fusionMode == null || fusionMode.isEmpty()) {
+            fusionMode = "smart";
+        }
 
         bindViews();
         setupPlayer();
@@ -180,20 +188,26 @@ public class MainActivity extends AppCompatActivity {
     private void bindViews() {
         playerView = findViewById(R.id.player_view);
         leftPanel = findViewById(R.id.left_panel);
-        btnTogglePanel = findViewById(R.id.btn_toggle_panel);
-        btnLock = findViewById(R.id.btn_lock);
         status = findViewById(R.id.status);
         channelLabel = findViewById(R.id.channel_label);
         indicator = findViewById(R.id.indicator);
+        gestureHint = findViewById(R.id.gesture_hint);
+        btnSourceManage = findViewById(R.id.btn_source_manage);
         channelList = findViewById(R.id.channel_list);
 
         playerView.setUseController(false);
         playerView.setKeepContentOnPlayerReset(true);
         channelLabel.setVisibility(View.GONE);
         status.setVisibility(View.VISIBLE);
-        setFloatingButtonsVisible(true);
         leftPanel.setVisibility(View.GONE);
-        btnTogglePanel.setText("▶");
+        if (gestureHint != null) {
+            hideGestureHintRunnable = () -> {
+                if (gestureHint != null) {
+                    gestureHint.setVisibility(View.GONE);
+                }
+            };
+            mainHandler.postDelayed(hideGestureHintRunnable, 5000L);
+        }
     }
 
     private void setupPlayer() {
@@ -203,23 +217,21 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onPlaybackStateChanged(int state) {
                 if (state == Player.STATE_READY) {
-                    // 仅在真正可播时确认就绪；避免假 READY
-                    boolean reallyPlaying = player != null
-                            && (player.isPlaying() || player.getPlayWhenReady());
+                    // 必须真正 isPlaying 才算就绪；仅 playWhenReady 是假 READY
+                    boolean reallyPlaying = player != null && player.isPlaying();
                     waitingForReady = false;
                     autoSwitchingSource = false;
-                    currentPlaybackReachedReady = true;
-                    readyAtMs = System.currentTimeMillis();
                     consecutiveBufferEvents = 0;
-                    autoRecoverChannelHops = 0;
                     cancelStallCheck();
                     if (reallyPlaying) {
+                        currentPlaybackReachedReady = true;
+                        readyAtMs = System.currentTimeMillis();
+                        autoRecoverChannelHops = 0;
                         scheduleSilentAudioCheck();
-                        scheduleHideFloatingButtons();
-                        // 真实起播成功 → 延迟写入信誉（与 iOS 一致）
                         scheduleRememberPreferredLine();
                     } else {
-                        // READY 但未真正播放：保留卡顿检测兜底
+                        // 假 READY：不写成功信誉，继续等出画/超时
+                        currentPlaybackReachedReady = false;
                         scheduleStallCheck(STALL_TIMEOUT_MS);
                     }
                     return;
@@ -281,56 +293,71 @@ public class MainActivity extends AppCompatActivity {
         adapter = new ChannelAdapter();
         channelList.setLayoutManager(new LinearLayoutManager(this));
         channelList.setAdapter(adapter);
-        adapter.setOnChannelClick(position -> {
-            if (locked) {
-                return;
-            }
-            currentIndex = position;
-            currentSourceIndex = 0;
-            resetTriedLines();
-            autoRecoverChannelHops = 0;
-            playCurrent(true);
-        });
+        // 点选 / 遥控 OK 确认：播放并关侧栏（侧栏打开期间上下不直接换台）
+        adapter.setOnChannelClick(this::selectChannelFromPanel);
+        channelList.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
     }
 
     private void setupButtons() {
-        btnTogglePanel.setOnClickListener(v -> {
-            if (!locked) {
-                togglePanel();
-            }
-        });
-        btnTogglePanel.setOnLongClickListener(v -> {
-            if (!locked) {
-                showSourceInputDialog();
-            }
-            return true;
-        });
-        btnLock.setOnClickListener(v -> toggleLock());
-        btnLock.setOnLongClickListener(v -> {
-            if (!channels.isEmpty()) {
-                confirmDeleteCurrentLine();
-            }
-            return true;
-        });
+        if (btnSourceManage != null) {
+            btnSourceManage.setFocusable(true);
+            btnSourceManage.setClickable(true);
+            btnSourceManage.setOnClickListener(v -> showSourceInputDialog());
+        }
+        if (status != null) {
+            status.setFocusable(true);
+            status.setClickable(true);
+            status.setOnClickListener(v -> showSourceInputDialog());
+        }
+    }
+
+    /** 侧栏确认选台：播放并关闭侧栏，之后才恢复全屏换台键 */
+    private void selectChannelFromPanel(int position) {
+        if (position < 0 || position >= channels.size()) {
+            return;
+        }
+        currentIndex = position;
+        currentSourceIndex = 0;
+        resetTriedLines();
+        autoRecoverChannelHops = 0;
+        playCurrent(true);
+        closePanel();
     }
 
     private void setupGestures() {
         gestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
-            private static final int SWIPE_MIN = 80;
-            private static final int SWIPE_VEL = 100;
+            private static final int SWIPE_MIN = 72;
+            private static final int SWIPE_VEL = 120;
 
             @Override
             public boolean onDown(MotionEvent e) {
                 return true;
             }
 
+            /**
+             * 触控分区（手机）：
+             * - 左半屏：竖滑 fling = 换台；横滑 fling = 换线
+             * - 右半屏：不处理音量/亮度（交给系统）
+             * - 侧栏打开时：禁止画面换台/换线，避免与列表滚动冲突
+             */
             @Override
             public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
-                if (locked || e1 == null || e2 == null) {
+                if (e1 == null || e2 == null) {
+                    return false;
+                }
+                if (panelVisible) {
+                    return false;
+                }
+                int width = playerView.getWidth() > 0
+                        ? playerView.getWidth()
+                        : getResources().getDisplayMetrics().widthPixels;
+                // 仅左半区响应换台/换线
+                if (e1.getX() > width * 0.5f) {
                     return false;
                 }
                 float dx = e2.getX() - e1.getX();
                 float dy = e2.getY() - e1.getY();
+                // 横滑优先：换线
                 if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > SWIPE_MIN && Math.abs(velocityX) > SWIPE_VEL) {
                     if (dx > 0) {
                         switchSource(-1, true);
@@ -339,38 +366,30 @@ public class MainActivity extends AppCompatActivity {
                     }
                     return true;
                 }
+                // 竖滑：换台
+                if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > SWIPE_MIN && Math.abs(velocityY) > SWIPE_VEL) {
+                    if (dy < 0) {
+                        playNextChannel(true);
+                    } else {
+                        playPreviousChannel(true);
+                    }
+                    return true;
+                }
                 return false;
             }
 
             @Override
             public boolean onScroll(MotionEvent e1, MotionEvent e2, float distanceX, float distanceY) {
-                if (locked || e1 == null || e2 == null) {
-                    return false;
-                }
-                float dx = Math.abs(e2.getX() - e1.getX());
-                float dy = e1.getY() - e2.getY();
-                if (dx > Math.abs(dy) || Math.abs(dy) < 8) {
-                    return false;
-                }
-                int width = playerView.getWidth() > 0 ? playerView.getWidth() : getResources().getDisplayMetrics().widthPixels;
-                if (e1.getX() < width * 0.35f) {
-                    adjustBrightness(dy > 0 ? 0.03f : -0.03f);
-                    return true;
-                }
-                if (e1.getX() > width * 0.65f) {
-                    adjustVolume(dy > 0 ? 1 : -1);
-                    return true;
-                }
+                // 不再用滑动调音量/亮度
                 return false;
             }
 
             @Override
             public boolean onSingleTapConfirmed(MotionEvent e) {
-                if (locked) {
-                    showFloatingButtonsTemporarily();
+                if (panelVisible) {
+                    closePanel();
                     return true;
                 }
-                showFloatingButtonsTemporarily();
                 if (player != null) {
                     if (player.isPlaying()) {
                         player.pause();
@@ -382,23 +401,27 @@ public class MainActivity extends AppCompatActivity {
             }
 
             @Override
+            public boolean onDoubleTap(MotionEvent e) {
+                if (panelVisible) {
+                    return false;
+                }
+                showSourceInputDialog();
+                return true;
+            }
+
+            @Override
             public void onLongPress(MotionEvent e) {
-                if (locked) {
-                    showFloatingButtonsTemporarily();
-                    return;
-                }
-                // 长按打开/关闭左侧频道栏（与 iOS 对齐）
-                if (!panelVisible) {
-                    togglePanel();
-                }
-                showFloatingButtonsTemporarily();
+                // 长按 = 开关侧栏（与遥控 OK 一致）
+                togglePanel();
             }
         });
 
         View.OnTouchListener touchListener = (v, event) -> {
+            // 点在侧栏上：交给列表，不走播放器手势
             if (panelVisible && isTouchOnPanel(event)) {
                 return false;
             }
+            // 侧栏打开时，点在画面上也可关栏（单击空白处）——仍允许 longPress/ fling 被上面 panelVisible 挡住
             return gestureDetector.onTouchEvent(event);
         };
         playerView.setOnTouchListener(touchListener);
@@ -480,146 +503,152 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void togglePanel() {
-        panelVisible = !panelVisible;
-        leftPanel.setVisibility(panelVisible ? View.VISIBLE : View.GONE);
-        // 面板打开时抬到最前，避免被 PlayerView 或其它层遮挡
-        if (panelVisible && leftPanel != null) {
+        if (panelVisible) {
+            closePanel();
+        } else {
+            openPanel();
+        }
+    }
+
+    private void openPanel() {
+        panelVisible = true;
+        if (leftPanel != null) {
+            leftPanel.setVisibility(View.VISIBLE);
             leftPanel.bringToFront();
-            if (btnTogglePanel != null) {
-                btnTogglePanel.bringToFront();
-            }
-            if (btnLock != null) {
-                btnLock.bringToFront();
-            }
+            leftPanel.setFocusable(true);
         }
-        btnTogglePanel.setText(panelVisible ? "◀" : "▶");
-        showFloatingButtonsTemporarily();
+        if (btnSourceManage != null) {
+            btnSourceManage.setFocusable(true);
+        }
+        if (channelList != null) {
+            channelList.setFocusable(true);
+            channelList.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
+            if (currentIndex >= 0 && currentIndex < channels.size()) {
+                channelList.scrollToPosition(currentIndex);
+            }
+            channelList.post(() -> {
+                int idx = Math.max(0, Math.min(currentIndex, channels.size() - 1));
+                RecyclerView.ViewHolder vh = channelList.findViewHolderForAdapterPosition(idx);
+                if (vh != null) {
+                    vh.itemView.requestFocus();
+                } else if (btnSourceManage != null) {
+                    btnSourceManage.requestFocus();
+                } else {
+                    channelList.requestFocus();
+                }
+            });
+        }
     }
 
-    private void toggleLock() {
-        locked = !locked;
-        btnLock.setText(locked ? "🔒" : "🔓");
-        if (locked) {
+    private void closePanel() {
+        panelVisible = false;
+        if (leftPanel != null) {
             leftPanel.setVisibility(View.GONE);
-            setFloatingButtonsVisible(true);
-            btnTogglePanel.setVisibility(View.GONE);
-        } else {
-            leftPanel.setVisibility(panelVisible ? View.VISIBLE : View.GONE);
-            showFloatingButtonsTemporarily();
+        }
+        if (playerView != null) {
+            playerView.requestFocus();
         }
     }
 
-    private void setFloatingButtonsVisible(boolean visible) {
-        float alpha = visible ? 1f : 0f;
-        int visibility = visible ? View.VISIBLE : View.GONE;
-        btnLock.setAlpha(alpha);
-        btnLock.setVisibility(visibility);
-        btnTogglePanel.setAlpha(alpha);
-        btnTogglePanel.setVisibility(locked ? View.GONE : visibility);
+    /**
+     * 侧栏打开时按 OK：确认当前焦点项。
+     * - 焦点在频道行 → 播放并关栏
+     * - 焦点在「源管理」→ 打开源对话框
+     * - 其它 → 仅关栏回到画面（恢复换台键）
+     */
+    private boolean handlePanelOkKey() {
+        if (!panelVisible) {
+            openPanel();
+            return true;
+        }
+        View focus = getCurrentFocus();
+        if (focus != null && btnSourceManage != null
+                && (focus == btnSourceManage || focus.getId() == R.id.btn_source_manage)) {
+            showSourceInputDialog();
+            return true;
+        }
+        if (focus != null && status != null && focus == status) {
+            showSourceInputDialog();
+            return true;
+        }
+        if (focus != null && channelList != null) {
+            View item = focus;
+            while (item != null && item.getParent() != channelList) {
+                if (!(item.getParent() instanceof View)) {
+                    break;
+                }
+                item = (View) item.getParent();
+            }
+            if (item != null && item.getParent() == channelList) {
+                int pos = channelList.getChildAdapterPosition(item);
+                if (pos == RecyclerView.NO_POSITION && item.getTag() instanceof Integer) {
+                    pos = (Integer) item.getTag();
+                }
+                if (pos >= 0 && pos < channels.size()) {
+                    selectChannelFromPanel(pos);
+                    return true;
+                }
+            }
+        }
+        // 无明确选中：关栏回到全屏（换台键恢复）
+        closePanel();
+        return true;
     }
 
-    private void showFloatingButtonsTemporarily() {
-        cancelHideFloatingButtons();
-        setFloatingButtonsVisible(true);
-        scheduleHideFloatingButtons();
-    }
-
-    private void scheduleHideFloatingButtons() {
-        cancelHideFloatingButtons();
-        if (player == null || player.getPlaybackState() != Player.STATE_READY) {
-            return;
-        }
-        hideFloatingButtonsRunnable = () -> setFloatingButtonsVisible(false);
-        mainHandler.postDelayed(hideFloatingButtonsRunnable, FLOAT_BUTTONS_TIMEOUT_MS);
-    }
-
-    private void cancelHideFloatingButtons() {
-        if (hideFloatingButtonsRunnable != null) {
-            mainHandler.removeCallbacks(hideFloatingButtonsRunnable);
-            hideFloatingButtonsRunnable = null;
-        }
-    }
-
-    private void confirmDeleteCurrentLine() {
-        if (channels.isEmpty() || currentIndex < 0 || currentIndex >= channels.size()) {
-            return;
-        }
-        Channel channel = channels.get(currentIndex);
-        if (channel.getSourceCount() == 0 || currentSourceIndex < 0 || currentSourceIndex >= channel.getSourceCount()) {
-            return;
-        }
-        String lineLabel = channel.name + " 线路 " + (currentSourceIndex + 1);
-        new AlertDialog.Builder(this)
-                .setTitle("删除当前线路")
-                .setMessage("确认删除 " + lineLabel + " 并自动跳到下一线路吗？")
-                .setPositiveButton("删除", (dialog, which) -> deleteCurrentLineAndJump())
-                .setNegativeButton("取消", null)
-                .show();
-    }
-
-    private void deleteCurrentLineAndJump() {
-        if (channels.isEmpty() || currentIndex < 0 || currentIndex >= channels.size()) {
-            return;
-        }
-        Channel channel = channels.get(currentIndex);
-        List<String> urls = channel.getUrls();
-        if (urls.isEmpty() || currentSourceIndex < 0 || currentSourceIndex >= urls.size()) {
-            return;
-        }
-        String currentUrl = urls.get(currentSourceIndex);
-        storage.hideLine(currentUrl);
-
-        int nextIndex = urls.size() <= 1 ? -1 : currentSourceIndex;
-        channels.clear();
-        channels.addAll(applyChannelLineRules(fetchChannels()));
-        adapter.setData(channels);
-
+    private void restoreLastChannelPosition() {
         if (channels.isEmpty()) {
-            showIndicator("线路已删除");
+            currentIndex = 0;
+            currentSourceIndex = 0;
             return;
         }
-
-        if (currentIndex >= channels.size()) {
-            currentIndex = channels.size() - 1;
+        String key = storage.loadLastChannelKey();
+        int si = storage.loadLastSourceIndex();
+        if (key != null && !key.isEmpty()) {
+            for (int i = 0; i < channels.size(); i++) {
+                if (key.equals(channels.get(i).key)) {
+                    currentIndex = i;
+                    int cnt = channels.get(i).getSourceCount();
+                    currentSourceIndex = cnt <= 0 ? 0 : Math.min(Math.max(0, si), cnt - 1);
+                    return;
+                }
+            }
         }
-        Channel updated = channels.get(currentIndex);
-        if (updated.getSourceCount() <= 0) {
-            playNextChannel(true);
-            return;
+        // 默认 CCTV
+        for (int i = 0; i < channels.size(); i++) {
+            String n = channels.get(i).name;
+            if (n != null && (n.contains("CCTV") || n.contains("央视") || n.toLowerCase().contains("cctv"))) {
+                currentIndex = i;
+                currentSourceIndex = 0;
+                return;
+            }
         }
-        if (nextIndex < 0) {
-            currentSourceIndex = 0;
-        } else if (nextIndex >= updated.getSourceCount()) {
-            currentSourceIndex = 0;
-        } else {
-            currentSourceIndex = nextIndex;
-        }
-        showIndicator("已删除当前线路");
-        playCurrent(true, STALL_TIMEOUT_MS);
+        currentIndex = 0;
+        currentSourceIndex = 0;
+    }
+    private void loadChannels() {
+        loadChannels(true);
     }
 
-    private void loadChannels() {
-        if (loading) {
-            return;
-        }
+    /** @param useCache 冷启动可用缓存；换源传 false，避免播错旧融合列表 */
+    private void loadChannels(boolean useCache) {
         loading = true;
         waitingForReady = false;
         cancelStallCheck();
 
-        // ① 缓存立刻出画（信誉排序跳过已知坏线）
-        // ② 后台静默刷新多源，不打断已稳定播放
-        List<Channel> cached = storage.loadChannels();
-        final boolean hasCache = cached != null && !cached.isEmpty();
-        if (hasCache) {
-            channels.clear();
-            channels.addAll(cached);
-            reputation.applyToChannels(channels);
-            adapter.setData(channels);
-            status.setText(String.format("已加载 %d 个频道（缓存）", channels.size()));
-            playCurrent(false, CHANNEL_SWITCH_TIMEOUT_MS);
+        if (useCache) {
+            List<Channel> cached = storage.loadChannels();
+            final boolean hasCache = cached != null && !cached.isEmpty();
+            if (channels.isEmpty() && hasCache) {
+                channels.clear();
+                channels.addAll(cached);
+                reputation.applyToChannels(channels);
+                adapter.setData(channels);
+                restoreLastChannelPosition();
+                status.setText(String.format("已加载 %d 个频道（缓存）", channels.size()));
+                playCurrent(false, CHANNEL_SWITCH_TIMEOUT_MS);
+            }
         }
 
-        // 后台刷新多源
         loadChannelsFromMultiSources();
     }
 
@@ -661,11 +690,28 @@ public class MainActivity extends AppCompatActivity {
         root.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(16);
         root.setPadding(pad, pad, pad, pad);
+        root.setFocusable(false);
 
-        EditText input = new EditText(this);
+        Button fusionButton = new Button(this);
+        fusionButton.setText("融合模式: " + fusionModeLabel(fusionMode));
+        fusionButton.setFocusable(true);
+        fusionButton.setAllCaps(false);
+        root.addView(fusionButton, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        // 输入框：电视/手机均可获焦并弹键盘
+        final EditText input = new EditText(this);
         input.setSingleLine(true);
+        input.setFocusable(true);
+        input.setFocusableInTouchMode(true);
+        input.setClickable(true);
+        input.setLongClickable(true);
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        input.setHint("输入新的 m3u 或 m3u8 地址");
+        input.setImeOptions(android.view.inputmethod.EditorInfo.IME_FLAG_NO_FULLSCREEN
+                | android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
+        input.setHint("输入 m3u / m3u8 地址（点此弹出键盘）");
+        input.setPrivateImeOptions("inputType=InputType.TYPE_CLASS_TEXT");
         root.addView(input, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
@@ -678,28 +724,27 @@ public class MainActivity extends AppCompatActivity {
 
         Button addButton = new Button(this);
         addButton.setText("添加");
+        addButton.setFocusable(true);
         actions.addView(addButton, new LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f));
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         Button deleteButton = new Button(this);
         deleteButton.setText("删除");
+        deleteButton.setFocusable(true);
         actions.addView(deleteButton, new LinearLayout.LayoutParams(
-                0,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                1f));
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         ListView listView = new ListView(this);
-        LinearLayout.LayoutParams listParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(260));
-        root.addView(listView, listParams);
+        listView.setFocusable(true);
+        listView.setItemsCanFocus(true);
+        root.addView(listView, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(260)));
 
         List<String> dialogSources = new ArrayList<>(sourceUrls);
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_single_choice, dialogSources);
+        ArrayAdapter<String> srcAdapter = new ArrayAdapter<>(
+                this, android.R.layout.simple_list_item_single_choice, dialogSources);
         listView.setChoiceMode(ListView.CHOICE_MODE_SINGLE);
-        listView.setAdapter(adapter);
+        listView.setAdapter(srcAdapter);
         int checked = dialogSources.indexOf(activeSourceUrl);
         if (checked >= 0) {
             listView.setItemChecked(checked, true);
@@ -713,10 +758,37 @@ public class MainActivity extends AppCompatActivity {
 
         final int[] selectedIndex = {checked};
 
+        fusionButton.setOnClickListener(v -> showFusionModeDialog(fusionButton));
+
+        Runnable showKeyboard = () -> {
+            input.requestFocus();
+            input.postDelayed(() -> {
+                InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                if (imm != null) {
+                    imm.restartInput(input);
+                    // SHOW_FORCED：电视/部分盒子 IMPLICIT 不出键盘
+                    imm.showSoftInput(input, InputMethodManager.SHOW_FORCED);
+                }
+                if (dialog.getWindow() != null) {
+                    dialog.getWindow().setSoftInputMode(
+                            WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE
+                                    | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+                }
+            }, 120);
+        };
+
+        input.setOnFocusChangeListener((v, hasFocus) -> {
+            if (hasFocus) {
+                showKeyboard.run();
+            }
+        });
+        input.setOnClickListener(v -> showKeyboard.run());
+
         addButton.setOnClickListener(v -> {
             String url = input.getText().toString().trim();
             if (url.isEmpty()) {
                 showIndicator("源地址不能为空");
+                showKeyboard.run();
                 return;
             }
             if (!dialogSources.contains(url)) {
@@ -724,7 +796,7 @@ public class MainActivity extends AppCompatActivity {
                 sourceUrls.clear();
                 sourceUrls.addAll(dialogSources);
                 persistSourceState();
-                adapter.notifyDataSetChanged();
+                srcAdapter.notifyDataSetChanged();
             }
             int idx = dialogSources.indexOf(url);
             if (idx >= 0) {
@@ -733,6 +805,7 @@ public class MainActivity extends AppCompatActivity {
             }
             input.setText("");
             selectSource(url);
+            dialog.dismiss();
         });
 
         deleteButton.setOnClickListener(v -> {
@@ -751,13 +824,13 @@ public class MainActivity extends AppCompatActivity {
             if (target.equals(activeSourceUrl)) {
                 activeSourceUrl = dialogSources.isEmpty() ? "" : dialogSources.get(0);
                 persistSourceState();
-                adapter.notifyDataSetChanged();
+                srcAdapter.notifyDataSetChanged();
                 dialog.dismiss();
                 reloadActiveSource();
                 return;
             }
             persistSourceState();
-            adapter.notifyDataSetChanged();
+            srcAdapter.notifyDataSetChanged();
             selectedIndex[0] = dialogSources.indexOf(activeSourceUrl);
             listView.clearChoices();
             if (selectedIndex[0] >= 0) {
@@ -767,19 +840,22 @@ public class MainActivity extends AppCompatActivity {
 
         listView.setOnItemClickListener((parent, view, position, id) -> {
             selectedIndex[0] = position;
-            String selectedUrl = dialogSources.get(position);
-            selectSource(selectedUrl);
+            selectSource(dialogSources.get(position));
             dialog.dismiss();
         });
 
-        dialog.show();
-        input.requestFocus();
-        input.post(() -> {
-            InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-            if (imm != null) {
-                imm.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT);
+        dialog.setOnShowListener(d -> {
+            if (dialog.getWindow() != null) {
+                dialog.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM);
+                dialog.getWindow().setSoftInputMode(
+                        WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
+                                | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
             }
+            // 先让融合/列表可 DPAD；点输入框再弹键盘
+            fusionButton.requestFocus();
         });
+
+        dialog.show();
     }
 
     private void selectSource(String url) {
@@ -801,13 +877,15 @@ public class MainActivity extends AppCompatActivity {
         adapter.setData(channels);
         currentIndex = 0;
         currentSourceIndex = 0;
+        resetTriedLines();
+        autoRecoverChannelHops = 0;
         if (player != null) {
             player.stop();
             player.clearMediaItems();
         }
         status.setText("正在切换源...");
-        setFloatingButtonsVisible(true);
-        loadChannels();
+        // 换源禁止灌入旧融合缓存
+        loadChannels(false);
     }
 
     private void restoreSourceState() {
@@ -960,7 +1038,13 @@ public class MainActivity extends AppCompatActivity {
             if (hasAudioTrack()) {
                 return;
             }
-            switchToNextPlayableSource("当前线路无声音", true, true);
+            // 再等一轮确认（HLS 晚选轨）
+            mainHandler.postDelayed(() -> {
+                if (token != playbackToken) return;
+                if (player == null || !currentPlaybackReachedReady) return;
+                if (hasAudioTrack()) return;
+                switchToNextPlayableSource("当前线路无声音", true, true);
+            }, 1500L);
         };
         mainHandler.postDelayed(silentAudioRunnable, SILENT_AUDIO_CHECK_MS);
     }
@@ -1093,6 +1177,9 @@ public class MainActivity extends AppCompatActivity {
 
         adapter.setSelected(currentIndex);
         channelList.scrollToPosition(currentIndex);
+        if (channel.key != null) {
+            storage.saveLastChannel(channel.key, currentSourceIndex);
+        }
         playbackToken++;
         waitingForReady = true;
         autoSwitchingSource = false;
@@ -1113,13 +1200,6 @@ public class MainActivity extends AppCompatActivity {
             if (showOsd) {
                 showChannelOsd();
             }
-            if (panelVisible && !locked && showOsd) {
-                mainHandler.postDelayed(() -> {
-                    if (panelVisible && !locked) {
-                        togglePanel();
-                    }
-                }, 300);
-            }
         } catch (Exception e) {
             waitingForReady = false;
             autoSwitchingSource = false;
@@ -1133,7 +1213,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void playNextChannel(boolean showOsd) {
-        if (channels.isEmpty() || locked) {
+        if (channels.isEmpty()) {
             return;
         }
         currentIndex = (currentIndex + 1) % channels.size();
@@ -1144,7 +1224,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void playPreviousChannel(boolean showOsd) {
-        if (channels.isEmpty() || locked) {
+        if (channels.isEmpty()) {
             return;
         }
         currentIndex = (currentIndex - 1 + channels.size()) % channels.size();
@@ -1230,10 +1310,6 @@ public class MainActivity extends AppCompatActivity {
 
         // 本台线路耗尽 → 自动下一频道
         autoSwitchingSource = false;
-        if (locked) {
-            showIndicator(hint + " · 已锁定，无法自动换台");
-            return;
-        }
         if (autoRecoverChannelHops >= AUTO_RECOVER_MAX_CHANNELS) {
             showIndicator("连续多台无可用线路，请手动换台或换源");
             return;
@@ -1247,7 +1323,26 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private boolean hasAudioTrack() {
-        return player != null && player.getCurrentTracks().isTypeSelected(C.TRACK_TYPE_AUDIO);
+        if (player == null) {
+            return false;
+        }
+        try {
+            // 有可选音轨即视为有声；未 selected 时很多 HLS 仍在协商
+            if (player.getCurrentTracks().isTypeSelected(C.TRACK_TYPE_AUDIO)) {
+                return true;
+            }
+            // 遍历分组看是否存在 audio track group
+            com.google.android.exoplayer2.Tracks tracks = player.getCurrentTracks();
+            for (int i = 0; i < tracks.getGroups().size(); i++) {
+                com.google.android.exoplayer2.Tracks.Group g = tracks.getGroups().get(i);
+                if (g.getType() == C.TRACK_TYPE_AUDIO && g.length > 0) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (Exception e) {
+            return true; // 不确定时不误切
+        }
     }
 
     private List<Channel> applyChannelLineRules(List<Channel> input) {
@@ -1279,21 +1374,6 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private boolean shouldSkipChannelLine(String key, int index, String url) {
-        if ("cctv10".equals(key)) {
-            return index == 0;
-        }
-        if ("cctv14".equals(key)) {
-            return index == 0;
-        }
-        if ("cctv13".equals(key)) {
-            return index >= 0 && index <= 2;
-        }
-        if ("北京".equals(key)) {
-            return index == 0;
-        }
-        if ("湖南".equals(key)) {
-            return index >= 0 && index <= 1;
-        }
         return false;
     }
 
@@ -1310,26 +1390,83 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /**
+     * 电视遥控：
+     * - 侧栏关闭：上/下换台，左/右换线，OK 开侧栏
+     * - 侧栏打开：上/下/左/右只移动焦点（不换台）；OK=确认选台并关栏（或进源管理）
+     * - 返回：侧栏开着则只关栏
+     */
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (locked && keyCode != KeyEvent.KEYCODE_DPAD_CENTER && keyCode != KeyEvent.KEYCODE_ENTER) {
+        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER
+                || keyCode == KeyEvent.KEYCODE_ENTER
+                || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
+                || keyCode == KeyEvent.KEYCODE_BUTTON_A) {
+            return handlePanelOkKey();
+        }
+        if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
+            if (panelVisible) {
+                closePanel();
+                return true;
+            }
+        }
+
+        // 侧栏打开：方向键全部交给侧栏焦点链，禁止换台/换线
+        if (panelVisible) {
+            if (keyCode == KeyEvent.KEYCODE_DPAD_UP
+                    || keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+                    || keyCode == KeyEvent.KEYCODE_DPAD_LEFT
+                    || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+                    || keyCode == KeyEvent.KEYCODE_CHANNEL_UP
+                    || keyCode == KeyEvent.KEYCODE_CHANNEL_DOWN
+                    || keyCode == KeyEvent.KEYCODE_PAGE_UP
+                    || keyCode == KeyEvent.KEYCODE_PAGE_DOWN) {
+                return super.onKeyDown(keyCode, event);
+            }
+            // 其它媒体键在侧栏打开时也不换台
+            if (keyCode == KeyEvent.KEYCODE_MEDIA_NEXT
+                    || keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS
+                    || keyCode == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD
+                    || keyCode == KeyEvent.KEYCODE_MEDIA_REWIND) {
+                return true;
+            }
             return super.onKeyDown(keyCode, event);
         }
-        if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
+
+        // 侧栏关闭 = 全屏播放：换台 / 换线
+        if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT
+                || keyCode == KeyEvent.KEYCODE_MEDIA_REWIND
+                || keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS) {
             switchSource(-1, true);
             return true;
         }
-        if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+        if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+                || keyCode == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD
+                || keyCode == KeyEvent.KEYCODE_MEDIA_NEXT) {
             switchSource(1, true);
             return true;
         }
-        if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+        if (keyCode == KeyEvent.KEYCODE_DPAD_UP
+                || keyCode == KeyEvent.KEYCODE_CHANNEL_UP
+                || keyCode == KeyEvent.KEYCODE_PAGE_UP) {
             playPreviousChannel(true);
             return true;
         }
-        if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+        if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+                || keyCode == KeyEvent.KEYCODE_CHANNEL_DOWN
+                || keyCode == KeyEvent.KEYCODE_PAGE_DOWN) {
             playNextChannel(true);
             return true;
+        }
+        if (keyCode == KeyEvent.KEYCODE_SPACE) {
+            if (player != null) {
+                if (player.isPlaying()) {
+                    player.pause();
+                } else {
+                    player.play();
+                }
+                return true;
+            }
         }
         return super.onKeyDown(keyCode, event);
     }
@@ -1346,8 +1483,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onStop() {
         cancelStallCheck();
         cancelSilentAudioCheck();
-        cancelHideFloatingButtons();
-        if (player != null) {
+                if (player != null) {
             player.setPlayWhenReady(false);
         }
         super.onStop();
@@ -1357,12 +1493,14 @@ public class MainActivity extends AppCompatActivity {
     protected void onDestroy() {
         cancelStallCheck();
         cancelSilentAudioCheck();
-        cancelHideFloatingButtons();
         if (hideIndicatorRunnable != null) {
             mainHandler.removeCallbacks(hideIndicatorRunnable);
         }
         if (hideChannelLabelRunnable != null) {
             mainHandler.removeCallbacks(hideChannelLabelRunnable);
+        }
+        if (hideGestureHintRunnable != null) {
+            mainHandler.removeCallbacks(hideGestureHintRunnable);
         }
         if (player != null) {
             player.release();
@@ -1420,126 +1558,331 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private String fusionModeLabel(String mode) {
+        if (mode == null) mode = "smart";
+        switch (mode) {
+            case "off": return "关闭融合";
+            case "fast": return "快速";
+            case "balanced": return "平衡";
+            case "complete": return "完整";
+            case "smart":
+            default: return "智能";
+        }
+    }
+
+    private void showFusionModeDialog(Button fusionButton) {
+        final String[] modes = {"off", "fast", "balanced", "complete", "smart"};
+        final String[] labels = {
+                "关闭融合 — 仅当前/单一源",
+                "快速 — 顺序取首个可用源",
+                "平衡 — 融合前 3 个源",
+                "完整 — 融合全部源",
+                "智能 — 先出画再后台全量合并（推荐）"
+        };
+        int checked = 4;
+        for (int i = 0; i < modes.length; i++) {
+            if (modes[i].equals(fusionMode)) {
+                checked = i;
+                break;
+            }
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("融合模式")
+                .setSingleChoiceItems(labels, checked, (d, which) -> {
+                    fusionMode = modes[which];
+                    storage.saveFusionMode(fusionMode);
+                    if (fusionButton != null) {
+                        fusionButton.setText("融合模式: " + fusionModeLabel(fusionMode));
+                    }
+                    d.dismiss();
+                    showIndicator("已切换到" + fusionModeLabel(fusionMode) + "模式");
+                    loading = false;
+                    channels.clear();
+                    if (adapter != null) adapter.setData(channels);
+                    loadChannels(false);
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** 按融合模式决定要拉取的内置源数量 */
+    private int fusionSourceLimit() {
+        switch (fusionMode == null ? "smart" : fusionMode) {
+            case "off":
+            case "fast":
+                return 1;
+            case "balanced":
+                return 3;
+            case "complete":
+            case "smart":
+            default:
+                return MULTI_SOURCE_URLS.length;
+        }
+    }
+
     /**
-     * 从多个源加载并合并频道
+     * 从多个源加载并合并频道（受 fusionMode 控制，对齐 iOS）
+     */
+    /** 构建本轮要拉的源列表：用户源优先，再补内置镜像 */
+    private List<String> buildFusionFetchUrls(String mode, int limit) {
+        LinkedHashSet<String> ordered = new LinkedHashSet<>();
+        if (activeSourceUrl != null && !activeSourceUrl.trim().isEmpty()) {
+            ordered.add(activeSourceUrl.trim());
+        }
+        if (sourceUrls != null) {
+            for (String u : sourceUrls) {
+                if (u != null && !u.trim().isEmpty()) {
+                    ordered.add(u.trim());
+                }
+            }
+        }
+        int built = 0;
+        for (String sourceUrl : MULTI_SOURCE_URLS) {
+            if (built >= limit) break;
+            for (String prefix : MIRROR_PREFIXES) {
+                ordered.add(prefix + sourceUrl);
+            }
+            built++;
+        }
+        return new ArrayList<>(ordered);
+    }
+
+    private List<Channel> fetchOneSource(String fullUrl) {
+        HttpURLConnection conn = null;
+        try {
+            URL url = new URL(fullUrl);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(10000);
+            conn.setRequestProperty("User-Agent", "TVPlayer/1.0");
+            if (conn.getResponseCode() != 200) {
+                return new ArrayList<>();
+            }
+            BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(conn.getInputStream(), "UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                sb.append(line).append("\n");
+            }
+            reader.close();
+            return M3UParser.parse(sb.toString());
+        } catch (Exception e) {
+            return new ArrayList<>();
+        } finally {
+            if (conn != null) {
+                try { conn.disconnect(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    /**
+     * 从多个源加载并合并频道（受 fusionMode 控制，对齐 iOS）
      */
     private void loadChannelsFromMultiSources() {
+        final String mode = fusionMode == null ? "smart" : fusionMode;
+        final int limit = Math.max(1, Math.min(fusionSourceLimit(), MULTI_SOURCE_URLS.length));
+        loadGeneration++;
+        final int gen = loadGeneration;
+
+        if ("off".equals(mode)) {
+            showIndicator("关闭融合：加载单一源...");
+            status.setText("加载中...");
+            netPool.execute(() -> {
+                List<Channel> parsed = new ArrayList<>();
+                String url = (activeSourceUrl != null && !activeSourceUrl.trim().isEmpty())
+                        ? activeSourceUrl.trim()
+                        : (sourceUrls.isEmpty() ? "" : sourceUrls.get(0));
+                if (!url.isEmpty()) {
+                    try {
+                        String body = httpGet(url);
+                        if (body != null && !body.isEmpty()) {
+                            parsed = M3UParser.parse(body);
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
+                if (parsed.isEmpty()) {
+                    // 兜底：第一个内置镜像
+                    List<String> fallback = buildFusionFetchUrls("fast", 1);
+                    for (String u : fallback) {
+                        parsed = fetchOneSource(u);
+                        if (!parsed.isEmpty()) break;
+                    }
+                }
+                final List<Channel> result = parsed;
+                mainHandler.post(() -> {
+                    if (gen != loadGeneration) return;
+                    applyLoadedChannels(result, result.isEmpty() ? 0 : 1, 1, false);
+                });
+            });
+            return;
+        }
+
+        if ("fast".equals(mode)) {
+            showIndicator("快速模式：加载可用源...");
+            status.setText("加载中...");
+            netPool.execute(() -> {
+                List<Channel> raced = fetchChannels();
+                mainHandler.post(() -> {
+                    if (gen != loadGeneration) return;
+                    applyLoadedChannels(raced, raced.isEmpty() ? 0 : 1, 1, false);
+                });
+            });
+            return;
+        }
+
         showIndicator("正在加载多个直播源...");
         status.setText("加载中，请稍候...");
 
         netPool.execute(() -> {
             List<Channel> allChannels = new ArrayList<>();
-            LinkedHashSet<String> seenUrls = new LinkedHashSet<>();
+            // 按 key 聚合线路，禁止「首 URL 丢整台」
+            java.util.Map<String, Channel> byKey = new java.util.LinkedHashMap<>();
 
+            List<String> fetchUrls = buildFusionFetchUrls(mode, limit);
             int successCount = 0;
-            int totalSources = MULTI_SOURCE_URLS.length;
+            int totalSources = Math.max(1, fetchUrls.size());
+            boolean firstBatchPosted = false;
+            int attempt = 0;
 
-            for (int i = 0; i < MULTI_SOURCE_URLS.length; i++) {
-                String sourceUrl = MULTI_SOURCE_URLS[i];
-                final int index = i + 1;
-
+            for (String fullUrl : fetchUrls) {
+                if (gen != loadGeneration) return;
+                attempt++;
+                final int index = attempt;
                 mainHandler.post(() ->
-                    showIndicator(String.format("加载源 %d/%d", index, totalSources))
+                        showIndicator(String.format("加载源 %d · %s", index, fusionModeLabel(mode)))
                 );
 
-                for (String prefix : MIRROR_PREFIXES) {
-                    String fullUrl = prefix + sourceUrl;
-
-                    try {
-                        URL url = new URL(fullUrl);
-                        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                        conn.setConnectTimeout(5000);
-                        conn.setReadTimeout(10000);
-                        conn.setRequestProperty("User-Agent", "TVPlayer/1.0");
-
-                        if (conn.getResponseCode() == 200) {
-                            BufferedReader reader = new BufferedReader(
-                                new InputStreamReader(conn.getInputStream())
-                            );
-
-                            StringBuilder sb = new StringBuilder();
-                            String line;
-                            while ((line = reader.readLine()) != null) {
-                                sb.append(line).append("\n");
+                List<Channel> sourceChannels = fetchOneSource(fullUrl);
+                if (sourceChannels.isEmpty()) {
+                    continue;
+                }
+                successCount++;
+                for (Channel channel : sourceChannels) {
+                    if (channel.getUrls().isEmpty()) continue;
+                    String k = channel.key != null && !channel.key.isEmpty()
+                            ? channel.key
+                            : channel.name.trim().toLowerCase();
+                    if (byKey.containsKey(k)) {
+                        Channel existing = byKey.get(k);
+                        for (String u : channel.getUrls()) {
+                            if (isQualityUrl(u)) {
+                                existing.addUrl(u);
                             }
-
-                            List<Channel> sourceChannels = M3UParser.parse(sb.toString());
-
-                            for (Channel channel : sourceChannels) {
-                                if (channel.getUrls().isEmpty()) continue;
-
-                                String firstUrl = channel.getUrls().get(0);
-                                if (!seenUrls.contains(firstUrl) && isQualityUrl(firstUrl)) {
-                                    allChannels.add(channel);
-                                    seenUrls.add(firstUrl);
-                                }
-                            }
-
-                            successCount++;
-                            break;
                         }
-                    } catch (Exception e) {
-                        continue;
+                    } else {
+                        Channel copy = new Channel(channel.name, channel.group, channel.key, null);
+                        for (String u : channel.getUrls()) {
+                            if (isQualityUrl(u)) {
+                                copy.addUrl(u);
+                            }
+                        }
+                        if (copy.getSourceCount() > 0) {
+                            byKey.put(k, copy);
+                        }
                     }
+                }
+                allChannels = new ArrayList<>(byKey.values());
+
+                if ("smart".equals(mode) && !firstBatchPosted && !allChannels.isEmpty()) {
+                    firstBatchPosted = true;
+                    final List<Channel> firstBatch = mergeChannelsByName(new ArrayList<>(allChannels));
+                    final int sc = successCount;
+                    mainHandler.post(() -> {
+                        if (gen != loadGeneration) return;
+                        applyLoadedChannels(firstBatch, sc, totalSources, true);
+                    });
                 }
             }
 
-            List<Channel> mergedChannels = mergeChannelsByName(allChannels);
-
+            List<Channel> mergedChannels = mergeChannelsByName(new ArrayList<>(byKey.values()));
             final int finalSuccessCount = successCount;
             mainHandler.post(() -> {
-                loading = false;
-                if (mergedChannels.isEmpty()) {
-                    status.setText("加载失败，请检查网络");
-                    showIndicator("所有源均加载失败");
-                } else {
-                    String prevKey = (!channels.isEmpty() && currentIndex >= 0 && currentIndex < channels.size())
-                            ? channels.get(currentIndex).key : null;
-                    String prevUrl = null;
-                    if (prevKey != null && currentSourceIndex >= 0
-                            && currentSourceIndex < channels.get(currentIndex).getSourceCount()) {
-                        prevUrl = channels.get(currentIndex).getUrls().get(currentSourceIndex);
-                    }
-                    boolean wasPlaying = currentPlaybackReachedReady
-                            && player != null && player.isPlaying();
-
-                    channels.clear();
-                    channels.addAll(applyChannelLineRules(mergedChannels));
-                    reputation.applyToChannels(channels);
-                    adapter.setData(channels);
-                    storage.saveChannels(channels);
-
-                    status.setText(String.format(
-                        "加载成功：%d 个频道（来自 %d/%d 个源）",
-                        channels.size(), finalSuccessCount, totalSources
-                    ));
-
-                    // 软合并：尽量回到刚才的台/线
-                    if (prevKey != null) {
-                        for (int i = 0; i < channels.size(); i++) {
-                            if (prevKey.equals(channels.get(i).key)) {
-                                currentIndex = i;
-                                if (prevUrl != null) {
-                                    int li = channels.get(i).getUrls().indexOf(prevUrl);
-                                    currentSourceIndex = li >= 0 ? li : 0;
-                                } else {
-                                    currentSourceIndex = 0;
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    if (currentIndex >= channels.size()) {
-                        currentIndex = 0;
-                        currentSourceIndex = 0;
-                    }
-                    // 已在稳定播放则不重播；否则开播
-                    if (!wasPlaying) {
-                        playCurrent(false, CHANNEL_SWITCH_TIMEOUT_MS);
-                    }
-                }
+                if (gen != loadGeneration) return;
+                applyLoadedChannels(mergedChannels, finalSuccessCount, totalSources, false);
             });
         });
+    }
+
+    /**
+     * @param softMerge true=首批/后台增量，已在播则尽量不打断
+     */
+    private void applyLoadedChannels(List<Channel> loaded, int successCount, int totalSources, boolean softMerge) {
+        // softMerge=首批：保持 loading=true 让后台可继续；最终批 softMerge=false 时清掉
+        if (!softMerge) {
+            loading = false;
+        }
+        if (loaded == null || loaded.isEmpty()) {
+            if (channels.isEmpty()) {
+                status.setText("加载失败，请检查网络");
+                showIndicator("所有源均加载失败");
+            }
+            return;
+        }
+
+        String prevKey = (!channels.isEmpty() && currentIndex >= 0 && currentIndex < channels.size())
+                ? channels.get(currentIndex).key : null;
+        String prevUrl = null;
+        if (prevKey != null && currentSourceIndex >= 0
+                && currentSourceIndex < channels.get(currentIndex).getSourceCount()) {
+            prevUrl = channels.get(currentIndex).getUrls().get(currentSourceIndex);
+        }
+        // 已有列表或正在起播：软合并不重播，避免 smart 首批打断缓存播放
+        boolean keepPlayback = currentPlaybackReachedReady
+                || waitingForReady
+                || (player != null && player.isPlaying())
+                || (softMerge && !channels.isEmpty());
+        boolean wasPlaying = keepPlayback;
+
+        channels.clear();
+        channels.addAll(applyChannelLineRules(loaded));
+        reputation.applyToChannels(channels);
+        adapter.setData(channels);
+        if (!softMerge) {
+            storage.saveChannels(channels);
+        }
+
+        int totalLines = 0;
+        for (Channel c : channels) {
+            totalLines += c.getSourceCount();
+        }
+        status.setText(String.format(
+                "%s：%d 台 / %d 线（%d/%d 源）",
+                fusionModeLabel(fusionMode),
+                channels.size(), totalLines, successCount, totalSources
+        ));
+        if (!softMerge) {
+            showIndicator(String.format("%d 台 · %d 线", channels.size(), totalLines));
+        }
+
+        if (prevKey != null) {
+            for (int i = 0; i < channels.size(); i++) {
+                if (prevKey.equals(channels.get(i).key)) {
+                    currentIndex = i;
+                    if (prevUrl != null) {
+                        int li = channels.get(i).getUrls().indexOf(prevUrl);
+                        currentSourceIndex = li >= 0 ? li : 0;
+                    } else {
+                        currentSourceIndex = Math.min(currentSourceIndex,
+                                Math.max(0, channels.get(i).getSourceCount() - 1));
+                    }
+                    break;
+                }
+            }
+        }
+        if (prevKey == null) {
+            restoreLastChannelPosition();
+        } else if (currentIndex >= channels.size()) {
+            currentIndex = 0;
+            currentSourceIndex = 0;
+        }
+        if (!wasPlaying) {
+            playCurrent(false, CHANNEL_SWITCH_TIMEOUT_MS);
+        }
+        if (!softMerge) {
+            loading = false;
+        }
     }
 
     /**
@@ -1572,7 +1915,9 @@ public class MainActivity extends AppCompatActivity {
         java.util.Map<String, Channel> mergedMap = new java.util.LinkedHashMap<>();
 
         for (Channel channel : channels) {
-            String key = channel.name.trim().toLowerCase();
+            String key = channel.key != null && !channel.key.isEmpty()
+                    ? channel.key
+                    : channel.name.trim().toLowerCase();
 
             if (mergedMap.containsKey(key)) {
                 Channel existing = mergedMap.get(key);

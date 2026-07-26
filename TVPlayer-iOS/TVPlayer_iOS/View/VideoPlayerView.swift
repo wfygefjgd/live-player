@@ -4,10 +4,10 @@ import UIKit
 import MediaPlayer
 import Combine
 
-// MARK: - Window full-bleed (cold start same as resume)
+// MARK: - 强力全屏画面层（覆盖 Home Indicator / 小白条）
 
-/// Video host on keyWindow, always full **screen** bounds (ignore safe area / Home Indicator).
-/// Cold start previously got squeezed by safe-area layout; resume re-installed full frame and looked correct.
+/// 画面钉在 keyWindow 最底层，frame 强制为物理屏幕尺寸（可溢出 window，盖住小白条）。
+/// 手势仍由上层 SwiftUI 接收；侧边栏 WindowPanelSurface 保持更高 zPosition。
 final class WindowVideoSurface {
     static let shared = WindowVideoSurface()
 
@@ -19,18 +19,24 @@ final class WindowVideoSurface {
     private var displayLink: CADisplayLink?
     private var displayLinkTicks = 0
     private var lastAppliedSize: CGSize = .zero
+    private var keepAliveTimer: Timer?
 
     private init() {
         host.backgroundColor = .black
         host.isUserInteractionEnabled = false
-        // 不用 autoresizing 跟 safe-area 子视图走；每次 install 钉死全屏
         host.autoresizingMask = []
-        playerLayer.videoGravity = .resize
+        host.clipsToBounds = false
+        host.layer.zPosition = -1_000
+        // 等比铺满，避免 .resize 拉伸变形
+        playerLayer.videoGravity = .resizeAspectFill
         playerLayer.backgroundColor = UIColor.black.cgColor
+        playerLayer.isOpaque = true
+        playerLayer.masksToBounds = false
         host.layer.addSublayer(playerLayer)
 
         setupNotifications()
         setupAudioSession()
+        startKeepAlive()
     }
 
     private func setupNotifications() {
@@ -40,35 +46,28 @@ final class WindowVideoSurface {
             UIApplication.didFinishLaunchingNotification,
             UIDevice.orientationDidChangeNotification,
             UIWindow.didBecomeKeyNotification,
+            UIScene.didActivateNotification,
             .tvPlayerNeedsRelayout
         ]
         for name in notes {
             NotificationCenter.default.publisher(for: name)
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] _ in
-                    self?.install(reason: name.rawValue)
+                    self?.forceFullBleed(reason: name.rawValue)
                 }
                 .store(in: &cancellables)
         }
 
-        // 音频路由变更（耳机拔插等）
         NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.handleRouteChange()
-            }
+            .sink { [weak self] _ in self?.forceFullBleed(reason: "routeChange") }
             .store(in: &cancellables)
 
-        // 音频中断通知（来电等）
         NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] note in
-                self?.handleInterruption(note)
-            }
+            .sink { [weak self] note in self?.handleInterruption(note) }
             .store(in: &cancellables)
     }
-
-    // MARK: - Audio Session
 
     private func setupAudioSession() {
         do {
@@ -80,48 +79,71 @@ final class WindowVideoSurface {
         }
     }
 
-    private func handleRouteChange() {
-        install(reason: "routeChange")
-    }
-
     private func handleInterruption(_ note: Notification) {
         guard let info = note.userInfo,
               let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
         switch type {
         case .began:
-            // 中断开始（来电等），暂停播放由 PlayerEngine 处理
-            break
+            NotificationCenter.default.post(name: .tvPlayerInterruptionBegan, object: nil)
         case .ended:
-            // 中断结束，恢复播放
-            if let raw = info[AVAudioSessionInterruptionOptionKey] as? UInt {
-                let options = AVAudioSession.InterruptionOptions(rawValue: raw)
-                if options.contains(.shouldResume) {
-                    install(reason: "interruptionEnded")
-                }
+            let should = (info[AVAudioSessionInterruptionOptionKey] as? UInt)
+                .map { AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume) } ?? false
+            if should {
+                NotificationCenter.default.post(name: .tvPlayerInterruptionEnded, object: nil)
             }
+            forceFullBleed(reason: "interruptionEnded")
+            rebindPlayer()
         @unknown default:
             break
+        }
+    }
+
+    private func startKeepAlive() {
+        keepAliveTimer?.invalidate()
+        keepAliveTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.forceFullBleed(reason: "keepalive")
+        }
+        if let t = keepAliveTimer {
+            RunLoop.main.add(t, forMode: .common)
         }
     }
 
     // MARK: - Player
 
     func setPlayer(_ player: AVPlayer?) {
-        if player == nil {
-            cleanup()
-        }
         boundPlayer = player
         playerLayer.player = player
-        playerLayer.videoGravity = .resize
-        install(reason: "setPlayer")
+        playerLayer.videoGravity = .resizeAspectFill
+        playerLayer.isHidden = false
+        playerLayer.opacity = 1
+        forceFullBleed(reason: "setPlayer")
         schedulePasses()
         startBriefDisplayLink()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            self?.rebindPlayer()
+            self?.forceFullBleed(reason: "setPlayer-rebind")
+        }
     }
 
-    // 🆕 清理资源
+    func rebindPlayer() {
+        guard let p = boundPlayer else { return }
+        if playerLayer.player !== p {
+            playerLayer.player = p
+        }
+        playerLayer.isHidden = false
+        playerLayer.opacity = 1
+        playerLayer.setNeedsDisplay()
+        host.setNeedsLayout()
+        host.layoutIfNeeded()
+        // 再钉一次 frame，防止 layer 卡在旧 bounds
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.frame = host.bounds
+        CATransaction.commit()
+    }
+
     func cleanup() {
-        cancellables.removeAll()
         delayItems.forEach { $0.cancel() }
         delayItems.removeAll()
         displayLink?.invalidate()
@@ -130,24 +152,45 @@ final class WindowVideoSurface {
     }
 
     deinit {
+        keepAliveTimer?.invalidate()
         cleanup()
+        cancellables.removeAll()
     }
 
     func install(reason: String = "") {
+        forceFullBleed(reason: reason)
+    }
+
+    // MARK: - 强力全屏
+
+    func forceFullBleed(reason: String = "") {
         guard let window = Self.keyWindow() else { return }
+
+        let full = Self.physicalScreenRect(for: window)
 
         window.backgroundColor = .black
         window.clipsToBounds = false
-        // 关键：忽略窗口 safeArea，用物理屏幕矩形，冷启动与回前台一致
-        let full = Self.fullScreenRect(for: window)
 
-        if let root = window.rootViewController?.view {
-            root.backgroundColor = .clear
-            root.isOpaque = false
-            root.clipsToBounds = false
+        if let root = window.rootViewController {
+            root.view.backgroundColor = .clear
+            root.view.isOpaque = false
+            root.view.clipsToBounds = false
+            if #available(iOS 11.0, *) {
+                root.view.insetsLayoutMarginsFromSafeArea = false
+            }
+            // 负向 additionalSafeArea：把系统 inset 顶掉，布局可延伸进小白条
+            let si = root.view.safeAreaInsets
+            let neg = UIEdgeInsets(top: -si.top, left: -si.left, bottom: -si.bottom, right: -si.right)
+            if root.additionalSafeAreaInsets != neg {
+                root.additionalSafeAreaInsets = neg
+            }
+            root.setNeedsUpdateOfHomeIndicatorAutoHidden()
+            root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+            root.setNeedsStatusBarAppearanceUpdate()
         }
 
-        host.layer.zPosition = 0
+        // 挂到 keyWindow 最底层；zPosition 低于 panel
+        host.layer.zPosition = -1_000
         if host.superview !== window {
             host.removeFromSuperview()
             window.insertSubview(host, at: 0)
@@ -155,55 +198,58 @@ final class WindowVideoSurface {
             window.sendSubviewToBack(host)
         }
 
-        // 尺寸未变且非关键时机则跳过重排，减少与 safe area 动画抢布局
-        let sizeChanged = abs(lastAppliedSize.width - full.width) > 0.5
-            || abs(lastAppliedSize.height - full.height) > 0.5
-        let force = reason.contains("active")
-            || reason.contains("foreground")
-            || reason.contains("appear")
-            || reason.contains("safeArea")
-            || reason.contains("orientation")
-            || reason.contains("setPlayer")
-            || reason.contains("anchor")
-            || host.frame.width < full.width - 1
-            || host.frame.height < full.height - 1
-
-        if sizeChanged || force || host.frame != full {
-            host.frame = full
-            host.bounds = CGRect(origin: .zero, size: full.size)
-            host.center = CGPoint(x: full.midX, y: full.midY)
-            host.clipsToBounds = false
-            host.isUserInteractionEnabled = false
-            lastAppliedSize = full.size
-
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            playerLayer.frame = CGRect(origin: .zero, size: full.size)
-            playerLayer.videoGravity = .resize
-            playerLayer.isHidden = false
-            playerLayer.opacity = 1
-            if playerLayer.player == nil {
-                playerLayer.player = boundPlayer
+        // 强制物理全屏：可大于 window.bounds，盖住 Home Indicator 区域
+        host.isHidden = false
+        host.alpha = 1
+        host.backgroundColor = .black
+        host.clipsToBounds = false
+        host.isUserInteractionEnabled = false
+        host.frame = full
+        host.bounds = CGRect(origin: .zero, size: full.size)
+        // 若 window 原点与 screen 不一致，仍对齐到 (0,0) 物理坐标
+        if window.bounds != full {
+            // 把 host 中心对齐到屏幕中心在 window 坐标系下的位置
+            let screen = window.windowScene?.screen ?? window.screen
+            let screenOriginInWindow = window.convert(CGPoint.zero, from: screen.coordinateSpace)
+            // convert from screen may fail on older API — fallback center
+            if full.width > window.bounds.width + 1 || full.height > window.bounds.height + 1 {
+                host.center = CGPoint(x: window.bounds.midX, y: window.bounds.midY)
+                host.bounds = CGRect(origin: .zero, size: full.size)
+            } else {
+                host.frame = CGRect(origin: .zero, size: full.size)
             }
-            CATransaction.commit()
-        } else if playerLayer.player == nil {
+            _ = screenOriginInWindow
+        }
+
+        lastAppliedSize = full.size
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.frame = host.bounds
+        playerLayer.videoGravity = .resizeAspectFill
+        playerLayer.isHidden = false
+        playerLayer.opacity = 1
+        if playerLayer.player == nil {
             playerLayer.player = boundPlayer
         }
+        CATransaction.commit()
 
         WindowPanelSurface.shared.ensureOnTop()
 
-        window.rootViewController?.setNeedsUpdateOfHomeIndicatorAutoHidden()
-        window.rootViewController?.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
-
-        // 冷启动：短窗口内多拍几次全屏，等 Home Indicator / 旋转 inset 落定
-        if reason == "host-appear" || reason == "anchor-window" || reason == "app-active"
-            || reason == "foreground" || reason == "setPlayer" {
+        let heavy = reason.contains("active")
+            || reason.contains("foreground")
+            || reason.contains("appear")
+            || reason.contains("setPlayer")
+            || reason.contains("orientation")
+            || reason.contains("launch")
+            || reason.contains("ready")
+        if heavy {
             schedulePasses()
             startBriefDisplayLink()
+            rebindPlayer()
         }
     }
 
-    /// 前 ~2s 轻量校正（不再狂刷 6s）
     func startBriefDisplayLink() {
         displayLink?.invalidate()
         displayLink = nil
@@ -216,9 +262,9 @@ final class WindowVideoSurface {
 
     fileprivate func onDisplayLinkTick() {
         displayLinkTicks += 1
-        install(reason: "displayLink")
-        // ~2 秒 @30fps
-        if displayLinkTicks >= 60 {
+        forceFullBleed(reason: "displayLink")
+        rebindPlayer()
+        if displayLinkTicks >= 90 {
             displayLink?.invalidate()
             displayLink = nil
         }
@@ -227,35 +273,35 @@ final class WindowVideoSurface {
     func schedulePasses() {
         delayItems.forEach { $0.cancel() }
         delayItems.removeAll()
-        // 覆盖冷启动 inset 变化窗口即可，不必拖到 10s
-        for t in [0.0, 0.05, 0.12, 0.25, 0.5, 1.0, 1.5, 2.0] {
-            let item = DispatchWorkItem { [weak self] in self?.install(reason: "delay-\(t)") }
+        for t in [0.0, 0.02, 0.05, 0.1, 0.2, 0.35, 0.5, 0.8, 1.2, 1.8, 2.5, 3.5] {
+            let item = DispatchWorkItem { [weak self] in
+                self?.forceFullBleed(reason: "delay-\(t)")
+                self?.rebindPlayer()
+            }
             delayItems.append(item)
             DispatchQueue.main.asyncAfter(deadline: .now() + t, execute: item)
         }
     }
 
-    /// 钉死全屏矩形：优先 window.bounds；冷启动 window 未铺满时用当前方向的 screen 尺寸
-    private static func fullScreenRect(for window: UIWindow) -> CGRect {
-        let wb = window.bounds
-        let sb = window.screen.bounds
-        let orient = window.windowScene?.interfaceOrientation
-        let landscape = orient?.isLandscape ?? (wb.width > wb.height)
-        let screenFull: CGRect = {
-            if landscape {
-                return CGRect(x: 0, y: 0, width: max(sb.width, sb.height), height: min(sb.width, sb.height))
-            }
-            return CGRect(x: 0, y: 0, width: min(sb.width, sb.height), height: max(sb.width, sb.height))
-        }()
-        // window 已接近全屏 → 用 window（与坐标系一致）
-        if wb.width >= screenFull.width - 2 && wb.height >= screenFull.height - 2 {
-            return CGRect(origin: .zero, size: wb.size)
+    /// 物理屏幕横屏全尺寸（nativeBounds 换算），无视 safeArea
+    private static func physicalScreenRect(for window: UIWindow) -> CGRect {
+        let screen = window.windowScene?.screen ?? window.screen
+        let sb = screen.bounds
+        let native = screen.nativeBounds
+        let scale = max(screen.scale, 1)
+        var w = native.width / scale
+        var h = native.height / scale
+        if w < 1 || h < 1 {
+            w = sb.width
+            h = sb.height
         }
-        // 冷启动常见：window 高度被 Home Indicator / safe area 吃掉 → 用 screen 全屏
-        if wb.width >= screenFull.width - 2 && wb.height < screenFull.height - 2 {
-            return screenFull
-        }
-        return screenFull.width > 1 ? screenFull : CGRect(origin: .zero, size: wb.size)
+        // 仅横屏：长边为宽
+        let lw = max(w, h)
+        let lh = min(w, h)
+        // 至少不小于 window
+        let finalW = max(lw, window.bounds.width)
+        let finalH = max(lh, window.bounds.height)
+        return CGRect(x: 0, y: 0, width: finalW, height: finalH)
     }
 
     private static func keyWindow() -> UIWindow? {
@@ -268,7 +314,6 @@ final class WindowVideoSurface {
     }
 }
 
-/// CADisplayLink cannot retain WindowVideoSurface strongly via target; use proxy
 private final class DisplayLinkProxy: NSObject {
     weak var owner: WindowVideoSurface?
     init(owner: WindowVideoSurface) { self.owner = owner }
@@ -301,12 +346,12 @@ final class PlayerAnchorView: UIView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        WindowVideoSurface.shared.install(reason: "anchor-window")
+        WindowVideoSurface.shared.forceFullBleed(reason: "anchor-window")
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        WindowVideoSurface.shared.install(reason: "anchor-layout")
+        WindowVideoSurface.shared.forceFullBleed(reason: "anchor-layout")
     }
 }
 
@@ -322,16 +367,16 @@ struct VideoPlayerView: UIViewRepresentable {
     func updateUIView(_ uiView: PlayerAnchorView, context: Context) {
         WindowVideoSurface.shared.setPlayer(vm.player.player)
         _ = vm.playerLayoutEpoch
-        WindowVideoSurface.shared.install(reason: "swiftui-update")
+        WindowVideoSurface.shared.forceFullBleed(reason: "swiftui-update")
     }
 }
 
-/// 正确处理 Home Indicator：声明 auto-hidden，画面层钉死全屏。
-/// 不再用「扩 frame / 负 safeArea / 0.05s 狂刷」——那些会在冷启动把布局挤乱。
+/// 主界面 Hosting：强制隐藏 Home Indicator，负向 safeArea 吃掉小白条
 final class RootHostingController<Content: View>: UIHostingController<Content> {
     override var prefersHomeIndicatorAutoHidden: Bool { true }
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
     override var prefersStatusBarHidden: Bool { true }
+    override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation { .fade }
     override var shouldAutorotate: Bool { false }
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
 
@@ -344,6 +389,8 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
         view.backgroundColor = .clear
         view.isOpaque = false
         view.clipsToBounds = false
+        edgesForExtendedLayout = .all
+        extendedLayoutIncludesOpaqueBars = true
         if #available(iOS 11.0, *) {
             view.insetsLayoutMarginsFromSafeArea = false
         }
@@ -353,34 +400,57 @@ final class RootHostingController<Content: View>: UIHostingController<Content> {
         super.viewDidAppear(animated)
         setNeedsUpdateOfHomeIndicatorAutoHidden()
         setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
-        // 冷启动关键：appear 后立即 + 短延迟全屏钉死（等同你回前台时的正确路径）
-        WindowVideoSurface.shared.install(reason: "host-appear")
+        setNeedsStatusBarAppearanceUpdate()
+        applyZeroSafeArea()
+        WindowVideoSurface.shared.forceFullBleed(reason: "host-appear")
         NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
-        for t in [0.05, 0.2, 0.5, 1.0] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + t) {
-                WindowVideoSurface.shared.install(reason: "host-appear-delay")
+        for t in [0.05, 0.15, 0.3, 0.6, 1.0, 2.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in
+                self?.applyZeroSafeArea()
+                WindowVideoSurface.shared.forceFullBleed(reason: "host-appear-delay")
+                WindowVideoSurface.shared.rebindPlayer()
             }
         }
     }
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
-        // inset 变化时不要改 root frame，只重钉画面层全屏
-        WindowVideoSurface.shared.install(reason: "safeArea")
+        applyZeroSafeArea()
+        WindowVideoSurface.shared.forceFullBleed(reason: "safeArea")
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        // 仅当 window 尺寸变化时校正画面（install 内部有去重）
-        WindowVideoSurface.shared.install(reason: "host-layout")
+        applyZeroSafeArea()
+        WindowVideoSurface.shared.forceFullBleed(reason: "host-layout")
+    }
+
+    private func applyZeroSafeArea() {
+        let inset = view.safeAreaInsets
+        let target = UIEdgeInsets(
+            top: -inset.top,
+            left: -inset.left,
+            bottom: -inset.bottom,
+            right: -inset.right
+        )
+        if additionalSafeAreaInsets != target {
+            additionalSafeAreaInsets = target
+        }
     }
 }
-
-// MARK: - Now Playing Info (锁屏控件)
 
 final class NowPlayingController {
     static let shared = NowPlayingController()
     private let infoCenter = MPNowPlayingInfoCenter.default()
+
+    func update(title: String, artist: String, isPlaying: Bool) {
+        var info = infoCenter.nowPlayingInfo ?? [:]
+        info[MPMediaItemPropertyTitle] = title
+        info[MPMediaItemPropertyArtist] = artist
+        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+        info[MPNowPlayingInfoPropertyIsLiveStream] = true
+        infoCenter.nowPlayingInfo = info
+    }
 
     func updateElapsedTime(_ time: TimeInterval) {
         var info = infoCenter.nowPlayingInfo ?? [:]
@@ -401,4 +471,6 @@ final class NowPlayingController {
 
 extension Notification.Name {
     static let tvPlayerNeedsRelayout = Notification.Name("tvPlayerNeedsRelayout")
+    static let tvPlayerInterruptionBegan = Notification.Name("tvPlayerInterruptionBegan")
+    static let tvPlayerInterruptionEnded = Notification.Name("tvPlayerInterruptionEnded")
 }

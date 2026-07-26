@@ -21,6 +21,9 @@ public class StorageHelper {
     private static final String KEY_SOURCE_URLS = "source_urls";
     private static final String KEY_SELECTED_SOURCE_URL = "selected_source_url";
     private static final String KEY_HIDDEN_LINES = "hidden_lines";
+    private static final String KEY_FUSION_MODE = "fusion_mode";
+    private static final String KEY_LAST_CHANNEL = "last_channel_key";
+    private static final String KEY_LAST_SOURCE_INDEX = "last_source_index";
 
     private final SharedPreferences prefs;
 
@@ -258,5 +261,35 @@ public class StorageHelper {
             return false;
         }
         return loadHiddenLines().contains(url.trim());
+    }
+
+    /** off / fast / balanced / complete / smart */
+    public void saveFusionMode(String mode) {
+        String m = mode == null ? "smart" : mode.trim().toLowerCase();
+        prefs.edit().putString(KEY_FUSION_MODE, m).apply();
+    }
+
+    public String loadFusionMode() {
+        String m = prefs.getString(KEY_FUSION_MODE, "smart");
+        if (m == null || m.trim().isEmpty()) {
+            return "smart";
+        }
+        return m.trim().toLowerCase();
+    }
+
+    public void saveLastChannel(String key, int sourceIndex) {
+        prefs.edit()
+                .putString(KEY_LAST_CHANNEL, key != null ? key : "")
+                .putInt(KEY_LAST_SOURCE_INDEX, Math.max(0, sourceIndex))
+                .apply();
+    }
+
+    public String loadLastChannelKey() {
+        String k = prefs.getString(KEY_LAST_CHANNEL, "");
+        return k != null ? k : "";
+    }
+
+    public int loadLastSourceIndex() {
+        return prefs.getInt(KEY_LAST_SOURCE_INDEX, 0);
     }
 }

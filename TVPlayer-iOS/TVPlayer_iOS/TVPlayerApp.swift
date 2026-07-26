@@ -21,47 +21,25 @@ struct RootView: UIViewControllerRepresentable {
     @ObservedObject var vm: PlayerViewModel
 
     func makeUIViewController(context: Context) -> RootHostingController<AnyView> {
-        // 直接加载主界面，不再进行首次验证
-        let rootContent = AnyView(
+        let finalView = AnyView(
             ContentView()
                 .environmentObject(vm)
+                .preferredColorScheme(.dark)
+                .statusBarHidden(true)
+                .persistentSystemOverlays(.hidden)
+                .defersSystemGestures(on: .all)
+                .background(Color.clear)
         )
-
-        let finalView = rootContent
-            .preferredColorScheme(.dark)
-            .statusBarHidden(true)
-            .persistentSystemOverlays(.hidden)
-            .defersSystemGestures(on: .all)
-            .background(Color.clear)
-
-        let host = RootHostingController(rootView: AnyView(finalView))
+        let host = RootHostingController(rootView: finalView)
         host.view.backgroundColor = .clear
         return host
     }
 
+    /// 不重建 ContentView，避免数字键/菜单 @State 丢失
     func updateUIViewController(_ uiViewController: RootHostingController<AnyView>, context: Context) {
-        let rootContent = AnyView(
-            ContentView()
-                .environmentObject(vm)
-        )
-
-        let finalView = rootContent
-            .preferredColorScheme(.dark)
-            .statusBarHidden(true)
-            .persistentSystemOverlays(.hidden)
-            .defersSystemGestures(on: .all)
-            .background(Color.clear)
-
-        uiViewController.rootView = AnyView(finalView)
         uiViewController.setNeedsUpdateOfHomeIndicatorAutoHidden()
         uiViewController.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    class Coordinator {
+        uiViewController.setNeedsStatusBarAppearanceUpdate()
     }
 }
 
@@ -95,19 +73,19 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     private func setupRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
 
-        center.playCommand.addTarget { [weak self] (_: MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus in
+        center.playCommand.addTarget { (_: MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus in
             NotificationCenter.default.post(name: .tvPlayerRemotePlay, object: nil)
             return .success
         }
-        center.pauseCommand.addTarget { [weak self] (_: MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus in
+        center.pauseCommand.addTarget { (_: MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus in
             NotificationCenter.default.post(name: .tvPlayerRemotePause, object: nil)
             return .success
         }
-        center.nextTrackCommand.addTarget { [weak self] (_: MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus in
+        center.nextTrackCommand.addTarget { (_: MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus in
             NotificationCenter.default.post(name: .tvPlayerRemoteNext, object: nil)
             return .success
         }
-        center.previousTrackCommand.addTarget { [weak self] (_: MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus in
+        center.previousTrackCommand.addTarget { (_: MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus in
             NotificationCenter.default.post(name: .tvPlayerRemotePrevious, object: nil)
             return .success
         }
@@ -128,15 +106,21 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 if let root = window.rootViewController {
                     root.view.backgroundColor = .clear
                     root.view.isOpaque = false
+                    // 不在此清零 additionalSafeAreaInsets：由 RootHostingController 负向抵消小白条
                     root.setNeedsUpdateOfHomeIndicatorAutoHidden()
                     root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+                    root.setNeedsStatusBarAppearanceUpdate()
                 }
             }
         }
-        // 与冷启动同一条全屏路径
-        WindowVideoSurface.shared.install(reason: "app-active")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            WindowVideoSurface.shared.install(reason: "app-active-delay")
+        WindowVideoSurface.shared.forceFullBleed(reason: "app-active")
+        WindowVideoSurface.shared.rebindPlayer()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            WindowVideoSurface.shared.forceFullBleed(reason: "app-active-delay")
+            WindowVideoSurface.shared.rebindPlayer()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            WindowVideoSurface.shared.forceFullBleed(reason: "app-active-delay2")
         }
         NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
     }
@@ -147,14 +131,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     func applicationDidEnterBackground(_ application: UIApplication) {
-        // 已进入后台，激活后台播放
-        WindowVideoSurface.shared.install(reason: "background")
         NotificationCenter.default.post(name: .tvPlayerDidEnterBackground, object: nil)
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {
-        // 即将回前台
-        WindowVideoSurface.shared.install(reason: "foreground")
+        WindowVideoSurface.shared.forceFullBleed(reason: "foreground")
+        WindowVideoSurface.shared.rebindPlayer()
         NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
     }
 

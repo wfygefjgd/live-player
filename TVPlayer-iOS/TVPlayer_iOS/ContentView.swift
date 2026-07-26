@@ -13,10 +13,10 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            Color.black
+            // 必须透明：真实画面在 keyWindow 底层 AVPlayerLayer，不透明黑底会挡成「有声无画」
+            Color.clear
                 .ignoresSafeArea(.all, edges: .all)
 
-            // 🔥 画面层：悬浮显示，覆盖整个屏幕包括小白条区域
             VideoPlayerView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea(.all, edges: .all)
@@ -28,9 +28,7 @@ struct ContentView: View {
                 .ignoresSafeArea(.all, edges: .all)
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    if !vm.panelVisible {
-                        vm.showFloat()
-                    }
+                    // 单击：无角标模式下不做事（避免误触）；面板关闭时保持干净画面
                 }
                 .highPriorityGesture(longPressGesture())
                 .simultaneousGesture(doubleTapGesture())
@@ -124,20 +122,38 @@ struct ContentView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
-            vm.pause()
+            // 不 pause：支持后台音频 / 锁屏续播
             cancelNumberInput()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
-            vm.resume()
+            vm.resumeIfAppropriate()
             vm.onAppBecameActive()
             if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
                let root = windowScene.windows.first?.rootViewController {
                 root.setNeedsUpdateOfHomeIndicatorAutoHidden()
                 root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
             }
-            // 回前台：强制全屏（你反馈这条路径一直是正常的）
-            WindowVideoSurface.shared.install(reason: "app-active")
+            WindowVideoSurface.shared.forceFullBleed(reason: "app-active")
+            WindowVideoSurface.shared.rebindPlayer()
             NotificationCenter.default.post(name: .tvPlayerNeedsRelayout, object: nil)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .tvPlayerRemotePlay)) { _ in
+            vm.resume()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .tvPlayerRemotePause)) { _ in
+            vm.pause()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .tvPlayerRemoteNext)) { _ in
+            vm.nextChannel()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .tvPlayerRemotePrevious)) { _ in
+            vm.prevChannel()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .tvPlayerInterruptionBegan)) { _ in
+            vm.noteInterruptionBegan()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .tvPlayerInterruptionEnded)) { _ in
+            vm.noteInterruptionEnded(shouldResume: true)
         }
         .sheet(isPresented: $vm.showSourceSheet) {
             SourceManagementSheet()
@@ -147,16 +163,7 @@ struct ContentView: View {
             Button("切换来源") {
                 vm.showSourceSheet = true
             }
-            Button("删除线路", role: .destructive) {
-                vm.confirmDeleteLine()
-            }
             Button("取消", role: .cancel) {}
-        }
-        .alert("删除线路", isPresented: $vm.showDeleteAlert) {
-            Button("取消", role: .cancel) { }
-            Button("删除", role: .destructive) { vm.doDeleteLine() }
-        } message: {
-            Text("确定删除当前线路？")
         }
         .then { base in
             if #available(iOS 17.0, *) {
@@ -171,11 +178,15 @@ struct ContentView: View {
         // 略缩短，且与拖动手势 highPriority 分离，减少“长按被拖动吃掉”
         LongPressGesture(minimumDuration: 0.45)
             .onEnded { _ in
-                guard !vm.locked else { return }
-                if vm.panelVisible { return }
-                // 先置状态，再强制 window 浮层 show（双保险）
-                vm.panelVisible = true
-                WindowPanelSurface.shared.show()
+                if vm.panelVisible {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                        vm.panelVisible = false
+                    }
+                    WindowPanelSurface.shared.hide()
+                } else {
+                    vm.panelVisible = true
+                    WindowPanelSurface.shared.show()
+                }
             }
     }
 
@@ -187,8 +198,11 @@ struct ContentView: View {
                 let w = max(UIScreen.main.bounds.width, UIScreen.main.bounds.height, 1)
                 let sx = value.startLocation.x
                 let dy = value.translation.height
-                guard abs(dy) > abs(value.translation.width), sx > w * 0.65 else { return }
-                vm.handleVolumeDrag(translationHeight: dy, ended: false)
+                guard abs(dy) > abs(value.translation.width) else { return }
+                // 仅右侧调音量；亮度交给系统；左+中竖滑换台
+                if sx > w * 0.65 {
+                    vm.handleVolumeDrag(translationHeight: dy, ended: false)
+                }
             }
             .onEnded { value in
                 guard !vm.panelVisible else { return }
@@ -197,20 +211,19 @@ struct ContentView: View {
                 let dx = value.translation.width
                 let dy = value.translation.height
 
-                // 右侧音量
                 if sx > w * 0.65 {
                     vm.handleVolumeDrag(translationHeight: dy, ended: true)
                     return
                 }
 
-                // 左右滑换线
+                // 左右滑换线（全屏，除右侧正在调音量外）
                 if abs(dx) > abs(dy) && abs(dx) > 50 {
                     if dx > 0 { vm.switchSource(direction: 1) }
                     else { vm.switchSource(direction: -1) }
                     return
                 }
 
-                // 上下滑换台
+                // 左+中区竖滑换台
                 if abs(dy) > abs(dx) && abs(dy) > 36, sx <= w * 0.65 {
                     if dy < 0 { vm.nextChannel() } else { vm.prevChannel() }
                 }
@@ -276,9 +289,9 @@ struct ContentView: View {
 
         if press.characters == " " {
             if vm.player.isPlaying {
-                vm.player.pause()
+                vm.pause()
             } else {
-                vm.player.resume()
+                vm.resume()
             }
             return .handled
         }

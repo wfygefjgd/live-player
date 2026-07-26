@@ -57,10 +57,14 @@ public class ChannelAdapter extends RecyclerView.Adapter<ChannelAdapter.VH> {
         tv.setLayoutParams(new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
-        tv.setPadding(16, 18, 16, 18);
+        tv.setPadding(24, 20, 24, 20);
         tv.setTextColor(Color.parseColor("#E0E0E0"));
-        tv.setTextSize(14);
+        tv.setTextSize(16);
         tv.setSingleLine(true);
+        // 电视遥控：可获焦
+        tv.setFocusable(true);
+        tv.setFocusableInTouchMode(false);
+        tv.setClickable(true);
         return new VH(tv);
     }
 
@@ -68,16 +72,38 @@ public class ChannelAdapter extends RecyclerView.Adapter<ChannelAdapter.VH> {
     public void onBindViewHolder(@NonNull VH holder, int position) {
         Channel ch = data.get(position);
         holder.text.setText(ch.name);
-        if (position == selected) {
-            holder.text.setBackgroundColor(Color.parseColor("#094771"));
-        } else {
-            holder.text.setBackgroundColor(Color.TRANSPARENT);
-        }
+        boolean isSel = position == selected;
+        holder.text.setBackgroundColor(isSel ? Color.parseColor("#094771") : Color.TRANSPARENT);
+        final int bindPos = position;
+        holder.itemView.setTag(bindPos);
         holder.itemView.setOnClickListener(v -> {
-            if (click != null) {
-                click.onClick(holder.getAdapterPosition());
+            int pos = holder.getBindingAdapterPosition();
+            if (pos == RecyclerView.NO_POSITION) {
+                pos = holder.getAdapterPosition();
+            }
+            if (pos == RecyclerView.NO_POSITION && v.getTag() instanceof Integer) {
+                pos = (Integer) v.getTag();
+            }
+            if (click != null && pos != RecyclerView.NO_POSITION) {
+                click.onClick(pos);
             }
         });
+        // 遥控：获焦高亮；OK 统一由 Activity.onKeyDown → handlePanelOkKey，避免双触发
+        holder.itemView.setOnFocusChangeListener((v, hasFocus) -> {
+            int pos = holder.getBindingAdapterPosition();
+            if (pos == RecyclerView.NO_POSITION) {
+                pos = holder.getAdapterPosition();
+            }
+            if (hasFocus) {
+                v.setBackgroundColor(Color.parseColor("#1565C0"));
+                v.setTag(pos >= 0 ? pos : bindPos);
+            } else if (pos == selected || bindPos == selected) {
+                v.setBackgroundColor(Color.parseColor("#094771"));
+            } else {
+                v.setBackgroundColor(Color.TRANSPARENT);
+            }
+        });
+        holder.itemView.setOnKeyListener(null);
     }
 
     @Override

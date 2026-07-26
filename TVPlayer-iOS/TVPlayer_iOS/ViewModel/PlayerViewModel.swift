@@ -1,10 +1,11 @@
 import SwiftUI
 import AVKit
+import UIKit
+import MediaPlayer
 
 let DEFAULT_SOURCE_URL = "https://ghfast.top/raw.githubusercontent.com/iptv-org/iptv/master/streams/cn.m3u"
 
 private let CHANNEL_OSD_MS: UInt64 = 2_500_000_000
-private let FLOAT_HIDE_MS: UInt64 = 2_500_000_000
 private let INDICATOR_MS: UInt64 = 1_200_000_000
 private let AUTO_SWITCH_COOLDOWN_NS: UInt64 = 1_200_000_000
 private let SILENT_AUDIO_GRACE_NS: UInt64 = 8_000_000_000  // 8s 静音切换冷却，避免好线误切
@@ -34,19 +35,16 @@ final class PlayerViewModel: ObservableObject {
     @Published var currentIndex = 0
     @Published var currentSourceIndex = 0
     @Published var panelVisible = false
-    @Published var locked = false
     @Published var showSourceSheet = false
-    @Published var showDeleteAlert = false
     @Published var channelOSD: String = ""
     @Published var indicatorText: String = ""
-    @Published var showFloatOverlay = false
     @Published var favorites: Set<String> = []
     @Published var isBootstrapping = false
     @Published var bootstrapMessage = "正在连接网络..."
     @Published var playerLayoutEpoch: Int = 0
 
-    // 🆕 智能融合相关
-    @Published var fusionMode: FusionMode = .fast
+    // 智能融合相关（默认智能：首源先出画 + 后台全量融合）
+    @Published var fusionMode: FusionMode = .smart
     private let fusionEngine = SmartFusionEngine.shared
 
     let player = PlayerEngine()
@@ -61,10 +59,8 @@ final class PlayerViewModel: ObservableObject {
     // 统一任务管理
     private var osdTask: Task<Void, Never>?
     private var indTask: Task<Void, Never>?
-    private var floatTask: Task<Void, Never>?
     private var cooldownTask: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
-    private var silentAudioTask: Task<Void, Never>?
 
     // NotificationCenter 观察者
     private var fusionObserver: NSObjectProtocol?
@@ -79,19 +75,20 @@ final class PlayerViewModel: ObservableObject {
     private var recoverGeneration = 0
     private var preferStableTask: Task<Void, Never>?
     private let reputation = LineReputationStore.shared
+    private var loadGeneration = 0
+    /// 用户主动暂停：回前台/中断结束不得强制 resume
+    private(set) var userPaused = false
+    private var wasPlayingBeforeInterruption = false
 
     func startup() {
         guard !started else { return }
         started = true
         favorites = storage.loadFavorites()
+        UIApplication.shared.isIdleTimerDisabled = true
 
-        // 🆕 设置融合引擎的观察者
         setupFusionObserver()
-
-        // 🆕 恢复融合模式设置
         restoreFusionMode()
 
-        // PlayerViewModel 已是 @MainActor，闭包回调无需再切主线程
         player.onReady = { [weak self] in self?.onPlayerReady() }
         player.onError = { [weak self] in self?.onPlayerError() }
         player.onStartupTimeout = { [weak self] in self?.onStartupTimeout() }
@@ -121,11 +118,12 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    /// 缓存或 Bundle 快速启动：有列表就播，返回是否已有可播数据
+    /// 快速启动：用户缓存优先于 Bundle 内置，避免覆盖融合结果
     @discardableResult
     private func applyQuickStartChannels() -> Bool {
-        if let bundleChannels = loadChannelsFromBundle(), !bundleChannels.isEmpty {
-            let applied = reputation.applyToChannels(bundleChannels)
+        let cached = storage.loadChannels()
+        if !cached.isEmpty {
+            let applied = reputation.applyToChannels(cached)
             rawChannels = applied
             channels = applyRules(applied)
             if !channels.isEmpty {
@@ -135,9 +133,8 @@ final class PlayerViewModel: ObservableObject {
                 return true
             }
         }
-        let cached = storage.loadChannels()
-        if !cached.isEmpty {
-            let applied = reputation.applyToChannels(cached)
+        if let bundleChannels = loadChannelsFromBundle(), !bundleChannels.isEmpty {
+            let applied = reputation.applyToChannels(bundleChannels)
             rawChannels = applied
             channels = applyRules(applied)
             if !channels.isEmpty {
@@ -297,8 +294,6 @@ final class PlayerViewModel: ObservableObject {
         autoSwitchState = .idle
         player.stop()
         showIndicator("正在切换源...")
-        showFloat()
-        // 🔥 强制使用当前选中的源，不使用融合模式
         loadChannels(force: true, silent: false, preferActiveOnly: true)
     }
 
@@ -326,21 +321,29 @@ final class PlayerViewModel: ObservableObject {
             indicatorText = "加载中..."
         }
         let urls = preferActiveOnly ? [activeSourceUrl] : buildCandidates()
+        loadGeneration += 1
+        let gen = loadGeneration
+        let mode = fusionMode
+        // 作废上一轮后台融合通知，并绑定本轮 session
+        fusionEngine.invalidateSession()
+        let fusionSession = fusionEngine.session
 
         Task { [weak self] in
             guard let self else { return }
-            // 🆕 使用智能融合引擎
-            fusionEngine.onProgress = { [weak self] message in
-                self?.bootstrapMessage = message
+            self.fusionEngine.onProgress = { [weak self] message in
+                guard let self, self.loadGeneration == gen else { return }
+                self.bootstrapMessage = message
             }
 
-            let (loaded, errMsg) = await fusionEngine.smartFusion(
+            let (loaded, errMsg) = await self.fusionEngine.smartFusion(
                 sourceUrls: urls,
-                mode: fusionMode
+                mode: mode
             )
 
             await MainActor.run { [weak self] in
-                self?.onChannelsLoaded(loaded, errorMessage: errMsg, silent: silent)
+                guard let self, self.loadGeneration == gen else { return }
+                guard self.fusionEngine.session == fusionSession else { return }
+                self.onChannelsLoaded(loaded, errorMessage: errMsg, silent: silent)
             }
         }
     }
@@ -550,6 +553,7 @@ final class PlayerViewModel: ObservableObject {
             : channels.filter { $0.name.lowercased().contains(q) || $0.group.lowercased().contains(q) }
 
         func groupName(for ch: Channel) -> String {
+            if favorites.contains(ch.key) { return "收藏" }
             if M3UParserService.isCCTVKey(ch.key) || ch.name.uppercased().contains("CCTV") {
                 return "央视"
             }
@@ -574,12 +578,8 @@ final class PlayerViewModel: ObservableObject {
             }
         }
 
+        // 每个频道只出现一次：收藏优先单独成组，避免 List 重复 id
         var result: [ChannelSection] = []
-        let favs = sortChannels(list.filter { favorites.contains($0.key) })
-        if !favs.isEmpty {
-            result.append(ChannelSection(id: "__fav__", title: "收藏", channels: favs))
-        }
-
         var order: [String] = []
         var map: [String: [Channel]] = [:]
         for ch in list {
@@ -591,6 +591,8 @@ final class PlayerViewModel: ObservableObject {
             map[g]?.append(ch)
         }
         order.sort { a, b in
+            if a == "收藏" { return true }
+            if b == "收藏" { return false }
             if a == "央视" { return true }
             if b == "央视" { return false }
             if a == "未分组" { return false }
@@ -684,7 +686,7 @@ final class PlayerViewModel: ObservableObject {
                 player.play(url: u)
                 persistLastChannel()
                 if showOSD { showChannelOSD() }
-                showFloat()
+                updateNowPlaying()
                 return
             }
             triedLineIndices.insert(currentSourceIndex)
@@ -699,9 +701,11 @@ final class PlayerViewModel: ObservableObject {
         playbackStable = true
         autoRecoverChannelHops = 0
         isBootstrapping = false
-        scheduleHideFloat()
+        userPaused = false
         if !indicatorText.isEmpty { showIndicator("") }
         bumpPlayerLayout()
+        updateNowPlaying()
+        UIApplication.shared.isIdleTimerDisabled = true
         // 真实起播成功才写信誉（延迟确认，避免假 READY）
         preferStableTask?.cancel()
         let key = currentChannel?.key
@@ -712,31 +716,56 @@ final class PlayerViewModel: ObservableObject {
             guard let self, !Task.isCancelled else { return }
             guard self.recoverGeneration == gen, self.playbackStable, self.player.isReady else { return }
             guard let url else { return }
-            // 仍是同一条线才记成功
             guard self.currentUrl == url else { return }
             self.reputation.markSuccess(url: url, channelKey: key)
         }
     }
 
-    private func onPlayerError() { autoSwitchLine(hint: "线路失败", reason: .hardFail) }
-    private func onStartupTimeout() { autoSwitchLine(hint: "线路超时无画面", reason: .startupTimeout) }
-    private func onExtendedStall() { autoSwitchLine(hint: "画面持续卡顿", reason: .stall) }
+    func updateNowPlaying() {
+        guard let ch = currentChannel else {
+            NowPlayingController.shared.clear()
+            return
+        }
+        var title = ch.name
+        if ch.sourceCount > 1 {
+            title += " · 线\(currentSourceIndex + 1)/\(ch.sourceCount)"
+        }
+        NowPlayingController.shared.update(
+            title: title,
+            artist: "TVPlayer",
+            isPlaying: player.isPlaying
+        )
+    }
+
+    private func onPlayerError() {
+        guard !userPaused else { return }
+        autoSwitchLine(hint: "线路失败", reason: .hardFail)
+    }
+    private func onStartupTimeout() {
+        guard !userPaused else { return }
+        autoSwitchLine(hint: "线路超时无画面", reason: .startupTimeout)
+    }
+    private func onExtendedStall() {
+        guard !userPaused else { return }
+        autoSwitchLine(hint: "画面持续卡顿", reason: .stall)
+    }
 
     private func onHealthCritical(_ reason: String) {
+        guard !userPaused else { return }
         autoSwitchLine(hint: reason, reason: .healthCritical)
     }
 
     // MARK: - 静音检测
 
     private func onSilentAudio() {
-        // 仅当有多条线路时才因“无音轨”换线；单线频道很多源本来就无声轨
+        // 仅多线路 + 已稳定 + 仍无音轨时才切；HLS 起播慢选轨不误杀
         guard let ch = currentChannel, ch.sourceCount > 1 else { return }
+        guard playbackStable, player.isReady else { return }
+        guard player.hasActiveAudioTrack == false else { return }
         let now = Date()
         if now.timeIntervalSince(lastSilentSwitchAt) < Double(SILENT_AUDIO_GRACE_NS) / 1e9 {
             return
         }
-        // 已稳定播放一段时间后的偶发静音检测，再给一次确认窗口
-        guard playbackStable else { return }
         lastSilentSwitchAt = now
         autoSwitchLine(hint: "当前线路无声音", reason: .silentAudio)
     }
@@ -834,9 +863,9 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    /// 自动恢复用的切台（不受用户防抖影响，但尊重锁定）
+    /// 自动恢复用的切台（不受用户防抖影响）
     private func autoAdvanceChannel() {
-        guard !locked, !channels.isEmpty else { return }
+        guard !channels.isEmpty else { return }
         cooldownTask?.cancel()
         autoSwitchState = .idle
         currentIndex = (currentIndex + 1) % channels.count
@@ -860,9 +889,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func nextChannel() {
-        guard !locked, !channels.isEmpty else { return }
-
-        // 防抖：300ms 内只能切换一次
+        guard !channels.isEmpty else { return }
         let now = Date()
         if now.timeIntervalSince(lastChannelSwitchAt) < channelSwitchDebounceInterval {
             return
@@ -870,7 +897,6 @@ final class PlayerViewModel: ObservableObject {
         lastChannelSwitchAt = now
         autoRecoverChannelHops = 0
         playbackStable = false
-
         cooldownTask?.cancel()
         currentIndex = (currentIndex + 1) % channels.count
         currentSourceIndex = 0
@@ -880,9 +906,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func prevChannel() {
-        guard !locked, !channels.isEmpty else { return }
-
-        // 防抖：300ms 内只能切换一次
+        guard !channels.isEmpty else { return }
         let now = Date()
         if now.timeIntervalSince(lastChannelSwitchAt) < channelSwitchDebounceInterval {
             return
@@ -890,7 +914,6 @@ final class PlayerViewModel: ObservableObject {
         lastChannelSwitchAt = now
         autoRecoverChannelHops = 0
         playbackStable = false
-
         currentIndex = (currentIndex - 1 + channels.count) % channels.count
         currentSourceIndex = 0
         panelVisible = false
@@ -918,9 +941,14 @@ final class PlayerViewModel: ObservableObject {
             return
         }
         autoSwitchState = .idle
+        autoRecoverChannelHops = 0
+        playbackStable = false
+        preferStableTask?.cancel()
         currentSourceIndex = (currentSourceIndex + direction + ch.sourceCount) % ch.sourceCount
+        triedLineIndices = [currentSourceIndex]
         showIndicator("切换线路 \(currentSourceIndex + 1)/\(ch.sourceCount)")
-        playCurrent(resetTried: true)
+        // 勿 resetTried：会把手动选的线路索引重置回偏好线
+        playCurrent(showOSD: true, resetTried: false)
     }
 
     func switchNextLine(hint: String) { autoSwitchLine(hint: hint, reason: .hardFail) }
@@ -957,52 +985,43 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    func showFloat() {
-        showFloatOverlay = true
-        cancelHideFloat()
-        scheduleHideFloat()
-    }
-
-    func scheduleHideFloat() {
-        cancelHideFloat()
-        guard player.isReady else { return }
-        floatTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: FLOAT_HIDE_MS)
-            guard !Task.isCancelled else { return }
-            await MainActor.run { [weak self] in
-                self?.hideFloat()
-            }
-        }
-    }
-
-    func cancelHideFloat() {
-        floatTask?.cancel()
-        floatTask = nil
-    }
-
-    func hideFloat() { showFloatOverlay = false }
-
     func togglePanel() {
-        guard !locked else { return }
         panelVisible.toggle()
-        showFloat()
     }
 
-    func toggleLock() {
-        locked.toggle()
-        if locked {
-            panelVisible = false
-            hideFloat()
-        } else {
-            showFloat()
-        }
+    func pause() {
+        userPaused = true
+        player.pause()
+        UIApplication.shared.isIdleTimerDisabled = false
+        updateNowPlaying()
     }
-
-    func pause() { player.pause() }
     func resume() {
+        userPaused = false
         player.resume()
+        UIApplication.shared.isIdleTimerDisabled = true
         bumpPlayerLayout()
+        updateNowPlaying()
     }
+
+    /// 回前台：仅在非用户暂停时续播
+    func resumeIfAppropriate() {
+        guard !userPaused, player.isReady, !player.isPlaying else { return }
+        player.resume()
+        UIApplication.shared.isIdleTimerDisabled = true
+        bumpPlayerLayout()
+        updateNowPlaying()
+    }
+
+    func noteInterruptionBegan() {
+        wasPlayingBeforeInterruption = player.isPlaying && !userPaused
+    }
+
+    func noteInterruptionEnded(shouldResume: Bool) {
+        guard shouldResume, wasPlayingBeforeInterruption, !userPaused else { return }
+        resume()
+    }
+
+    private var lastBrightnessTranslation: CGFloat = 0
 
     func handleVolumeDrag(translationHeight: CGFloat, ended: Bool) {
         if ended {
@@ -1013,43 +1032,11 @@ final class PlayerViewModel: ObservableObject {
         lastVolumeTranslation = translationHeight
         VolumeHelper.adjust(by: Float(-deltaY) / 200)
         showIndicator("音量 \(Int(VolumeHelper.current * 100))%")
-        showFloat()
     }
 
-    func confirmDeleteLine() {
-        guard currentUrl != nil else { return }
-        showDeleteAlert = true
-    }
-
-    func doDeleteLine() {
-        guard let url = currentUrl, let ch = currentChannel else { return }
-        storage.hideLine(url)
-        let targetKey = ch.key
-        let nextIdx = ch.sourceCount <= 1 ? -1 : currentSourceIndex
-        let oldIdx = currentIndex
-        let source = rawChannels.isEmpty ? channels : rawChannels
-        channels = applyRules(source)
-        guard !channels.isEmpty else {
-            player.stop()
-            currentIndex = 0
-            currentSourceIndex = 0
-            showIndicator("线路已删除")
-            return
-        }
-        if let found = channels.firstIndex(where: { $0.key == targetKey }) {
-            currentIndex = found
-            let updated = channels[found]
-            if updated.sourceCount <= 0 {
-                nextChannel()
-                return
-            }
-            currentSourceIndex = nextIdx >= 0 && nextIdx < updated.sourceCount ? nextIdx : 0
-        } else {
-            currentIndex = min(oldIdx, channels.count - 1)
-            currentSourceIndex = 0
-        }
-        showIndicator("已删除当前线路")
-        playCurrent(resetTried: true)
+    /// 亮度交给系统，手势不再改屏亮
+    func handleBrightnessDrag(translationHeight: CGFloat, ended: Bool) {
+        if ended { lastBrightnessTranslation = 0 }
     }
 
     // MARK: - 智能融合相关
@@ -1068,21 +1055,14 @@ final class PlayerViewModel: ObservableObject {
             queue: .main
         ) { [weak self] notification in
             guard let self else { return }
+            if let s = notification.userInfo?["session"] as? Int, s != self.fusionEngine.session {
+                return
+            }
             guard let optimized = notification.object as? [Channel] else { return }
             self.mergeOptimizedChannels(optimized)
         }
-        firstBatchObserver = NotificationCenter.default.addObserver(
-            forName: .channelsFirstBatch,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard let self else { return }
-            guard let first = notification.object as? [Channel], !first.isEmpty else { return }
-            // 已有列表在播则忽略；空列表时用首源立刻出画
-            if self.channels.isEmpty || (!self.player.isReady && !self.playbackStable) {
-                self.onChannelsLoaded(first, errorMessage: nil, silent: !self.channels.isEmpty)
-            }
-        }
+        // channelsFirstBatch 已停用双投递；保留 observer 槽位以免旧通知误伤
+        firstBatchObserver = nil
     }
 
     /// 融合后台优化结果软合并：保留当前台/当前线，只更新列表与排序
@@ -1093,6 +1073,7 @@ final class PlayerViewModel: ObservableObject {
         rawChannels = applied
         channels = applyRules(applied)
         guard !channels.isEmpty else { return }
+        storage.saveChannels(applied)
 
         if let prevKey, let idx = channels.firstIndex(where: { $0.key == prevKey }) {
             currentIndex = idx
@@ -1101,11 +1082,10 @@ final class PlayerViewModel: ObservableObject {
             } else {
                 currentSourceIndex = min(currentSourceIndex, max(0, channels[idx].sourceCount - 1))
             }
-            // 正在播且稳定：不重播；未就绪才用新排序再试
-            if !player.isReady && !playbackStable {
+            if !player.isReady && !playbackStable && !userPaused {
                 playCurrent(showOSD: false, resetTried: true)
             }
-        } else if !player.isReady {
+        } else if !player.isReady && !userPaused {
             restoreLastChannelPosition()
             playCurrent(showOSD: false, resetTried: true)
         }
@@ -1115,19 +1095,18 @@ final class PlayerViewModel: ObservableObject {
     }
 
     deinit {
-        if let observer = fusionObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        if let observer = firstBatchObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
+        let obs1 = fusionObserver
+        let obs2 = firstBatchObserver
         osdTask?.cancel()
         indTask?.cancel()
-        floatTask?.cancel()
         cooldownTask?.cancel()
         retryTask?.cancel()
-        silentAudioTask?.cancel()
         preferStableTask?.cancel()
+        DispatchQueue.main.async {
+            if let obs1 { NotificationCenter.default.removeObserver(obs1) }
+            if let obs2 { NotificationCenter.default.removeObserver(obs2) }
+            UIApplication.shared.isIdleTimerDisabled = false
+        }
     }
 
     /// 切换融合模式
@@ -1150,11 +1129,13 @@ final class PlayerViewModel: ObservableObject {
         loadChannels(force: true, silent: false, preferActiveOnly: false)
     }
 
-    /// 从 UserDefaults 恢复融合模式设置
+    /// 从 UserDefaults 恢复融合模式设置（无记录时保持 .smart）
     func restoreFusionMode() {
         if let saved = UserDefaults.standard.string(forKey: "fusionMode"),
            let mode = FusionMode(rawValue: saved) {
             fusionMode = mode
+        } else {
+            fusionMode = .smart
         }
     }
 }

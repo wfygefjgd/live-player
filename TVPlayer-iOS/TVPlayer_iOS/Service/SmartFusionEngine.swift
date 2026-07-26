@@ -16,16 +16,25 @@ final class SmartFusionEngine {
 
     private let speedTester = LineSpeedTester.shared
     private var fusionMode: FusionMode = .smart
+    /// 每次 smartFusion 递增；后台 Task 完成后若 session 已变则丢弃结果
+    private(set) var session: Int = 0
 
     /// 进度回调
     var onProgress: ((String) -> Void)?
 
     init() {}
 
+    /// 新加载开始时作废进行中的后台融合
+    func invalidateSession() {
+        session &+= 1
+    }
+
     // MARK: - 公开接口
 
     /// 智能融合：加载所有源 + 测速 + 排序
+    /// - 调用前请 `invalidateSession()`；本方法使用当前 `session` 作为 request id
     func smartFusion(sourceUrls: [String], mode: FusionMode? = nil) async -> ([Channel], String?) {
+        let requestSession = session
         let actualMode = mode ?? fusionMode
 
         switch actualMode {
@@ -38,7 +47,7 @@ final class SmartFusionEngine {
         case .complete:
             return await completeMode(sourceUrls: sourceUrls)
         case .smart:
-            return await smartMode(sourceUrls: sourceUrls)
+            return await smartMode(sourceUrls: sourceUrls, requestSession: requestSession)
         }
     }
 
@@ -105,40 +114,46 @@ final class SmartFusionEngine {
     }
 
     /// 智能模式：首源立刻返回出画 → 后台全量融合（以播放信誉为主，弱化 HEAD 测速）
-    private func smartMode(sourceUrls: [String]) async -> ([Channel], String?) {
+    private func smartMode(sourceUrls: [String], requestSession: Int) async -> ([Channel], String?) {
         onProgress?("智能模式：快速启动...")
 
         var firstBatch: [Channel] = []
         if let firstUrl = sourceUrls.first {
             let (firstChannels, _) = await NetworkService.shared.fetchWithCandidates(urls: [firstUrl])
+            guard requestSession == session else { return ([], nil) }
             if !firstChannels.isEmpty {
                 firstBatch = mergeChannels(firstChannels)
                 onProgress?("已加载 \(firstBatch.count) 个频道，后台继续融合...")
-                // 立刻通知 UI 可先播（与返回值双保险）
-                NotificationCenter.default.post(name: .channelsFirstBatch, object: firstBatch)
+                // 首批只通过返回值交给 loadChannels，避免与 Notification 双投递
             }
         }
 
-        // 后台：全量合并 + 轻量优化（不阻塞首播）
         let urls = sourceUrls
         Task { @MainActor in
             let allChannels = await self.loadAllSources(urls)
+            guard requestSession == self.session else { return }
             guard !allChannels.isEmpty else { return }
             self.onProgress?("正在合并所有频道...")
             let merged = self.mergeChannels(allChannels)
-            // 仅用信誉排序，不做全表 HEAD 测速（起播成败才是准绳）
             let optimized = LineReputationStore.shared.applyToChannels(merged)
+            guard requestSession == self.session else { return }
             let totalLines = optimized.reduce(0) { $0 + $1.sourceCount }
             self.onProgress?("融合完成！\(optimized.count) 台 / \(totalLines) 线")
-            NotificationCenter.default.post(name: .channelsOptimized, object: optimized)
+            NotificationCenter.default.post(
+                name: .channelsOptimized,
+                object: optimized,
+                userInfo: ["session": requestSession]
+            )
         }
+
+        guard requestSession == session else { return ([], nil) }
 
         if !firstBatch.isEmpty {
             return (firstBatch, nil)
         }
 
-        // 首源失败：退回全量加载
         let allChannels = await loadAllSources(sourceUrls)
+        guard requestSession == session else { return ([], nil) }
         if allChannels.isEmpty {
             return ([], "所有源均加载失败")
         }

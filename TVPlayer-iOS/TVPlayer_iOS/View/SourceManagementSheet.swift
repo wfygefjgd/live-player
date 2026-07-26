@@ -96,7 +96,7 @@ struct SourceManagementSheet: View {
                     }
 
                     Section {
-                        ForEach(Array(vm.sourceUrls.enumerated()), id: \.offset) { (i, url) in
+                        ForEach(Array(vm.sourceUrls.enumerated()), id: \.element) { (i, url) in
                             sourceRow(index: i, url: url)
                         }
                         .onDelete { offsets in
