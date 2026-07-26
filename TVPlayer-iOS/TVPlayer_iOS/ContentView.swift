@@ -1,11 +1,9 @@
 import SwiftUI
 import AVKit
 
-/// 对应 Flutter：
-/// - 播放器外无 SafeArea
-/// - 根贴物理边（SizedBox.expand）
-/// - immersiveSticky 由 Root VC 负责
-/// - 仅浮动控制/OSD 用 safeArea.bottom 抬高
+/// SwiftUI Edge-to-Edge 全屏播放页
+/// - 视频：.ignoresSafeArea() 贴物理边，Home Indicator 浮在画面上
+/// - 仅浮动 OSD/提示：用 safeAreaInsets 抬高（不缩视频）
 struct ContentView: View {
     @EnvironmentObject private var vm: PlayerViewModel
 
@@ -13,43 +11,40 @@ struct ContentView: View {
     @State private var numberInputTask: Task<Void, Never>?
 
     var body: some View {
-        GeometryReader { geo in
-            let bottomPad = max(geo.safeAreaInsets.bottom, 0)
-            let topPad = max(geo.safeAreaInsets.top, 0)
+        ZStack {
+            Color.black
+                .ignoresSafeArea()
 
-            ZStack {
-                Color.black
-                    .ignoresSafeArea(.all)
+            // —— 视频：Edge-to-Edge，禁止 Safe Area 缩进 ——
+            VideoPlayerView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+                .zIndex(1)
 
-                // 视频：贴物理屏，不给 Home Indicator 让位
-                VideoPlayerView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .ignoresSafeArea(.all)
-                    .allowsHitTesting(false)
-                    .zIndex(1)
+            // 手势全屏
+            Color.clear
+                .contentShape(Rectangle())
+                .ignoresSafeArea()
+                .highPriorityGesture(longPressGesture())
+                .simultaneousGesture(doubleTapGesture())
+                .simultaneousGesture(playerDragGesture())
+                .zIndex(2)
 
-                // 手势层：全屏
-                Color.clear
-                    .contentShape(Rectangle())
-                    .ignoresSafeArea(.all)
-                    .highPriorityGesture(longPressGesture())
-                    .simultaneousGesture(doubleTapGesture())
-                    .simultaneousGesture(playerDragGesture())
-                    .zIndex(2)
-
-                // 浮动控制/提示层：仅这里用 padding 避让小白条
-                floatingChrome(topPad: topPad, bottomPad: bottomPad)
-                    .zIndex(5)
-            }
-            .frame(width: geo.size.width, height: geo.size.height)
+            // —— 浮动控制层：才用 safe area 避让（视频不受影响）——
+            floatingChrome()
+                .zIndex(5)
         }
-        .ignoresSafeArea(.all)
-        .background(Color.black.ignoresSafeArea(.all))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea()
+        .background(Color.black.ignoresSafeArea())
+        // SwiftUI：隐藏状态栏 + 系统叠层 + 延迟边缘手势
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .defersSystemGestures(on: .all)
         .onAppear {
             vm.startup()
+            refreshImmersiveChrome()
             WindowPanelSurface.shared.setPanel(
                 AnyView(
                     ChannelListPanel(onShowSettings: {
@@ -65,11 +60,8 @@ struct ContentView: View {
             )
         }
         .onChange(of: vm.panelVisible) { visible in
-            if visible {
-                WindowPanelSurface.shared.show()
-            } else {
-                WindowPanelSurface.shared.hide()
-            }
+            if visible { WindowPanelSurface.shared.show() }
+            else { WindowPanelSurface.shared.hide() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .panelShouldClose)) { _ in
             withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
@@ -83,25 +75,12 @@ struct ContentView: View {
             vm.resumeIfAppropriate()
             vm.onAppBecameActive()
             WindowVideoSurface.shared.rebindPlayer()
-            // 再刷一次 immersive（≈ sticky）
-            if let root = (UIApplication.shared.delegate as? AppDelegate)?.window?.rootViewController {
-                root.setNeedsUpdateOfHomeIndicatorAutoHidden()
-                root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
-                root.setNeedsStatusBarAppearanceUpdate()
-            }
+            refreshImmersiveChrome()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .tvPlayerRemotePlay)) { _ in
-            vm.resume()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .tvPlayerRemotePause)) { _ in
-            vm.pause()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .tvPlayerRemoteNext)) { _ in
-            vm.nextChannel()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .tvPlayerRemotePrevious)) { _ in
-            vm.prevChannel()
-        }
+        .onReceive(NotificationCenter.default.publisher(for: .tvPlayerRemotePlay)) { _ in vm.resume() }
+        .onReceive(NotificationCenter.default.publisher(for: .tvPlayerRemotePause)) { _ in vm.pause() }
+        .onReceive(NotificationCenter.default.publisher(for: .tvPlayerRemoteNext)) { _ in vm.nextChannel() }
+        .onReceive(NotificationCenter.default.publisher(for: .tvPlayerRemotePrevious)) { _ in vm.prevChannel() }
         .onReceive(NotificationCenter.default.publisher(for: .tvPlayerInterruptionBegan)) { _ in
             vm.noteInterruptionBegan()
         }
@@ -109,77 +88,86 @@ struct ContentView: View {
             vm.noteInterruptionEnded(shouldResume: true)
         }
         .sheet(isPresented: $vm.showSourceSheet) {
-            SourceManagementSheet()
-                .environmentObject(vm)
+            SourceManagementSheet().environmentObject(vm)
         }
         .then { base in
             if #available(iOS 17.0, *) {
-                return AnyView(base.onKeyPress { press in handleKeyPress(press) })
+                AnyView(base.onKeyPress { press in handleKeyPress(press) })
             } else {
-                return AnyView(base)
+                AnyView(base)
             }
         }
     }
 
-    /// 浮动层：对应 Flutter 控制栏 MediaQuery.padding.bottom
+    /// 仅浮动 UI 抬高；等价 Flutter MediaQuery.padding.bottom
     @ViewBuilder
-    private func floatingChrome(topPad: CGFloat, bottomPad: CGFloat) -> some View {
-        ZStack {
-            if vm.isBootstrapping {
-                VStack(spacing: 10) {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .tint(.white)
-                    Text(vm.bootstrapMessage)
-                        .foregroundColor(.white.opacity(0.9))
-                        .font(.subheadline)
-                        .multilineTextAlignment(.center)
-                }
-                .padding(20)
-                .background(Color.black.opacity(0.55))
-                .cornerRadius(12)
-            } else if vm.channels.isEmpty {
-                VStack(spacing: 12) {
-                    Text("暂无频道")
-                        .foregroundColor(.white)
-                    Button("重新加载源") { vm.retryLoadSources() }
-                        .buttonStyle(.borderedProminent)
-                }
-                .padding(24)
-                .background(Color.black.opacity(0.55))
-                .cornerRadius(12)
-            }
+    private func floatingChrome() -> some View {
+        GeometryReader { geo in
+            let bottom = max(geo.safeAreaInsets.bottom, 8)
+            let top = max(geo.safeAreaInsets.top, 8)
 
-            VStack {
-                ChannelOSDView(text: vm.channelOSD)
-                    .padding(.top, max(12, topPad + 8))
-                Spacer(minLength: 0)
-                if !vm.isBootstrapping {
-                    IndicatorView(text: vm.indicatorText)
-                        .padding(.bottom, max(12, bottomPad + 8))
+            ZStack {
+                if vm.isBootstrapping {
+                    VStack(spacing: 10) {
+                        ProgressView().progressViewStyle(.circular).tint(.white)
+                        Text(vm.bootstrapMessage)
+                            .foregroundColor(.white.opacity(0.9))
+                            .font(.subheadline)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(20)
+                    .background(Color.black.opacity(0.55))
+                    .cornerRadius(12)
+                } else if vm.channels.isEmpty {
+                    VStack(spacing: 12) {
+                        Text("暂无频道").foregroundColor(.white)
+                        Button("重新加载源") { vm.retryLoadSources() }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    .padding(24)
+                    .background(Color.black.opacity(0.55))
+                    .cornerRadius(12)
                 }
-            }
-            .allowsHitTesting(false)
 
-            if !numberInput.isEmpty {
                 VStack {
-                    Spacer()
-                    Text(numberInput)
-                        .font(.system(size: 60, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 12)
-                        .background(Color.black.opacity(0.7))
-                        .cornerRadius(16)
-                    Text("按数字键选台")
-                        .font(.caption)
-                        .foregroundColor(.white.opacity(0.7))
-                    Spacer().frame(height: max(24, bottomPad + 16))
+                    ChannelOSDView(text: vm.channelOSD)
+                        .padding(.top, top + 4)
+                    Spacer(minLength: 0)
+                    if !vm.isBootstrapping {
+                        IndicatorView(text: vm.indicatorText)
+                            .padding(.bottom, bottom + 4)
+                    }
                 }
                 .allowsHitTesting(false)
+
+                if !numberInput.isEmpty {
+                    VStack {
+                        Spacer()
+                        Text(numberInput)
+                            .font(.system(size: 60, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 12)
+                            .background(Color.black.opacity(0.7))
+                            .cornerRadius(16)
+                        Text("按数字键选台")
+                            .font(.caption)
+                            .foregroundColor(.white.opacity(0.7))
+                        Spacer().frame(height: bottom + 16)
+                    }
+                    .allowsHitTesting(false)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .allowsHitTesting(false)
+    }
+
+    private func refreshImmersiveChrome() {
+        guard let root = (UIApplication.shared.delegate as? AppDelegate)?.window?.rootViewController else { return }
+        root.setNeedsUpdateOfHomeIndicatorAutoHidden()
+        root.setNeedsUpdateOfScreenEdgesDeferringSystemGestures()
+        root.setNeedsStatusBarAppearanceUpdate()
     }
 
     private func longPressGesture() -> some Gesture {
@@ -215,7 +203,6 @@ struct ContentView: View {
                 let sx = value.startLocation.x
                 let dx = value.translation.width
                 let dy = value.translation.height
-
                 if sx > w * 0.65 {
                     vm.handleVolumeDrag(translationHeight: dy, ended: true)
                     return
@@ -232,30 +219,22 @@ struct ContentView: View {
     }
 
     private func doubleTapGesture() -> some Gesture {
-        TapGesture(count: 2)
-            .onEnded {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                    vm.togglePanel()
-                }
+        TapGesture(count: 2).onEnded {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                vm.togglePanel()
             }
+        }
     }
 
     @available(iOS 17.0, *)
     private func handleKeyPress(_ press: KeyPress) -> KeyPress.Result {
         guard !vm.panelVisible else { return .ignored }
-
-        if let digit = press.characters.first(where: { $0.isNumber }) {
+        if let digit = press.characters.first(where: \.isNumber) {
             appendNumber(digit)
             return .handled
         }
-        if press.key == .return {
-            confirmNumberInput()
-            return .handled
-        }
-        if press.key == .escape {
-            cancelNumberInput()
-            return .handled
-        }
+        if press.key == .return { confirmNumberInput(); return .handled }
+        if press.key == .escape { cancelNumberInput(); return .handled }
         if press.key == .delete, !numberInput.isEmpty {
             numberInput.removeLast()
             if numberInput.isEmpty { cancelNumberInput() }
