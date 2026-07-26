@@ -53,9 +53,9 @@ final class PlaybackHealthMonitor {
     private var audioSession: AVAudioSession { AVAudioSession.sharedInstance() }
 
     // 配置阈值（偏灵敏：卡顿更快换线）
-    private let videoFreezeThreshold: TimeInterval = 2.5
-    private let bufferEmptyThreshold = 2
-    private let stallThreshold = 2
+    private let videoFreezeThreshold: TimeInterval = 5.0
+    private let bufferEmptyThreshold = 4
+    private let stallThreshold = 3
 
     // MARK: - 初始化
 

@@ -3,7 +3,6 @@ import AVFoundation
 import UIKit
 import MediaPlayer
 
-@main
 struct TVPlayerApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var vm = PlayerViewModel()
@@ -49,7 +48,10 @@ struct RootView: UIViewControllerRepresentable {
     }
 }
 
+@main
 final class AppDelegate: NSObject, UIApplicationDelegate {
+
+    private var window: UIWindow?
 
     private var wasPlayingBeforeInterruption = false
 
@@ -57,9 +59,35 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        let viewModel = PlayerViewModel()
+        let rootView = AnyView(
+            ContentView()
+                .environmentObject(viewModel)
+                .preferredColorScheme(.dark)
+                .statusBarHidden(true)
+                .persistentSystemOverlays(.hidden)
+                .defersSystemGestures(on: .all)
+                .background(Color.black)
+        )
+        let rootController = RootHostingController(rootView: rootView)
+        rootController.view.backgroundColor = .black
+
+        let window = UIWindow(frame: UIScreen.main.bounds)
+        window.backgroundColor = .black
+        window.rootViewController = rootController
+        self.window = window
+        window.makeKeyAndVisible()
+
         setupAudioSession()
         setupRemoteCommands()
         return true
+    }
+
+    func application(
+        _ application: UIApplication,
+        supportedInterfaceOrientationsFor window: UIWindow?
+    ) -> UIInterfaceOrientationMask {
+        .landscape
     }
 
     // MARK: - Audio Session

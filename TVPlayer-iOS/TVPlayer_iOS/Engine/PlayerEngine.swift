@@ -5,24 +5,24 @@ import Combine
 @MainActor
 final class PlayerEngine: ObservableObject {
     // MARK: - 配置常量
-    static let startupTimeoutNs: UInt64 = 3_500_000_000      // 3.5s 起播超时
+    static let startupTimeoutNs: UInt64 = 8_000_000_000      // HLS 首帧允许慢线路先完成握手
     static let readyProtectNs: UInt64 = 1_200_000_000         // 1.2s 出画保护
     static let errorGraceNs: UInt64 = 800_000_000             // 0.8s 错误宽容
     static let silentAudioCheckNs: UInt64 = 6_000_000_000
     static let silentAudioPollIntervalNs: UInt64 = 1_000_000_000
-    static let progressStallThreshold: TimeInterval = 1.8
+    static let progressStallThreshold: TimeInterval = 4.0
 
     /// 网速阈值（KB/s）：≥ 此值暂缓换线；持续低于则快切
     static let minUsefulSpeedKBps: Double = 50
     /// 判定「几乎无速度」
     static let deadSpeedKBps: Double = 5
     /// 低速持续多久才换线（秒）
-    static let lowSpeedSwitchSeconds: TimeInterval = 2.0
+    static let lowSpeedSwitchSeconds: TimeInterval = 5.0
     /// 无网/无速度多久立刻换（秒）
-    static let zeroSpeedSwitchSeconds: TimeInterval = 1.2
+    static let zeroSpeedSwitchSeconds: TimeInterval = 3.5
 
     static var stallTimeoutNs: UInt64 {
-        NetworkMonitor.shared.isWiFi ? 2_000_000_000 : 3_000_000_000
+        NetworkMonitor.shared.isWiFi ? 4_000_000_000 : 6_000_000_000
     }
 
     let player = AVPlayer()
@@ -79,6 +79,19 @@ final class PlayerEngine: ObservableObject {
         healthMonitor = PlaybackHealthMonitor(player: player)  // 🆕 初始化健康度监控
         observeTimeControl()
         setupCacheCleanup()  // 🆕 设置AVPlayer缓存清理
+        NotificationCenter.default.publisher(for: Notification.Name("tvPlayerVideoRendered"))
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] note in
+                guard let self,
+                      let renderedPlayer = note.object as? AVPlayer,
+                      renderedPlayer === self.player,
+                      self.player.currentItem?.status == .readyToPlay else { return }
+                self.hasRendered = true
+                if self.lastTimeProgressAt == .distantPast {
+                    self.lastTimeProgressAt = Date()
+                }
+            }
+            .store(in: &cancellables)
     }
 
     private var memoryWarningObserver: NSObjectProtocol?
@@ -124,9 +137,9 @@ final class PlayerEngine: ObservableObject {
             "AVURLAssetHTTPHeaderFieldsKey": ["User-Agent": "Mozilla/5.0 (iPhone; CPU iOS 17_0 like Mac OS X)"]
         ])
         let item = AVPlayerItem(asset: asset)
-        item.preferredForwardBufferDuration = 2
+        item.preferredForwardBufferDuration = 4
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
-        player.automaticallyWaitsToMinimizeStalling = false
+        player.automaticallyWaitsToMinimizeStalling = true
 
         // 强制刷新播放器状态，防止画面冻结
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
@@ -297,7 +310,7 @@ final class PlayerEngine: ObservableObject {
                     self.lastItemTime = time
                 }
 
-                if !self.hasRendered && time > .zero {
+                if !self.hasRendered && time > .zero && self.hasVideoTrackPresent() {
                     self.hasRendered = true
                 }
 
@@ -480,10 +493,21 @@ final class PlayerEngine: ObservableObject {
     private func hasAudioTrackPresent() -> Bool {
         guard let item = player.currentItem else { return false }
         let audioTracks = item.tracks.filter { $0.assetTrack?.mediaType == .audio }
-        if !audioTracks.isEmpty { return true }
+        if !audioTracks.isEmpty { return audioTracks.contains { $0.isEnabled } }
         // asset 级兜底（tracks 尚未挂上时）
         let assetAudios = item.asset.tracks(withMediaType: .audio)
         return !assetAudios.isEmpty
+    }
+
+    private func hasVideoTrackPresent() -> Bool {
+        guard let item = player.currentItem else { return false }
+        if item.presentationSize.width > 1, item.presentationSize.height > 1 {
+            return true
+        }
+        if item.tracks.contains(where: { $0.assetTrack?.mediaType == .video }) {
+            return true
+        }
+        return !item.asset.tracks(withMediaType: .video).isEmpty
     }
 
     // MARK: - Private — Health Monitoring

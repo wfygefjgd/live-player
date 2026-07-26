@@ -36,6 +36,14 @@ enum MirrorResolver {
             let raw = "https://raw.githubusercontent.com/\(pages.user)/\(pages.repo)/main/\(pages.path)"
             list.append(contentsOf: ghProxyPrefixes.map { "\($0)\(raw)" })
             list.append(raw)
+        } else if let cdn = parseJSDelivr(url) {
+            // Keep a CDN source resilient: if jsDelivr is delayed or rate
+            // limited, retry the Pages and raw forms of the same file.
+            list.append(url)
+            list.append("https://\(cdn.user).github.io/\(cdn.repo)/\(cdn.path)")
+            let raw = "https://raw.githubusercontent.com/\(cdn.user)/\(cdn.repo)/\(cdn.branch)/\(cdn.path)"
+            list.append(contentsOf: ghProxyPrefixes.map { "\($0)\(raw)" })
+            list.append(raw)
         } else {
             list.append(url)
         }
@@ -62,5 +70,17 @@ enum MirrorResolver {
         let parts = u.path.split(separator: "/").map(String.init)
         guard parts.count >= 2 else { return nil }
         return (user, parts[0], parts.dropFirst().joined(separator: "/"))
+    }
+
+    // cdn.jsdelivr.net/gh/<user>/<repo>@<branch>/<path>
+    private static func parseJSDelivr(_ url: String)
+        -> (user: String, repo: String, branch: String, path: String)? {
+        guard let u = URL(string: url),
+              u.host == "cdn.jsdelivr.net" || u.host == "fastly.jsdelivr.net" else { return nil }
+        let parts = u.path.split(separator: "/").map(String.init)
+        guard parts.count >= 5, parts[0] == "gh" else { return nil }
+        let repoParts = parts[2].split(separator: "@", maxSplits: 1).map(String.init)
+        guard repoParts.count == 2 else { return nil }
+        return (parts[1], repoParts[0], repoParts[1], parts.dropFirst(3).joined(separator: "/"))
     }
 }

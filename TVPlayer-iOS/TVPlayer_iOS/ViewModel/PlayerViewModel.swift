@@ -5,7 +5,7 @@ import MediaPlayer
 
 // 默认 M3U 源：Guovin/iptv-api 每日两次自动采集+测速+筛选的产物。
 // raw 地址由 MirrorResolver 在拉取时自动扩展 jsDelivr/ghproxy 镜像，国内可直连
-let DEFAULT_SOURCE_URL = "https://wfygefjgd.github.io/live-player/iptv-mirrors/validated-channels.m3u"
+let DEFAULT_SOURCE_URL = "https://cdn.jsdelivr.net/gh/wfygefjgd/live-player@main/iptv-mirrors/validated-channels.m3u"
 
 private let CHANNEL_OSD_MS: UInt64 = 2_500_000_000
 private let INDICATOR_MS: UInt64 = 1_200_000_000
@@ -57,7 +57,7 @@ final class PlayerViewModel: ObservableObject {
     // 智能融合相关（默认关闭：仅使用单一源）
     @Published var fusionMode: FusionMode = .off
     /// 线路超时自动换线（默认关，便于先测镜像源）
-    @Published var lineTimeoutEnabled: Bool = false
+    @Published var lineTimeoutEnabled: Bool = true
     private let fusionEngine = SmartFusionEngine.shared
 
     let player = PlayerEngine()
@@ -295,7 +295,12 @@ final class PlayerViewModel: ObservableObject {
         }
         sourceUrls = urls.keys
         let selected = storage.loadSelectedSourceUrl().trimmingCharacters(in: .whitespaces)
-        if !selected.isEmpty, !Self.deadPresetUrls.contains(selected) {
+        let legacyValidatedPages = "https://wfygefjgd.github.io/live-player/iptv-mirrors/validated-channels.m3u"
+        let legacyRawDefault = "https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u"
+        if !selected.isEmpty,
+           selected != legacyValidatedPages,
+           selected != legacyRawDefault,
+           !Self.deadPresetUrls.contains(selected) {
             activeSourceUrl = selected
             if !sourceUrls.contains(selected) { sourceUrls.append(selected) }
         } else {
@@ -872,7 +877,7 @@ final class PlayerViewModel: ObservableObject {
     private func onSilentAudio() {
         guard !panelVisible else { return }
         // 仅多线路 + 已稳定 + 仍无音轨时才切；HLS 起播慢选轨不误杀
-        guard let ch = currentChannel, ch.sourceCount > 1 else { return }
+        guard currentChannel != nil else { return }
         guard playbackStable, player.isReady else { return }
         guard player.hasActiveAudioTrack == false else { return }
         let now = Date()
@@ -921,6 +926,15 @@ final class PlayerViewModel: ObservableObject {
                 return
             }
         }
+        if autoSwitchState == .switching {
+            switch reason {
+            case .hardFail, .startupTimeout:
+                break
+            default:
+                return
+            }
+        }
+        autoSwitchState = .switching
         // 不再用 switching 窗口吞掉失败回调（此前 400ms 内失败会卡死）
 
         playbackStable = false
@@ -928,8 +942,7 @@ final class PlayerViewModel: ObservableObject {
         triedLineIndices.insert(currentSourceIndex)
         // 写入共享信誉：失败线 24h 内优先跳过（融合与下次启动共用）
         if let failURL = currentUrl {
-            let hard = (reason == .hardFail || reason == .startupTimeout || reason == .stall
-                        || reason == .healthCritical || reason == .lowSpeed)
+            let hard = (reason == .hardFail || reason == .startupTimeout || reason == .healthCritical)
             reputation.markFailure(url: failURL, channelKey: ch.key, hard: hard)
         }
 
@@ -951,7 +964,6 @@ final class PlayerViewModel: ObservableObject {
                 }
                 currentSourceIndex = nxt
                 triedLineIndices.insert(nxt)
-                autoSwitchState = .idle
                 showIndicator("\(hint) · 线路 \(nxt + 1)/\(ch.sourceCount)")
                 player.play(url: u)
                 persistLastChannel()
@@ -1241,7 +1253,7 @@ final class PlayerViewModel: ObservableObject {
         if UserDefaults.standard.object(forKey: "lineTimeoutEnabled") != nil {
             lineTimeoutEnabled = UserDefaults.standard.bool(forKey: "lineTimeoutEnabled")
         } else {
-            lineTimeoutEnabled = false
+            lineTimeoutEnabled = true
         }
         player.lineTimeoutEnabled = lineTimeoutEnabled
     }

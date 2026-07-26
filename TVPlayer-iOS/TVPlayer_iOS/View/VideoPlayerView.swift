@@ -229,6 +229,12 @@ final class WindowVideoSurface {
             playerLayer.player = boundPlayer
         }
         CATransaction.commit()
+        if playerLayer.isReadyForDisplay, let player = playerLayer.player {
+            NotificationCenter.default.post(
+                name: Notification.Name("tvPlayerVideoRendered"),
+                object: player
+            )
+        }
 
         // 侧栏在独立 window，不依赖 ensureOnTop 抢主 window
 
