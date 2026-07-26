@@ -72,12 +72,12 @@ final class NetworkMonitor {
                 self.connectionType = satisfied ? .unknown : .unknown
             }
 
-            // 网络恢复通知
+            // 网络恢复通知（无 → 有）
             if satisfied && !wasSatisfied {
                 self.onSatisfied?()
             }
 
-            // 网络类型变化通知
+            // 网络类型变化通知（含首次判定到 wifi/蜂窝，便于授权后重载画面）
             if self.connectionType != previousType {
                 self.onConnectionTypeChanged?(self.connectionType)
             }
