@@ -51,10 +51,39 @@ struct SourceManagementSheet: View {
                                 Image(systemName: "timer")
                                     .foregroundColor(.orange)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text("线路超时")
+                                    Text("自动跳过失败线路")
                                     Text("关闭后不会因超时、卡顿自动换线")
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+
+                        Toggle(isOn: Binding(
+                            get: { vm.autoBlacklistEnabled },
+                            set: { vm.setAutoBlacklistEnabled($0) }
+                        )) {
+                            HStack {
+                                Image(systemName: "xmark.shield")
+                                    .foregroundColor(.red)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("失败线路黑名单")
+                                    Text("失败线路自动加入黑名单，换源后自动清空")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+
+                        if vm.autoBlacklistEnabled {
+                            Button {
+                                vm.clearBlacklist()
+                            } label: {
+                                HStack {
+                                    Image(systemName: "trash")
+                                        .foregroundColor(.blue)
+                                    Text("清空黑名单")
+                                        .foregroundColor(.primary)
                                 }
                             }
                         }
@@ -64,8 +93,11 @@ struct SourceManagementSheet: View {
 
                     Section {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("TVPlayer 1.8 正式版")
+                            Text("TVPlayer 1.9 正式版")
                                 .font(.headline)
+                            Text("• 新增自动跳过失败线路开关，可控制换线行为")
+                            Text("• 新增失败线路黑名单功能，避免重复尝试失败线路")
+                            Text("• 换源时自动清空黑名单，支持手动清空操作")
                             Text("• 源可以自定义，支持添加和切换 M3U / M3U8 地址")
                             Text("• 支持预置源与自定义源切换，频道列表可自动刷新")
                             Text("• 支持多线路自动换线，遇到超时、卡顿、无声会自动切线")

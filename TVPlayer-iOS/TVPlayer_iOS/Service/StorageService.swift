@@ -11,10 +11,13 @@ final class StorageService {
     private let kSelectedSource = "selected_source_url"
     private let kCustomSource = "custom_source_url"
     private let kHiddenLines = "hidden_lines"
+    private let kBlacklistedLines = "blacklisted_lines"  // 失败线路黑名单
     private let kFavorites = "favorites"
     private let kLastChannelKey = "last_channel_key"
     private let kLastSourceIndex = "last_source_index"
     private let kDataVersion = "data_version"
+    private let kLineTimeoutEnabled = "line_timeout_enabled"
+    private let kAutoBlacklistEnabled = "auto_blacklist_enabled"
 
     private let currentDataVersion = 1
 
@@ -176,6 +179,73 @@ final class StorageService {
         }
     }
 
+    // MARK: - 黑名单管理
+
+    func loadBlacklistedLines() -> Set<String> {
+        queue.sync {
+            Set(defaults.stringArray(forKey: kBlacklistedLines) ?? [])
+        }
+    }
+
+    /// 同步添加到黑名单
+    func blacklistLine(_ url: String) {
+        let clean = url.trimmingCharacters(in: .whitespaces)
+        guard !clean.isEmpty else { return }
+        queue.sync(flags: .barrier) {
+            var lines = Set(defaults.stringArray(forKey: kBlacklistedLines) ?? [])
+            lines.insert(clean)
+            defaults.set(Array(lines), forKey: kBlacklistedLines)
+        }
+    }
+
+    func isLineBlacklisted(_ url: String) -> Bool {
+        queue.sync {
+            let lines = Set(defaults.stringArray(forKey: kBlacklistedLines) ?? [])
+            return lines.contains(url.trimmingCharacters(in: .whitespaces))
+        }
+    }
+
+    /// 清空黑名单（换源时调用）
+    func clearBlacklist() {
+        queue.async(flags: .barrier) { [weak self] in
+            guard let self else { return }
+            self.defaults.removeObject(forKey: self.kBlacklistedLines)
+        }
+    }
+
+    // MARK: - 设置项
+
+    func saveLineTimeoutEnabled(_ enabled: Bool) {
+        queue.async(flags: .barrier) { [weak self] in
+            guard let self else { return }
+            self.defaults.set(enabled, forKey: self.kLineTimeoutEnabled)
+        }
+    }
+
+    func loadLineTimeoutEnabled() -> Bool {
+        queue.sync {
+            // 默认开启
+            if defaults.object(forKey: kLineTimeoutEnabled) == nil {
+                return true
+            }
+            return defaults.bool(forKey: kLineTimeoutEnabled)
+        }
+    }
+
+    func saveAutoBlacklistEnabled(_ enabled: Bool) {
+        queue.async(flags: .barrier) { [weak self] in
+            guard let self else { return }
+            self.defaults.set(enabled, forKey: self.kAutoBlacklistEnabled)
+        }
+    }
+
+    func loadAutoBlacklistEnabled() -> Bool {
+        queue.sync {
+            // 默认关闭
+            defaults.bool(forKey: kAutoBlacklistEnabled)
+        }
+    }
+
     // MARK: - 收藏
 
     func loadFavorites() -> Set<String> {
@@ -234,8 +304,9 @@ final class StorageService {
             guard let self else { return }
             for key in [self.kChannels, self.kChannelsMeta, self.kSourceUrls,
                         self.kSelectedSource, self.kCustomSource, self.kHiddenLines,
-                        self.kFavorites, self.kLastChannelKey, self.kLastSourceIndex,
-                        self.kDataVersion] {
+                        self.kBlacklistedLines, self.kFavorites, self.kLastChannelKey,
+                        self.kLastSourceIndex, self.kDataVersion, self.kLineTimeoutEnabled,
+                        self.kAutoBlacklistEnabled] {
                 self.defaults.removeObject(forKey: key)
             }
         }

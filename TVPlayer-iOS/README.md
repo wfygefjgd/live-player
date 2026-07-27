@@ -1,12 +1,18 @@
-# TVPlayer iOS 1.8 正式版
+# TVPlayer iOS 1.9 正式版
 
 自签侧载版本的 **TVPlayer 正式版** 直播播放器。
 
 ## 版本
 
-- **Marketing Version:** 1.8  
-- **Build:** 180  
+- **Marketing Version:** 1.9  
+- **Build:** 190  
 - **显示名:** TVPlayer 正式版  
+
+## 新增功能 (v1.9)
+
+- ✨ **自动跳过失败线路开关** - 可控制是否因超时/卡顿自动换线
+- ✨ **失败线路黑名单功能** - 失败线路自动加入黑名单，避免重复尝试
+- ✨ **智能黑名单管理** - 换源时自动清空黑名单，支持手动清空
 
 ## 功能
 
@@ -15,12 +21,13 @@
 - 多线路自动切换
 - 收藏 / 隐藏线路
 - 后台音频、数字键与手势操作
+- 失败线路黑名单管理
 
 ## 发布
 
 ```bash
-git tag v1.8-ios
-git push origin v1.8-ios
+git tag v1.9-ios
+git push origin v1.9-ios
 ```
 
 GitHub Actions 会构建 IPA 并创建 Release。

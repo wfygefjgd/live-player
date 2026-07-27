@@ -53,8 +53,10 @@ final class PlayerViewModel: ObservableObject {
     @Published var bootstrapMessage = "正在连接网络..."
     @Published var playerLayoutEpoch: Int = 0
 
-    /// 线路超时自动换线（默认关，便于先测镜像源）
+    /// 线路超时自动换线（默认开）
     @Published var lineTimeoutEnabled: Bool = true
+    /// 失败线路自动加入黑名单（默认关）
+    @Published var autoBlacklistEnabled: Bool = false
     private let fusionEngine = SmartFusionEngine.shared
 
     let player = PlayerEngine()
@@ -91,6 +93,7 @@ final class PlayerViewModel: ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = true
 
         restoreLineTimeoutEnabled()
+        restoreAutoBlacklistEnabled()
 
         player.onReady = { [weak self] in self?.onPlayerReady() }
         player.onError = { [weak self] in self?.onPlayerError() }
@@ -324,6 +327,8 @@ final class PlayerViewModel: ObservableObject {
         activeSourceUrl = clean
         if !sourceUrls.contains(clean) { sourceUrls.append(clean) }
         persistSources()
+        // 换源时清空黑名单
+        storage.clearBlacklist()
         reloadActiveSource()
     }
 
@@ -639,7 +644,10 @@ final class PlayerViewModel: ObservableObject {
         input.compactMap { src in
             var filtered = Channel(name: src.name, group: src.group, key: src.key)
             for url in src.urls {
+                // 跳过手动隐藏的线路
                 if storage.isLineHidden(url) { continue }
+                // 跳过黑名单中的线路
+                if autoBlacklistEnabled && storage.isLineBlacklisted(url) { continue }
                 filtered.addUrl(url)
             }
             return filtered.sourceCount > 0 ? filtered : nil
@@ -894,6 +902,13 @@ final class PlayerViewModel: ObservableObject {
         // 不再用 switching 窗口吞掉失败回调（此前 400ms 内失败会卡死）
 
         playbackStable = false
+
+        // 将当前失败的线路加入黑名单
+        if autoBlacklistEnabled, currentSourceIndex >= 0, currentSourceIndex < ch.urls.count {
+            let failedUrl = ch.urls[currentSourceIndex]
+            storage.blacklistLine(failedUrl)
+        }
+
         triedLineIndices.insert(currentSourceIndex)
 
         // 多线路：按列表顺序找下一条未试过的合法线
@@ -1094,20 +1109,35 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    /// 线路超时开关（默认关）
+    /// 线路超时开关
     func setLineTimeoutEnabled(_ enabled: Bool) {
         lineTimeoutEnabled = enabled
         player.lineTimeoutEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "lineTimeoutEnabled")
-        showIndicator(enabled ? "已开启线路超时" : "已关闭线路超时")
+        storage.saveLineTimeoutEnabled(enabled)
+        showIndicator(enabled ? "已开启自动跳过失败线路" : "已关闭自动跳过失败线路")
     }
 
     func restoreLineTimeoutEnabled() {
-        if UserDefaults.standard.object(forKey: "lineTimeoutEnabled") != nil {
-            lineTimeoutEnabled = UserDefaults.standard.bool(forKey: "lineTimeoutEnabled")
-        } else {
-            lineTimeoutEnabled = true
-        }
+        lineTimeoutEnabled = storage.loadLineTimeoutEnabled()
         player.lineTimeoutEnabled = lineTimeoutEnabled
+    }
+
+    /// 失败线路黑名单开关
+    func setAutoBlacklistEnabled(_ enabled: Bool) {
+        autoBlacklistEnabled = enabled
+        storage.saveAutoBlacklistEnabled(enabled)
+        showIndicator(enabled ? "已开启失败线路黑名单" : "已关闭失败线路黑名单")
+    }
+
+    func restoreAutoBlacklistEnabled() {
+        autoBlacklistEnabled = storage.loadAutoBlacklistEnabled()
+    }
+
+    /// 手动清空黑名单
+    func clearBlacklist() {
+        storage.clearBlacklist()
+        // 重新应用规则，黑名单清空后线路会恢复
+        channels = applyRules(rawChannels)
+        showIndicator("黑名单已清空")
     }
 }
