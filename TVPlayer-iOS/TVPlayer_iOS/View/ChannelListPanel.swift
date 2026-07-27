@@ -9,7 +9,11 @@ struct ChannelListPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // 顶部：设置 + 搜索（更紧凑）
+            // 顶部空白区域：为灵动岛留出空间
+            Color.clear
+                .frame(height: 50)
+
+            // 顶部：设置 + 搜索
             HStack(spacing: 8) {
                 Button {
                     onShowSettings?()
@@ -48,8 +52,8 @@ struct ChannelListPanel: View {
                 .background(Color(white: 0.16))
                 .cornerRadius(6)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
             .background(Color(white: 0.12))
 
             ScrollViewReader { proxy in
