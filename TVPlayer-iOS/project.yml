@@ -10,7 +10,7 @@ settings:
     DEVELOPMENT_TEAM: ""
     SWIFT_VERSION: "5.9"
     MARKETING_VERSION: "1.8"
-    CURRENT_PROJECT_VERSION: "108"
+    CURRENT_PROJECT_VERSION: "180"
     ENABLE_USER_SCRIPT_SANDBOXING: "NO"
 
 targets:
@@ -24,7 +24,7 @@ targets:
     info:
       path: TVPlayer_iOS/Info.plist
       properties:
-        CFBundleDisplayName: TVPlayer
+        CFBundleDisplayName: TVPlayer 正式版
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UIRequiredDeviceCapabilities: ["arm64"]

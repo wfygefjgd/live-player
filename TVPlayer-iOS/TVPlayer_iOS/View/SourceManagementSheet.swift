@@ -64,7 +64,7 @@ struct SourceManagementSheet: View {
 
                     Section {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("TVPlayer 1.8 稳定版")
+                            Text("TVPlayer 1.8 正式版")
                                 .font(.headline)
                             Text("• 源可以自定义，支持添加和切换 M3U / M3U8 地址")
                             Text("• 支持预置源与自定义源切换，频道列表可自动刷新")
