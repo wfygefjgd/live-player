@@ -34,6 +34,24 @@ struct ContentView: View {
 
             floatingChrome()
                 .zIndex(5)
+
+            VStack {
+                HStack {
+                    Spacer()
+                    Text("BUILD v1.5.62 TEST")
+                        .font(.system(size: 18, weight: .heavy))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Color.red.opacity(0.92))
+                        .cornerRadius(10)
+                        .padding(.top, 18)
+                        .padding(.trailing, 18)
+                }
+                Spacer()
+            }
+            .ignoresSafeArea()
+            .zIndex(20)
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .ignoresSafeArea()
