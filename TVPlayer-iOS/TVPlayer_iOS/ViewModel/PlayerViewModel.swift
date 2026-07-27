@@ -12,7 +12,6 @@ private let INDICATOR_MS: UInt64 = 1_200_000_000
 private let AUTO_SWITCH_COOLDOWN_NS: UInt64 = 600_000_000
 private let SILENT_AUDIO_GRACE_NS: UInt64 = 5_000_000_000  // 5s 静音切换冷却
 private let AUTO_RECOVER_MAX_CHANNELS = 30                 // 连续自动切台上限
-private let PREFERRED_LINE_STABLE_NS: UInt64 = 5_000_000_000 // 稳定播放 5s 后记住好线路
 
 // 已筛选列表（JSON，303 台）专用地址，勿当 m3u 源塞进 PRESET
 let VALIDATED_CHANNELS_MIRROR =
@@ -80,8 +79,6 @@ final class PlayerViewModel: ObservableObject {
     private var autoRecoverChannelHops = 0
     private var playbackStable = false
     private var recoverGeneration = 0
-    private var preferStableTask: Task<Void, Never>?
-    private let reputation = LineReputationStore.shared
     private var loadGeneration = 0
     /// 用户主动暂停：回前台/中断结束不得强制 resume
     private(set) var userPaused = false
@@ -110,7 +107,6 @@ final class PlayerViewModel: ObservableObject {
         }
 
         restoreSources()
-        reputation.prune()
 
         // ① 缓存 / Bundle 预筛列表立刻出画
         // ② 后台拉 GitHub 镜像预筛列表（主路径）
@@ -138,9 +134,8 @@ final class PlayerViewModel: ObservableObject {
     private func applyQuickStartChannels() -> Bool {
         let cached = storage.loadChannels()
         if !cached.isEmpty {
-            let applied = reputation.applyToChannels(cached)
-            rawChannels = applied
-            channels = applyRules(applied)
+            rawChannels = cached
+            channels = applyRules(cached)
             if !channels.isEmpty {
                 restoreLastChannelPosition()
                 isBootstrapping = false
@@ -149,9 +144,8 @@ final class PlayerViewModel: ObservableObject {
             }
         }
         if let bundleChannels = loadChannelsFromBundle(), !bundleChannels.isEmpty {
-            let applied = reputation.applyToChannels(bundleChannels)
-            rawChannels = applied
-            channels = applyRules(applied)
+            rawChannels = bundleChannels
+            channels = applyRules(bundleChannels)
             if !channels.isEmpty {
                 restoreLastChannelPosition()
                 isBootstrapping = false
@@ -403,9 +397,7 @@ final class PlayerViewModel: ObservableObject {
             return
         }
         let prevKey = currentChannel?.key
-        // 融合结果再套信誉记忆：坏线后置、好线前置（与自动换线不冲突）
-        let reputationApplied = reputation.applyToChannels(loaded)
-        rawChannels = reputationApplied.map { Channel(name: $0.name, group: $0.group, key: $0.key, urls: $0.urls) }
+        rawChannels = loaded.map { Channel(name: $0.name, group: $0.group, key: $0.key, urls: $0.urls) }
         channels = applyRules(rawChannels)
         guard !channels.isEmpty else {
             if !silent { showIndicator("加载失败") }
@@ -520,10 +512,9 @@ final class PlayerViewModel: ObservableObject {
         }
 
         let prevKey = currentChannel?.key
-        let applied = reputation.applyToChannels(newChannels)
-        rawChannels = applied
-        channels = applyRules(applied)
-        storage.saveChannels(applied)
+        rawChannels = newChannels
+        channels = applyRules(newChannels)
+        storage.saveChannels(newChannels)
         isBootstrapping = false
         if let prevKey, let idx = channels.firstIndex(where: { $0.key == prevKey }) {
             currentIndex = idx
@@ -751,19 +742,9 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func playCurrent(showOSD: Bool = true, resetTried: Bool = false) {
-        guard var ch = currentChannel else {
+        guard let ch = currentChannel else {
             showIndicator("当前频道地址无效")
             return
-        }
-        // 用共享信誉重排本台线路（融合与换线同一记忆）
-        let ordered = reputation.orderedURLs(ch.urls, channelKey: ch.key)
-        if ordered != ch.urls {
-            var nc = Channel(name: ch.name, group: ch.group, key: ch.key)
-            nc.addUrls(ordered)
-            if let idx = channels.firstIndex(where: { $0.key == ch.key }) {
-                channels[idx] = nc
-            }
-            ch = nc
         }
 
         if resetTried {
@@ -771,16 +752,7 @@ final class PlayerViewModel: ObservableObject {
             cooldownTask?.cancel()
             autoSwitchState = .idle
             playbackStable = false
-            preferStableTask?.cancel()
-            // 偏好 URL 或第一条未拉黑线
-            if let pref = reputation.preferredURL(forChannelKey: ch.key),
-               let i = ch.urls.firstIndex(of: pref) {
-                currentSourceIndex = i
-            } else if let i = ch.urls.firstIndex(where: { !reputation.isBlacklisted($0) }) {
-                currentSourceIndex = i
-            } else {
-                currentSourceIndex = 0
-            }
+            currentSourceIndex = 0
         }
 
         var guardLoops = 0
@@ -789,13 +761,7 @@ final class PlayerViewModel: ObservableObject {
             if currentSourceIndex < 0 || currentSourceIndex >= ch.urls.count {
                 currentSourceIndex = 0
             }
-            // 自动路径跳过黑名单（手动点台 resetTried 后仍会先试偏好）
             let raw = ch.urls[currentSourceIndex]
-            if reputation.isBlacklisted(raw), triedLineIndices.count < ch.sourceCount - 1 {
-                triedLineIndices.insert(currentSourceIndex)
-                currentSourceIndex = (currentSourceIndex + 1) % max(ch.sourceCount, 1)
-                continue
-            }
             if let u = URL(string: raw), let scheme = u.scheme?.lowercased(),
                scheme == "http" || scheme == "https" || scheme == "rtmp" || scheme == "rtsp" {
                 triedLineIndices.insert(currentSourceIndex)
@@ -825,18 +791,6 @@ final class PlayerViewModel: ObservableObject {
         WindowVideoSurface.shared.rebindPlayer()
         updateNowPlaying()
         UIApplication.shared.isIdleTimerDisabled = true
-        preferStableTask?.cancel()
-        let key = currentChannel?.key
-        let url = currentUrl
-        let gen = recoverGeneration
-        preferStableTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: PREFERRED_LINE_STABLE_NS)
-            guard let self, !Task.isCancelled else { return }
-            guard self.recoverGeneration == gen, self.playbackStable, self.player.isReady else { return }
-            guard let url else { return }
-            guard self.currentUrl == url else { return }
-            self.reputation.markSuccess(url: url, channelKey: key)
-        }
     }
 
     func updateNowPlaying() {
@@ -948,24 +902,13 @@ final class PlayerViewModel: ObservableObject {
         // 不再用 switching 窗口吞掉失败回调（此前 400ms 内失败会卡死）
 
         playbackStable = false
-        preferStableTask?.cancel()
         triedLineIndices.insert(currentSourceIndex)
-        // 写入共享信誉：失败线 24h 内优先跳过（融合与下次启动共用）
-        if let failURL = currentUrl {
-            let hard = (reason == .hardFail || reason == .startupTimeout || reason == .healthCritical)
-            reputation.markFailure(url: failURL, channelKey: ch.key, hard: hard)
-        }
 
-        // 多线路：按信誉顺序找下一条未试过的合法线
+        // 多线路：按列表顺序找下一条未试过的合法线
         if ch.sourceCount > 1 {
-            let candidates = reputation.orderedURLs(ch.urls, channelKey: ch.key)
-            for cand in candidates {
-                guard let nxt = ch.urls.firstIndex(of: cand) else { continue }
+            for nxt in 0..<ch.sourceCount {
                 if triedLineIndices.contains(nxt) { continue }
-                if reputation.isBlacklisted(cand), triedLineIndices.count + 1 < ch.sourceCount {
-                    triedLineIndices.insert(nxt)
-                    continue
-                }
+                let cand = ch.urls[nxt]
                 guard let u = URL(string: cand),
                       let scheme = u.scheme?.lowercased(),
                       scheme == "http" || scheme == "https" || scheme == "rtmp" || scheme == "rtsp" else {
@@ -1063,11 +1006,10 @@ final class PlayerViewModel: ObservableObject {
         autoSwitchState = .idle
         autoRecoverChannelHops = 0
         playbackStable = false
-        preferStableTask?.cancel()
         currentSourceIndex = (currentSourceIndex + direction + ch.sourceCount) % ch.sourceCount
         triedLineIndices = [currentSourceIndex]
         showIndicator("切换线路 \(currentSourceIndex + 1)/\(ch.sourceCount)")
-        // 勿 resetTried：会把手动选的线路索引重置回偏好线
+        // 勿 resetTried：保留手动选的线路索引
         playCurrent(showOSD: true, resetTried: false)
     }
 
@@ -1155,7 +1097,6 @@ final class PlayerViewModel: ObservableObject {
         indTask?.cancel()
         cooldownTask?.cancel()
         retryTask?.cancel()
-        preferStableTask?.cancel()
         DispatchQueue.main.async {
             UIApplication.shared.isIdleTimerDisabled = false
         }

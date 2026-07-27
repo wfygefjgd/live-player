@@ -170,16 +170,15 @@ struct ContentView: View {
     }
 
     private func longPressGesture() -> some Gesture {
-        LongPressGesture(minimumDuration: 0.45)
+        // 识别成功即切换一次；勿与抬手二次命中遮罩冲突（遮罩有短暂忽略）
+        LongPressGesture(minimumDuration: 0.4, maximumDistance: 12)
             .onEnded { _ in
-                if vm.panelVisible {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                        vm.panelVisible = false
-                    }
-                    WindowPanelSurface.shared.hide()
-                } else {
-                    vm.panelVisible = true
+                let open = !vm.panelVisible
+                vm.panelVisible = open
+                if open {
                     WindowPanelSurface.shared.show()
+                } else {
+                    WindowPanelSurface.shared.hide()
                 }
             }
     }
@@ -219,8 +218,12 @@ struct ContentView: View {
 
     private func doubleTapGesture() -> some Gesture {
         TapGesture(count: 2).onEnded {
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                vm.togglePanel()
+            let open = !vm.panelVisible
+            vm.panelVisible = open
+            if open {
+                WindowPanelSurface.shared.show()
+            } else {
+                WindowPanelSurface.shared.hide()
             }
         }
     }

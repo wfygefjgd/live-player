@@ -10,18 +10,21 @@ final class WindowPanelSurface {
     private let maskView = UIView(frame: .zero)
     private var hostingController: UIHostingController<AnyView>?
     private(set) var isVisible = false
-    private var panelWidth: CGFloat = 320
+    private var panelWidth: CGFloat = 280
+    /// 刚打开时忽略遮罩点击，避免长按抬手点到 mask 立刻关掉
+    private var ignoreMaskTapUntil: Date = .distantPast
 
     private init() {
-        maskView.backgroundColor = UIColor.black.withAlphaComponent(0.5)
+        maskView.backgroundColor = UIColor.black.withAlphaComponent(0.45)
         maskView.alpha = 0
         maskView.isUserInteractionEnabled = true
         containerView.backgroundColor = UIColor(white: 0.12, alpha: 0.98)
-        containerView.clipsToBounds = false
+        containerView.clipsToBounds = true
+        containerView.layer.cornerRadius = 0
         containerView.layer.shadowColor = UIColor.black.cgColor
-        containerView.layer.shadowOpacity = 0.35
-        containerView.layer.shadowRadius = 10
-        containerView.layer.shadowOffset = CGSize(width: 3, height: 0)
+        containerView.layer.shadowOpacity = 0.28
+        containerView.layer.shadowRadius = 8
+        containerView.layer.shadowOffset = CGSize(width: 2, height: 0)
         containerView.isUserInteractionEnabled = true
     }
 
@@ -31,23 +34,28 @@ final class WindowPanelSurface {
         } else {
             let hosting = UIHostingController(rootView: panel)
             hosting.view.backgroundColor = .clear
-            hosting.view.frame = containerView.bounds
+            hosting.view.translatesAutoresizingMaskIntoConstraints = true
             hosting.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             hosting.view.isUserInteractionEnabled = true
             containerView.addSubview(hosting.view)
             hostingController = hosting
         }
+        // 预先挂到 window，保证首次 show 时 SwiftUI 已有正确 bounds
+        _ = ensureOverlayWindow()
+        layoutPanelViews(animated: false, open: false)
 
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(maskTapped))
+        tapGesture.cancelsTouchesInView = false
         maskView.gestureRecognizers?.forEach { maskView.removeGestureRecognizer($0) }
         maskView.addGestureRecognizer(tapGesture)
     }
 
     @objc private func maskTapped() {
+        guard Date() >= ignoreMaskTapUntil else { return }
         NotificationCenter.default.post(name: .panelShouldClose, object: nil)
     }
 
-    /// 打开设置菜单前：先把侧栏降到主 window 下，避免盖住 confirmationDialog
+    /// 打开设置菜单前：先把侧栏藏起，避免盖住 confirmationDialog
     func prepareForModalPresentation() {
         hide(animated: false)
     }
@@ -67,20 +75,33 @@ final class WindowPanelSurface {
         }
 
         guard let win = overlayWindow else { return }
-        let bounds = win.bounds
-        panelWidth = min(320, max(260, bounds.width * 0.42))
+        // 抬手误触保护：约 0.45s 内点遮罩不关
+        ignoreMaskTapUntil = Date().addingTimeInterval(0.45)
 
-        containerView.frame = CGRect(x: -panelWidth, y: 0, width: panelWidth, height: bounds.height)
-        maskView.frame = bounds
-        maskView.alpha = 0
-        hostingController?.view.frame = containerView.bounds
-        // 不 makeKey：保持主 window 为 key，Home Indicator 策略不丢
+        layoutPanelViews(animated: false, open: false)
+        hostingController?.view.setNeedsLayout()
+        hostingController?.view.layoutIfNeeded()
         win.isHidden = false
+        win.layoutIfNeeded()
 
-        UIView.animate(withDuration: 0.32, delay: 0, usingSpringWithDamping: 0.88, initialSpringVelocity: 0.2, options: [.curveEaseOut, .allowUserInteraction]) {
-            self.containerView.frame = CGRect(x: 0, y: 0, width: self.panelWidth, height: bounds.height)
-            self.maskView.alpha = 1
+        // 再强制一帧正确尺寸（修复首次弹出 UI 未自适应）
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isVisible else { return }
+            self.layoutPanelViews(animated: false, open: false)
+            self.hostingController?.view.setNeedsLayout()
+            self.hostingController?.view.layoutIfNeeded()
+            UIView.animate(
+                withDuration: 0.28,
+                delay: 0,
+                usingSpringWithDamping: 0.9,
+                initialSpringVelocity: 0.15,
+                options: [.curveEaseOut, .allowUserInteraction, .beginFromCurrentState]
+            ) {
+                self.layoutPanelViews(animated: false, open: true)
+                self.maskView.alpha = 1
+            }
         }
+
         if let app = UIApplication.shared.delegate as? AppDelegate {
             app.window?.makeKey()
         }
@@ -94,18 +115,22 @@ final class WindowPanelSurface {
         isVisible = false
 
         let finish: () -> Void = {
-            self.maskView.removeFromSuperview()
-            self.containerView.removeFromSuperview()
+            // 不移除 subview，只隐藏 window，避免下次首次布局错乱
             self.overlayWindow?.isHidden = true
+            self.maskView.alpha = 0
+            self.layoutPanelViews(animated: false, open: false)
         }
 
-        guard animated, let win = overlayWindow else {
+        guard animated else {
             finish()
             return
         }
-        let bounds = win.bounds
-        UIView.animate(withDuration: 0.28, delay: 0, options: [.curveEaseIn, .allowUserInteraction]) {
-            self.containerView.frame = CGRect(x: -self.panelWidth, y: 0, width: self.panelWidth, height: bounds.height)
+        UIView.animate(
+            withDuration: 0.22,
+            delay: 0,
+            options: [.curveEaseIn, .allowUserInteraction, .beginFromCurrentState]
+        ) {
+            self.layoutPanelViews(animated: false, open: false)
             self.maskView.alpha = 0
         } completion: { _ in
             if !self.isVisible { finish() }
@@ -115,17 +140,28 @@ final class WindowPanelSurface {
     func ensureOnTop() {
         guard isVisible else { return }
         _ = ensureOverlayWindow()
+        layoutPanelViews(animated: false, open: true)
+        maskView.alpha = 1
+        hostingController?.view.setNeedsLayout()
+        hostingController?.view.layoutIfNeeded()
         guard let win = overlayWindow else { return }
-        let bounds = win.bounds
-        panelWidth = min(320, max(260, bounds.width * 0.42))
-        maskView.frame = bounds
-        if containerView.frame.origin.x >= -1 {
-            containerView.frame = CGRect(x: 0, y: 0, width: panelWidth, height: bounds.height)
-        }
-        hostingController?.view.frame = containerView.bounds
         win.bringSubviewToFront(maskView)
         win.bringSubviewToFront(containerView)
         win.isHidden = false
+    }
+
+    private func layoutPanelViews(animated: Bool, open: Bool) {
+        guard let win = overlayWindow else { return }
+        let sceneBounds = win.windowScene?.coordinateSpace.bounds ?? win.bounds
+        let bounds = (win.bounds.width > 1 ? win.bounds : sceneBounds)
+        if win.bounds.size != bounds.size {
+            win.frame = CGRect(origin: .zero, size: bounds.size)
+        }
+        panelWidth = min(280, max(240, bounds.width * 0.38))
+        maskView.frame = CGRect(origin: .zero, size: bounds.size)
+        let x: CGFloat = open ? 0 : -panelWidth
+        containerView.frame = CGRect(x: x, y: 0, width: panelWidth, height: bounds.height)
+        hostingController?.view.frame = containerView.bounds
     }
 
     @discardableResult
@@ -138,11 +174,9 @@ final class WindowPanelSurface {
 
         if overlayWindow == nil || overlayWindow?.windowScene !== scene {
             let win = UIWindow(windowScene: scene)
-            // 高于主界面，低于系统 alert；永不 makeKey，避免抢走 Home Indicator 策略
             win.windowLevel = .alert - 1
             win.backgroundColor = .clear
             win.isHidden = true
-            // 空 root：同样声明隐藏小白条，防止系统问到这个 window 时显示白条
             let root = PanelRootViewController()
             win.rootViewController = root
             overlayWindow = win
@@ -150,28 +184,23 @@ final class WindowPanelSurface {
 
         guard let win = overlayWindow else { return false }
         let bounds = win.bounds.size.width > 1 ? win.bounds : scene.coordinateSpace.bounds
-        win.frame = bounds
+        win.frame = CGRect(origin: .zero, size: bounds.size)
 
         let hostView = win.rootViewController?.view ?? win
         if maskView.superview !== hostView {
             maskView.removeFromSuperview()
             hostView.addSubview(maskView)
         }
-        maskView.frame = hostView.bounds
-
         if containerView.superview !== hostView {
             containerView.removeFromSuperview()
             hostView.addSubview(containerView)
         }
         hostView.bringSubviewToFront(maskView)
         hostView.bringSubviewToFront(containerView)
-        // 明确不抢 keyWindow
-        win.isHidden = win.isHidden
         return true
     }
 }
 
-/// 侧栏 window 的 root：不抢 key；声明与主界面一致的系统栏策略
 private final class PanelRootViewController: UIViewController {
     override var prefersStatusBarHidden: Bool { true }
     override var prefersHomeIndicatorAutoHidden: Bool { true }

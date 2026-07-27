@@ -34,22 +34,6 @@ final class LineSpeedTester {
 
     /// 弱探测：HEAD 仅作参考；最终「可播」以 AVPlayer 起播成败为准
     func testLine(_ url: String) async -> LineQuality {
-        let rep = LineReputationStore.shared
-        // 真实播放黑名单 → 弱探测直接失败
-        if rep.isBlacklisted(url) {
-            return LineQuality(url: url, responseTime: Int.max, isAvailable: false, lastChecked: Date())
-        }
-        // 历史起播成功较多 → 跳过 HEAD
-        let score = rep.score(for: url)
-        if score < 100_000 {
-            if let cached = cache[url], Date().timeIntervalSince(cached.lastChecked) < 600 {
-                return cached
-            }
-            let q = LineQuality(url: url, responseTime: max(50, score / 100), isAvailable: true, lastChecked: Date())
-            cache[url] = q
-            return q
-        }
-
         if let cached = cache[url],
            Date().timeIntervalSince(cached.lastChecked) < 300 {
             return cached
