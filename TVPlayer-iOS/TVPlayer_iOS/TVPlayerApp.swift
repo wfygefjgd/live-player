@@ -16,7 +16,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     ) -> Bool {
         setupAudioSession()
         setupRemoteCommands()
-        installMainWindow(application: application)
+        if let scene = application.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
+            installMainWindow(application: application, scene: scene)
+        }
         return true
     }
 
@@ -41,8 +43,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         if let window, rootContainer != nil {
             if let scene {
                 window.windowScene = scene
+                window.frame = scene.coordinateSpace.bounds
             }
             window.makeKeyAndVisible()
+            requestLandscape(for: scene, root: rootContainer)
             rootContainer?.refreshSystemChrome()
             return
         }
@@ -71,6 +75,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         let window: UIWindow
         if let resolvedScene {
             window = UIWindow(windowScene: resolvedScene)
+            window.frame = resolvedScene.coordinateSpace.bounds
         } else {
             window = UIWindow(frame: UIScreen.main.bounds)
         }
@@ -79,9 +84,22 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         window.rootViewController = container
         self.window = window
         window.makeKeyAndVisible()
+        requestLandscape(for: resolvedScene, root: container)
         WindowVideoSurface.shared.setPlayer(viewModel.player.player)
         WindowVideoSurface.shared.rebindPlayer()
         container.refreshSystemChrome()
+    }
+
+    private func requestLandscape(for scene: UIWindowScene?, root: UIViewController?) {
+        root?.setNeedsUpdateOfSupportedInterfaceOrientations()
+        UIViewController.attemptRotationToDeviceOrientation()
+        guard let scene else { return }
+        if #available(iOS 16.0, *) {
+            let prefs = UIWindowScene.GeometryPreferences.iOS(interfaceOrientations: .landscape)
+            scene.requestGeometryUpdate(prefs) { error in
+                print("requestGeometryUpdate failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func setupAudioSession() {
@@ -119,6 +137,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {
+        requestLandscape(for: window?.windowScene, root: rootContainer)
         rootContainer?.refreshSystemChrome()
         viewModel?.resumeIfAppropriate()
         viewModel?.onAppBecameActive()
@@ -134,6 +153,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {
+        requestLandscape(for: window?.windowScene, root: rootContainer)
         viewModel?.resumeIfAppropriate()
         viewModel?.onAppBecameActive()
         WindowVideoSurface.shared.rebindPlayer()
@@ -160,8 +180,10 @@ final class SceneDelegate: NSObject, UIWindowSceneDelegate {
             app.installMainWindow(application: UIApplication.shared, scene: windowScene)
         } else if app.window?.windowScene !== windowScene {
             app.window?.windowScene = windowScene
+            app.window?.frame = windowScene.coordinateSpace.bounds
             app.window?.makeKeyAndVisible()
         }
+        app.installMainWindow(application: UIApplication.shared, scene: windowScene)
         (app.window?.rootViewController as? FullScreenRootController)?.refreshSystemChrome()
     }
 
