@@ -3,9 +3,16 @@ import AVKit
 import UIKit
 import MediaPlayer
 
-// 默认 M3U 源：本仓库严格筛选后的 validated-channels（央视/卫视保底）。
+// 官方最新线路（软件与数据分离）：只改 GitHub 上这个文件即可更新 App 频道，无需发版。
 // 拉取时 MirrorResolver 自动展开 jsDelivr / Pages / ghproxy / raw 镜像竞速
 let DEFAULT_SOURCE_URL = "https://cdn.jsdelivr.net/gh/wfygefjgd/live-player@main/iptv-mirrors/validated-channels.m3u"
+/// 与 DEFAULT 同内容；「加载最新」优先走 Pages/raw（更新更快，少受 jsDelivr 缓存影响）
+let LATEST_LINEUP_URLS: [String] = [
+    "https://wfygefjgd.github.io/live-player/iptv-mirrors/validated-channels.m3u",
+    "https://raw.githubusercontent.com/wfygefjgd/live-player/main/iptv-mirrors/validated-channels.m3u",
+    "https://cdn.jsdelivr.net/gh/wfygefjgd/live-player@main/iptv-mirrors/validated-channels.m3u",
+    "https://fastly.jsdelivr.net/gh/wfygefjgd/live-player@main/iptv-mirrors/validated-channels.m3u",
+]
 
 private let CHANNEL_OSD_MS: UInt64 = 2_500_000_000
 private let INDICATOR_MS: UInt64 = 1_200_000_000
@@ -58,6 +65,8 @@ final class PlayerViewModel: ObservableObject {
     @Published var isBootstrapping = false
     @Published var bootstrapMessage = "正在连接网络..."
     @Published var playerLayoutEpoch: Int = 0
+    /// 正在从 GitHub 拉取官方最新线路
+    @Published var isRefreshingLatest = false
 
     /// 线路超时自动换线（默认开）
     @Published var lineTimeoutEnabled: Bool = true
@@ -255,6 +264,61 @@ final class PlayerViewModel: ObservableObject {
         indicatorText = ""
         loadChannels(force: true, silent: false, preferActiveOnly: true)
         scheduleRetryLoads()
+    }
+
+    /// 从 GitHub 官方源加载最新线路（忽略本地缓存；数据更新与 App 发版分离）
+    func refreshLatestLineup() {
+        guard !isRefreshingLatest else { return }
+        isRefreshingLatest = true
+        showIndicator("正在加载最新线路...")
+        // 固定回到官方源，避免停在过期自定义源上
+        activeSourceUrl = DEFAULT_SOURCE_URL
+        if !sourceUrls.contains(DEFAULT_SOURCE_URL) {
+            sourceUrls.insert(DEFAULT_SOURCE_URL, at: 0)
+        }
+        persistSources()
+        storage.clearBlacklist()
+        NetworkService.shared.clearCache()
+        URLCache.shared.removeAllCachedResponses()
+
+        loadGeneration += 1
+        let gen = loadGeneration
+        fusionEngine.invalidateSession()
+        fusionEngine.onProgress = { [weak self] message in
+            guard let self, self.loadGeneration == gen else { return }
+            self.bootstrapMessage = message
+            self.indicatorText = message
+        }
+
+        // Pages/raw 优先 + 防缓存参数；再竞速 jsDelivr
+        let bust = "t=\(Int(Date().timeIntervalSince1970))"
+        var urls: [String] = []
+        for base in LATEST_LINEUP_URLS {
+            if base.contains("jsdelivr.net") {
+                urls.append(base)
+            } else if base.contains("?") {
+                urls.append("\(base)&\(bust)")
+            } else {
+                urls.append("\(base)?\(bust)")
+            }
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            let (loaded, errMsg) = await self.fusionEngine.loadChannels(sourceUrls: urls)
+            await MainActor.run { [weak self] in
+                guard let self, self.loadGeneration == gen else { return }
+                self.isRefreshingLatest = false
+                if loaded.isEmpty {
+                    self.showIndicator(self.chineseLoadError(errMsg))
+                    return
+                }
+                // 最新线路：允许打断当前列表，整表替换
+                self.onChannelsLoaded(loaded, errorMessage: nil, silent: false)
+                let lines = loaded.reduce(0) { $0 + $1.sourceCount }
+                self.showIndicator("最新线路 · \(loaded.count) 台 / \(lines) 线")
+            }
+        }
     }
 
     private func bumpPlayerLayout() {
