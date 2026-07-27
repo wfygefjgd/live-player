@@ -38,6 +38,7 @@ targets:
         UIViewControllerBasedStatusBarAppearance: true
         UIPreferredHomeIndicatorAutoHidden: true
         UIRequiresFullScreen: true
+        UILaunchStoryboardName: LaunchScreen
         UIApplicationSupportsIndirectInputEvents: true
         NSLocalNetworkUsageDescription: "用于加载直播源与频道列表"
         NSAppTransportSecurity:

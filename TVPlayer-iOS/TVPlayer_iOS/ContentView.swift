@@ -10,7 +10,6 @@ struct ContentView: View {
 
     @State private var numberInput = ""
     @State private var numberInputTask: Task<Void, Never>?
-    @State private var debugInfo = ""
 
     var body: some View {
         ZStack {
@@ -35,31 +34,6 @@ struct ContentView: View {
 
             floatingChrome()
                 .zIndex(5)
-
-            VStack {
-                HStack { Spacer() }
-                    .frame(height: 0)
-                Text("BUILD v1.5.63 DEBUG")
-                    .font(.system(size: 18, weight: .heavy))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(Color.red.opacity(0.92))
-                    .cornerRadius(10)
-                    .padding(.top, 18)
-                Text(debugInfo)
-                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                    .foregroundColor(.white)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.black.opacity(0.72))
-                    .cornerRadius(10)
-                    .padding(.top, 8)
-                Spacer()
-            }
-            .ignoresSafeArea()
-            .zIndex(20)
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .ignoresSafeArea()
@@ -71,7 +45,6 @@ struct ContentView: View {
             vm.startup()
             WindowVideoSurface.shared.setPlayer(vm.player.player)
             WindowVideoSurface.shared.rebindPlayer()
-            debugInfo = WindowVideoSurface.shared.debugText
             refreshImmersiveChrome()
             WindowPanelSurface.shared.setPanel(
                 AnyView(
@@ -108,11 +81,6 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .tvPlayerInterruptionEnded)) { _ in
             vm.noteInterruptionEnded(shouldResume: true)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: WindowVideoSurface.debugDidChange)) { note in
-            if let text = note.object as? String {
-                debugInfo = text
-            }
         }
         .sheet(isPresented: $vm.showSourceSheet) {
             SourceManagementSheet().environmentObject(vm)
