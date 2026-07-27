@@ -77,7 +77,24 @@ final class WindowVideoSurface {
 
     private init() {}
 
-    /// 安装到 root 容器底层，约束钉四边（不用 safeAreaLayoutGuide）
+    private func layoutSurface(in container: UIView) {
+        guard let surface else { return }
+        let target = ScreenGeometry.physicalLandscapeBounds(for: container.window?.windowScene)
+        let size: CGSize
+        if target.width > 1, target.height > 1 {
+            size = target.size
+        } else {
+            size = container.bounds.size
+        }
+        surface.frame = CGRect(
+            x: (container.bounds.width - size.width) / 2,
+            y: (container.bounds.height - size.height) / 2,
+            width: size.width,
+            height: size.height
+        )
+    }
+
+    /// 安装到 root 容器底层，直接按物理横屏尺寸铺开，避免被上层布局压成中间小框
     func install(in container: UIView) {
         self.container = container
         let surface: PlayerSurfaceView
@@ -90,17 +107,14 @@ final class WindowVideoSurface {
 
         if surface.superview !== container {
             surface.removeFromSuperview()
-            surface.translatesAutoresizingMaskIntoConstraints = false
+            surface.translatesAutoresizingMaskIntoConstraints = true
+            surface.autoresizingMask = []
             container.insertSubview(surface, at: 0)
-            NSLayoutConstraint.activate([
-                surface.topAnchor.constraint(equalTo: container.topAnchor),
-                surface.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-                surface.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                surface.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            ])
         } else {
             container.sendSubviewToBack(surface)
         }
+
+        layoutSurface(in: container)
 
         if let p = boundPlayer {
             surface.setPlayer(p)
@@ -121,6 +135,9 @@ final class WindowVideoSurface {
         if let container, surface?.superview !== container {
             install(in: container)
         }
+        if let container {
+            layoutSurface(in: container)
+        }
         if let p = boundPlayer {
             surface?.setPlayer(p)
         } else {
@@ -136,6 +153,11 @@ final class WindowVideoSurface {
     func hardRemount(reason: String = "") { rebindPlayer() }
     func install(reason: String = "") {
         if let container { install(in: container) }
+    }
+    func refreshLayout() {
+        if let container {
+            layoutSurface(in: container)
+        }
     }
 }
 
@@ -220,6 +242,7 @@ final class FullScreenRootController: UIViewController {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        WindowVideoSurface.shared.refreshLayout()
         if let surface = WindowVideoSurface.shared.surface {
             view.sendSubviewToBack(surface)
         }
