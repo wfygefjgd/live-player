@@ -63,6 +63,13 @@ final class PlayerSurfaceView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         playerLayer.videoGravity = .resizeAspect
+        WindowVideoSurface.shared.publishDebugSnapshot()
+    }
+
+    func debugSnapshot() -> String {
+        let b = bounds.integral
+        let vr = playerLayer.videoRect.integral
+        return "surface \(Int(b.width))x\(Int(b.height)) videoRect \(Int(vr.width))x\(Int(vr.height)) @(\(Int(vr.minX)),\(Int(vr.minY)))"
     }
 }
 
@@ -70,10 +77,12 @@ final class PlayerSurfaceView: UIView {
 
 final class WindowVideoSurface {
     static let shared = WindowVideoSurface()
+    static let debugDidChange = Notification.Name("WindowVideoSurface.debugDidChange")
 
     private(set) var surface: PlayerSurfaceView?
     private weak var container: UIView?
     private var boundPlayer: AVPlayer?
+    private(set) var debugText: String = ""
 
     private init() {}
 
@@ -92,6 +101,7 @@ final class WindowVideoSurface {
             width: size.width,
             height: size.height
         )
+        publishDebugSnapshot()
     }
 
     /// 安装到 root 容器底层，直接按物理横屏尺寸铺开，避免被上层布局压成中间小框
@@ -158,6 +168,20 @@ final class WindowVideoSurface {
         if let container {
             layoutSurface(in: container)
         }
+    }
+
+    func publishDebugSnapshot() {
+        let containerText: String
+        if let container {
+            let cb = container.bounds.integral
+            let wb = container.window?.bounds.integral ?? .zero
+            containerText = "window \(Int(wb.width))x\(Int(wb.height)) root \(Int(cb.width))x\(Int(cb.height))"
+        } else {
+            containerText = "window ?x? root ?x?"
+        }
+        let surfaceText = surface?.debugSnapshot() ?? "surface nil"
+        debugText = "\(containerText)\n\(surfaceText)"
+        NotificationCenter.default.post(name: Self.debugDidChange, object: debugText)
     }
 }
 
