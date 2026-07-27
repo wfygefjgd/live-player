@@ -25,14 +25,14 @@ def run_script(script_name, description):
         )
         return result.returncode == 0
     except subprocess.CalledProcessError as e:
-        print(f"\n❌ 脚本执行失败: {e}")
+        print(f"\n[错误] 脚本执行失败: {e}")
         return False
     except Exception as e:
-        print(f"\n❌ 发生错误: {e}")
+        print(f"\n[错误] 发生错误: {e}")
         return False
 
 def main():
-    print("🚀 TVPlayer 频道筛选工具")
+    print("[启动] TVPlayer 频道筛选工具")
     print("=" * 70)
     print("流程:")
     print("  1️⃣  下载并合并所有预置源")
@@ -57,21 +57,21 @@ def main():
         print("  - Linux: apt install ffmpeg 或 yum install ffmpeg")
         sys.exit(1)
 
-    print("\n✅ ffprobe 已安装\n")
+    print("\n[成功] ffprobe 已安装\n")
 
     # 步骤 1: 下载并合并源
     if not run_script('download_and_merge_sources.py', '步骤 1: 下载并合并所有预置源'):
-        print("\n❌ 第一步失败，终止流程")
+        print("\n[错误] 第一步失败，终止流程")
         sys.exit(1)
 
     # 步骤 2: 验证和筛选
     if not run_script('validate_and_filter_channels.py', '步骤 2: 验证和筛选频道线路'):
-        print("\n❌ 第二步失败，终止流程")
+        print("\n[错误] 第二步失败，终止流程")
         sys.exit(1)
 
     # 完成
     print("\n" + "=" * 70)
-    print("✨ 所有步骤完成!")
+    print("[完成] 所有步骤完成!")
     print("=" * 70)
 
     output_file = Path(__file__).parent.parent / 'iptv-mirrors' / 'merged-all-sources-filtered.json'

@@ -24,13 +24,13 @@ PRESET_SOURCES = [
 def download_m3u(url, timeout=30):
     """下载 M3U 文件"""
     try:
-        print(f"  📥 下载中...")
+        print(f"  [下载] 请求中...")
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, timeout=timeout, headers=headers)
         response.raise_for_status()
         return response.text
     except Exception as e:
-        print(f"  ❌ 下载失败: {e}")
+        print(f"  [错误] 下载失败: {e}")
         return None
 
 def parse_m3u(content):
@@ -109,18 +109,18 @@ def merge_channels(all_sources_channels):
     return result
 
 def main():
-    print("🚀 开始下载和合并所有预置源...")
+    print("[启动] 开始下载和合并所有预置源...")
     print("=" * 70)
 
     all_channels = []
 
     for i, (source_name, url) in enumerate(PRESET_SOURCES, 1):
         print(f"\n[{i}/{len(PRESET_SOURCES)}] {source_name}")
-        print(f"  🔗 {url}")
+        print(f"  [链接] {url}")
 
         # 跳过重复的镜像源
         if "jsDelivr mirror" in source_name:
-            print("  ⏭️  跳过 (与 GitHub mirror 重复)")
+            print("  [跳过]  跳过 (与 GitHub mirror 重复)")
             continue
 
         content = download_m3u(url)
@@ -128,11 +128,11 @@ def main():
             continue
 
         channels = parse_m3u(content)
-        print(f"  ✅ 解析成功: {len(channels)} 个频道")
+        print(f"  [成功] 解析成功: {len(channels)} 个频道")
         all_channels.append(channels)
 
     print("\n" + "=" * 70)
-    print("🔄 开始合并频道...")
+    print("[合并] 开始合并频道...")
 
     merged_channels = merge_channels(all_channels)
 
@@ -144,8 +144,8 @@ def main():
     total_urls = sum(len(ch['urls']) for ch in merged_channels)
     avg_urls = total_urls / total_channels if total_channels > 0 else 0
 
-    print(f"✅ 合并完成!")
-    print(f"📊 统计:")
+    print(f"[成功] 合并完成!")
+    print(f"[统计] 统计:")
     print(f"   - 总频道数: {total_channels}")
     print(f"   - 总线路数: {total_urls}")
     print(f"   - 平均每频道线路数: {avg_urls:.1f}")
@@ -155,7 +155,7 @@ def main():
     for ch in merged_channels:
         groups[ch['group']] += 1
 
-    print(f"\n📂 分组统计:")
+    print(f"\n[分组] 分组统计:")
     for group, count in sorted(groups.items(), key=lambda x: -x[1]):
         print(f"   - {group}: {count} 个频道")
 
@@ -166,8 +166,8 @@ def main():
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(output_data, f, ensure_ascii=False, indent=2)
 
-    print(f"\n💾 已保存到: {output_file}")
-    print("\n✨ 下一步: 运行验证脚本筛选可用线路")
+    print(f"\n[保存] 已保存到: {output_file}")
+    print("\n[完成] 下一步: 运行验证脚本筛选可用线路")
     print(f"   python scripts/validate_and_filter_channels.py {output_file}")
 
 if __name__ == '__main__':

@@ -49,7 +49,7 @@ def test_stream_url(url, timeout=TIMEOUT):
     except subprocess.TimeoutExpired:
         return (url, False, "Timeout")
     except FileNotFoundError:
-        print("❌ 错误: 未找到 ffprobe，请先安装 ffmpeg")
+        print("[错误] 错误: 未找到 ffprobe，请先安装 ffmpeg")
         sys.exit(1)
     except Exception as e:
         return (url, False, str(e)[:200])
@@ -70,13 +70,13 @@ def validate_channel_urls(channel_name, urls):
             url_result, is_valid, error = future.result()
 
             if is_valid:
-                print(f"  ✅ [{i}/{len(urls)}] 有效")
+                print(f"  [成功] [{i}/{len(urls)}] 有效")
                 valid_urls.append(url)
             else:
                 error_short = error[:50] + "..." if error and len(error) > 50 else error
-                print(f"  ❌ [{i}/{len(urls)}] 失败: {error_short}")
+                print(f"  [错误] [{i}/{len(urls)}] 失败: {error_short}")
 
-    print(f"  📊 结果: {len(valid_urls)}/{len(urls)} 个线路有效")
+    print(f"  [统计] 结果: {len(valid_urls)}/{len(urls)} 个线路有效")
     return valid_urls
 
 def filter_channels(input_file, output_file):
@@ -90,7 +90,7 @@ def filter_channels(input_file, output_file):
 
     channels = data.get('channels', [])
     total_channels = len(channels)
-    print(f"📊 共 {total_channels} 个频道")
+    print(f"[统计] 共 {total_channels} 个频道")
     print("=" * 60)
 
     filtered_channels = []
@@ -115,26 +115,26 @@ def filter_channels(input_file, output_file):
                 'group': group,
                 'urls': valid_urls
             })
-            print(f"  ✅ 保留频道 ({len(valid_urls)} 个有效线路)")
+            print(f"  [成功] 保留频道 ({len(valid_urls)} 个有效线路)")
         else:
-            print(f"  ❌ 舍弃频道 (有效线路不足 {MIN_VALID_URLS})")
+            print(f"  [错误] 舍弃频道 (有效线路不足 {MIN_VALID_URLS})")
 
     elapsed = time.time() - start_time
     print("\n" + "=" * 60)
-    print(f"✅ 验证完成! 耗时: {elapsed:.1f} 秒")
-    print(f"📊 保留: {len(filtered_channels)}/{total_channels} 个频道")
+    print(f"[成功] 验证完成! 耗时: {elapsed:.1f} 秒")
+    print(f"[统计] 保留: {len(filtered_channels)}/{total_channels} 个频道")
 
     # 保存结果
     output_data = {'channels': filtered_channels}
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(output_data, f, ensure_ascii=False, indent=2)
 
-    print(f"💾 已保存到: {output_file}")
+    print(f"[保存] 已保存到: {output_file}")
 
     # 统计
     total_urls_before = sum(len(ch.get('urls', [])) for ch in channels)
     total_urls_after = sum(len(ch.get('urls', [])) for ch in filtered_channels)
-    print(f"📊 线路统计: {total_urls_after}/{total_urls_before} 条线路有效")
+    print(f"[统计] 线路统计: {total_urls_after}/{total_urls_before} 条线路有效")
 
 if __name__ == '__main__':
     script_dir = Path(__file__).parent.parent
@@ -148,10 +148,10 @@ if __name__ == '__main__':
         output_file = script_dir / 'iptv-mirrors' / 'merged-all-sources-filtered.json'
 
     if not input_file.exists():
-        print(f"❌ 错误: 找不到输入文件 {input_file}")
+        print(f"[错误] 错误: 找不到输入文件 {input_file}")
         sys.exit(1)
 
-    print("🚀 开始验证和筛选频道线路...")
+    print("[启动] 开始验证和筛选频道线路...")
     print(f"📁 输入文件: {input_file}")
     print(f"📁 输出文件: {output_file}")
     print(f"⚙️  配置: 超时 {TIMEOUT}s, 并发 {MAX_WORKERS}, 最少有效线路 {MIN_VALID_URLS}")
