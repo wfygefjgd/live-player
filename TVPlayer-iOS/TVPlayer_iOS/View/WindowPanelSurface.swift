@@ -157,11 +157,44 @@ final class WindowPanelSurface {
         if win.bounds.size != bounds.size {
             win.frame = CGRect(origin: .zero, size: bounds.size)
         }
-        panelWidth = min(280, max(240, bounds.width * 0.38))
+        // 横屏灵动岛在左侧：侧栏整体右移，避免频道名被岛遮挡
+        // 全屏/隐藏状态栏时 window.safeArea 常为 0，需从 scene 与设备兜底取值
+        let safe = effectiveSafeAreaInsets(for: win)
+        let isLandscape = bounds.width > bounds.height
+        // 灵动岛横屏切入约 59pt；再多留一点，避免 CCTV-1 被切字
+        let islandFallback: CGFloat = isLandscape ? 62 : 0
+        let leadingInset = max(safe.left, islandFallback)
+        let topInset = max(safe.top, isLandscape ? 10 : 12)
+        let bottomInset = max(safe.bottom, 0)
+        let maxW = max(200, bounds.width - leadingInset - 32)
+        panelWidth = min(252, max(216, min(bounds.width * 0.33, maxW)))
         maskView.frame = CGRect(origin: .zero, size: bounds.size)
-        let x: CGFloat = open ? 0 : -panelWidth
-        containerView.frame = CGRect(x: x, y: 0, width: panelWidth, height: bounds.height)
+        let openX = leadingInset
+        let x: CGFloat = open ? openX : (openX - panelWidth)
+        let y = topInset
+        let h = max(1, bounds.height - y - bottomInset)
+        containerView.frame = CGRect(x: x, y: y, width: panelWidth, height: h)
+        containerView.layer.cornerRadius = 12
+        containerView.layer.maskedCorners = [
+            .layerMaxXMinYCorner, .layerMaxXMaxYCorner,
+            .layerMinXMinYCorner, .layerMinXMaxYCorner
+        ]
         hostingController?.view.frame = containerView.bounds
+    }
+
+    /// 合并 window / scene / keyWindow 的 safeArea，避免全屏层读到全 0
+    private func effectiveSafeAreaInsets(for win: UIWindow) -> UIEdgeInsets {
+        var inset = win.safeAreaInsets
+        if let scene = win.windowScene {
+            for w in scene.windows {
+                let s = w.safeAreaInsets
+                inset.left = max(inset.left, s.left)
+                inset.right = max(inset.right, s.right)
+                inset.top = max(inset.top, s.top)
+                inset.bottom = max(inset.bottom, s.bottom)
+            }
+        }
+        return inset
     }
 
     @discardableResult
