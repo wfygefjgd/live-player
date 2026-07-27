@@ -16,9 +16,12 @@ let LATEST_LINEUP_URLS: [String] = [
 
 private let CHANNEL_OSD_MS: UInt64 = 2_500_000_000
 private let INDICATOR_MS: UInt64 = 1_200_000_000
-private let AUTO_SWITCH_COOLDOWN_NS: UInt64 = 600_000_000
-private let SILENT_AUDIO_GRACE_NS: UInt64 = 5_000_000_000  // 5s 静音切换冷却
-private let AUTO_RECOVER_MAX_CHANNELS = 30                 // 连续自动切台上限
+/// 自动换线冷却：防止连续失败瞬间连跳
+private let AUTO_SWITCH_COOLDOWN_NS: UInt64 = 1_200_000_000
+/// 无声判定冷却（秒级防抖）
+private let SILENT_AUDIO_GRACE_NS: UInt64 = 10_000_000_000
+/// 连续自动 hop 频道上限（线都试完才 hop）
+private let AUTO_RECOVER_MAX_CHANNELS = 15
 
 // 精选列表 JSON（Bundle 快速启动 / 旁路刷新），勿当 m3u 源重复塞进 PRESET
 let VALIDATED_CHANNELS_MIRROR =
@@ -817,29 +820,53 @@ final class PlayerViewModel: ObservableObject {
             currentSourceIndex = 0
         }
 
-        var guardLoops = 0
-        while guardLoops < ch.sourceCount {
-            guardLoops += 1
-            if currentSourceIndex < 0 || currentSourceIndex >= ch.urls.count {
-                currentSourceIndex = 0
-            }
-            let raw = ch.urls[currentSourceIndex]
-            if let u = URL(string: raw), let scheme = u.scheme?.lowercased(),
-               scheme == "http" || scheme == "https" || scheme == "rtmp" || scheme == "rtsp" {
-                triedLineIndices.insert(currentSourceIndex)
-                if autoSwitchState == .cooldown { autoSwitchState = .idle }
-                if autoSwitchState == .switching { autoSwitchState = .idle }
-                player.play(url: u)
-                persistLastChannel()
-                if showOSD { showChannelOSD() }
-                updateNowPlaying()
+        // 选一条 URL 合法的线；http(s) 先做 1.5s 预检，死链直接跳过（不必进 AVPlayer 空等）
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var guardLoops = 0
+            while guardLoops < ch.sourceCount {
+                guardLoops += 1
+                if self.currentSourceIndex < 0 || self.currentSourceIndex >= ch.urls.count {
+                    self.currentSourceIndex = 0
+                }
+                let idx = self.currentSourceIndex
+                let raw = ch.urls[idx]
+                guard let u = URL(string: raw), let scheme = u.scheme?.lowercased(),
+                      scheme == "http" || scheme == "https" || scheme == "rtmp" || scheme == "rtsp" else {
+                    self.triedLineIndices.insert(idx)
+                    self.currentSourceIndex = (idx + 1) % max(ch.sourceCount, 1)
+                    continue
+                }
+
+                if scheme == "http" || scheme == "https" {
+                    let ok = await LineSpeedTester.shared.quickPreflight(raw, timeout: 1.5)
+                    // 用户可能已切台
+                    guard self.currentChannel?.key == ch.key else { return }
+                    if !ok {
+                        self.triedLineIndices.insert(idx)
+                        if self.autoBlacklistEnabled {
+                            self.storage.blacklistLine(raw)
+                        }
+                        self.currentSourceIndex = (idx + 1) % max(ch.sourceCount, 1)
+                        if guardLoops < ch.sourceCount {
+                            self.showIndicator("线路不可达，试下一条…")
+                        }
+                        continue
+                    }
+                }
+
+                self.triedLineIndices.insert(idx)
+                if self.autoSwitchState == .cooldown { self.autoSwitchState = .idle }
+                if self.autoSwitchState == .switching { self.autoSwitchState = .idle }
+                self.player.play(url: u)
+                self.persistLastChannel()
+                if showOSD { self.showChannelOSD() }
+                self.updateNowPlaying()
                 return
             }
-            triedLineIndices.insert(currentSourceIndex)
-            currentSourceIndex = (currentSourceIndex + 1) % max(ch.sourceCount, 1)
+            self.showIndicator("当前频道地址无效")
+            self.autoSwitchLine(hint: "当前频道无可用线路", reason: .hardFail)
         }
-        showIndicator("当前频道地址无效")
-        autoSwitchLine(hint: "当前频道地址无效", reason: .hardFail)
     }
 
     private func onPlayerReady() {
@@ -872,35 +899,42 @@ final class PlayerViewModel: ObservableObject {
     }
 
     private func onPlayerError() {
+        // 必要条件①：播放器硬失败（item failed），且用户未暂停、侧栏未开
         guard !userPaused, !panelVisible else { return }
         autoSwitchLine(hint: "线路失败", reason: .hardFail)
     }
     private func onStartupTimeout() {
-        // 第一道：长时间无画面 ≈ 没数据进来
+        // 证据驱动失败 / 硬兜底：仍无画面
         guard lineTimeoutEnabled, !userPaused, !panelVisible else { return }
-        autoSwitchLine(hint: "无数据/无画面", reason: .noData)
+        if player.isReady || playbackStable { return }
+        autoSwitchLine(hint: "线路不可用", reason: .noData)
     }
     private func onPlaybackStall() {
-        // 高峰拥堵也会卡，不当作坏线；有数据进来就继续等
+        // 卡顿本身不换线（高峰拥堵正常）
     }
     private func onExtendedStall() {
-        // 同上：卡顿不自动切
+        // 同上
     }
 
     private func onHealthCritical(_ reason: String) {
-        // 健康度卡顿类不切；真正无数据由超时/低速处理
+        // 健康度仅作观测；真正换线由硬失败 / 无数据 / 确认无声 驱动
     }
 
     private func onLowSpeed(_ reason: String) {
-        // 第一道：无网 / 几乎无速度 → 立刻换
+        // 必要条件③：引擎已确认「无数据」（含无网、长时间零速且画面不动）
         guard lineTimeoutEnabled, !userPaused, !panelVisible else { return }
+        // 画面仍在推进时不切（与引擎 progressOK 双保险）
+        if playbackStable, player.isReady, player.isPlaying {
+            // 若只是 accessLog 抖动，忽略；引擎侧已过滤，这里再挡一层提示噪声
+        }
         autoSwitchLine(hint: reason, reason: .noData)
     }
 
     // MARK: - 静音检测
 
     private func onSilentAudio() {
-        // 第二道：有画无声再切
+        // 必要条件④：已稳定出画 + 确认无可用音轨（多次轮询后）
+        // 注意：纯视频台/部分直播无音轨会误伤，故拉长冷却且不强制 hop 台
         guard lineTimeoutEnabled, !panelVisible else { return }
         guard currentChannel != nil else { return }
         guard playbackStable, player.isReady else { return }
@@ -913,11 +947,15 @@ final class PlayerViewModel: ObservableObject {
         autoSwitchLine(hint: "无声音", reason: .noAudio)
     }
 
-    /// 自动换线只认两类：没数据；无声/无画（确认后）
+    /// 自动换线必要条件（仅下列确认坏线才切）
+    /// 1. hardFail  播放器错误
+    /// 2. noData    起播无画面 / 无网 / 长时间无数据且画面不动
+    /// 3. noAudio   已出画且确认无音轨（可被冷却挡住）
+    /// 明确不切：单纯卡顿、缓冲、健康度 warning、用户暂停、侧栏打开
     private enum FailReason {
-        case hardFail   // 播放器错误
-        case noData     // 无网/无速度/起播无画面
-        case noAudio    // 有播放但无音轨
+        case hardFail
+        case noData
+        case noAudio
 
         var isConfirmedBad: Bool { true }
     }
@@ -986,8 +1024,14 @@ final class PlayerViewModel: ObservableObject {
             }
         }
 
-        // 本频道线路已耗尽 → 自动下一频道
+        // 本频道线路已耗尽
         autoSwitchState = .idle
+        // 仅硬失败/无数据才自动 hop 下一台；无声可能是台本身无音轨，避免连跳
+        if reason == .noAudio {
+            showIndicator("\(hint) · 本台可能无音轨")
+            beginCooldown()
+            return
+        }
         if autoRecoverChannelHops >= AUTO_RECOVER_MAX_CHANNELS {
             showIndicator("连续多台无可用线路，请手动换台或换源")
             beginCooldown()
@@ -995,12 +1039,11 @@ final class PlayerViewModel: ObservableObject {
         }
         autoRecoverChannelHops += 1
         showIndicator("\(hint) · 本台线路不可用，切下一台")
-        // 短延迟避免同帧重入；不进入长冷却，保证恢复链路畅通
         recoverGeneration += 1
         let gen = recoverGeneration
         Task { @MainActor [weak self] in
             guard let self else { return }
-            try? await Task.sleep(nanoseconds: 250_000_000)
+            try? await Task.sleep(nanoseconds: 400_000_000)
             guard !Task.isCancelled, self.recoverGeneration == gen else { return }
             self.autoAdvanceChannel()
         }

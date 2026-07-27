@@ -43,7 +43,6 @@ final class LineSpeedTester {
             return LineQuality(url: url, responseTime: Int.max, isAvailable: false, lastChecked: Date())
         }
 
-        // 部分 CDN 不支持 HEAD → 再试 Range GET
         let start = Date()
         if let q = await probe(url: u, method: "HEAD", start: start) {
             cache[url] = q
@@ -56,10 +55,49 @@ final class LineSpeedTester {
         return LineQuality(url: url, responseTime: Int.max, isAvailable: false, lastChecked: Date())
     }
 
-    private func probe(url: URL, method: String, start: Date, range: Bool = false) async -> LineQuality? {
+    /// 起播前快速预检：1.5s 内拉到首包才值得交给 AVPlayer（死链可跳过等待）
+    func quickPreflight(_ url: String, timeout: TimeInterval = 1.5) async -> Bool {
+        guard let u = URL(string: url), let scheme = u.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            return false
+        }
+        // 短缓存：同一死链短时间不重复打
+        if let cached = cache[url], Date().timeIntervalSince(cached.lastChecked) < 60 {
+            return cached.isAvailable
+        }
+        let start = Date()
+        if let q = await probe(url: u, method: "GET", start: start, range: true, timeout: timeout) {
+            cache[url] = q
+            return q.isAvailable
+        }
+        // GET 失败再试一次不带 Range（部分源拒 Range）
+        var req = URLRequest(url: u)
+        req.httpMethod = "GET"
+        req.timeoutInterval = timeout
+        req.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
+        do {
+            let (data, resp) = try await session.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            let ok = (200...399).contains(code) && data.count > 0
+            cache[url] = LineQuality(
+                url: url,
+                responseTime: Int(Date().timeIntervalSince(start) * 1000),
+                isAvailable: ok,
+                lastChecked: Date()
+            )
+            return ok
+        } catch {
+            cache[url] = LineQuality(
+                url: url, responseTime: Int.max, isAvailable: false, lastChecked: Date()
+            )
+            return false
+        }
+    }
+
+    private func probe(url: URL, method: String, start: Date, range: Bool = false, timeout: TimeInterval? = nil) async -> LineQuality? {
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = timeout
+        request.timeoutInterval = timeout ?? self.timeout
         if range {
             request.setValue("bytes=0-1", forHTTPHeaderField: "Range")
         }
@@ -67,7 +105,6 @@ final class LineSpeedTester {
             let (_, response) = try await session.data(for: request)
             let elapsed = Int(Date().timeIntervalSince(start) * 1000)
             guard let http = response as? HTTPURLResponse else { return nil }
-            // 2xx / 3xx / 206 都算「源可达」——仍只是弱信号
             guard (200...399).contains(http.statusCode) else { return nil }
             return LineQuality(url: url.absoluteString, responseTime: elapsed, isAvailable: true, lastChecked: Date())
         } catch {

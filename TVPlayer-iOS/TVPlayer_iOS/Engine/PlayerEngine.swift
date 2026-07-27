@@ -4,26 +4,37 @@ import Combine
 /// 起播/卡顿检测/静音检测引擎 — 结构化并发优化版
 @MainActor
 final class PlayerEngine: ObservableObject {
-    // MARK: - 配置常量
-    static let startupTimeoutNs: UInt64 = 8_000_000_000      // HLS 首帧允许慢线路先完成握手
-    static let readyProtectNs: UInt64 = 1_200_000_000         // 1.2s 出画保护
-    static let errorGraceNs: UInt64 = 800_000_000             // 0.8s 错误宽容
-    static let silentAudioCheckNs: UInt64 = 6_000_000_000
-    static let silentAudioPollIntervalNs: UInt64 = 1_000_000_000
-    static let progressStallThreshold: TimeInterval = 4.0
+    // MARK: - 配置常量（证据驱动：事件判定为主，超时仅兜底）
+    /// 起播墙钟上限（仅兜底，正常靠 failed/出画事件结束）
+    static let startupHardTimeoutNs: UInt64 = 7_000_000_000
+    /// 证据轮询间隔
+    static let evidencePollNs: UInt64 = 350_000_000
+    /// 连续 N 次「无任何正向证据」→ 判死线（约 3.5s）
+    static let deadEvidenceStrikes = 10
+    /// 有弱希望但一直无画面：再给若干轮（合计约 6～7s 到 hard）
+    static let softEvidenceStrikes = 16
+    /// 出画后保护
+    static let readyProtectNs: UInt64 = 2_000_000_000
+    /// 硬失败后极短确认（防瞬时 glitch）；有负向证据可直接 0
+    static let errorGraceNs: UInt64 = 200_000_000
+    static let silentAudioCheckNs: UInt64 = 8_000_000_000
+    static let silentAudioPollIntervalNs: UInt64 = 1_500_000_000
+    static let progressStallThreshold: TimeInterval = 6.0
 
-    /// 有数据进来的下限（KB/s）：≥ 此值认为「有网」，高峰卡顿也不切
-    static let minUsefulSpeedKBps: Double = 15
-    /// 判定「几乎无数据」
-    static let deadSpeedKBps: Double = 3
-    /// 偏低但非零：持续多久才当无数据（秒）
-    static let lowSpeedSwitchSeconds: TimeInterval = 8.0
-    /// 无网/完全无速度多久立刻换（秒）
-    static let zeroSpeedSwitchSeconds: TimeInterval = 2.5
+    static let minUsefulSpeedKBps: Double = 8
+    static let deadSpeedKBps: Double = 1.5
+    static let lowSpeedSwitchSeconds: TimeInterval = 10.0
+    static let zeroSpeedSwitchSeconds: TimeInterval = 4.0
+    static let zeroSpeedSwitchSecondsAfterRender: TimeInterval = 6.0
 
     static var stallTimeoutNs: UInt64 {
-        NetworkMonitor.shared.isWiFi ? 4_000_000_000 : 6_000_000_000
+        NetworkMonitor.shared.isWiFi ? 6_000_000_000 : 8_000_000_000
     }
+
+    static var startupTimeoutNs: UInt64 { startupHardTimeoutNs }
+    /// 兼容旧分级名
+    static var startupFastFailNs: UInt64 { UInt64(deadEvidenceStrikes) * evidencePollNs }
+    static var startupSoftTimeoutNs: UInt64 { UInt64(softEvidenceStrikes) * evidencePollNs }
 
     let player = AVPlayer()
     private var cancellables = Set<AnyCancellable>()
@@ -72,23 +83,32 @@ final class PlayerEngine: ObservableObject {
 
     private var consecutiveStallCount = 0
     private var healthCheckTask: Task<Void, Never>?
+    private var evidenceTask: Task<Void, Never>?
+    private var itemErrorObserver: NSObjectProtocol?
+    private var itemEndFailObserver: NSObjectProtocol?
+    private var bufferEmptyObserver: NSObjectProtocol?
+    private var deadStrikes = 0
+    private var playStartedAt: Date = .distantPast
 
     init() {
         player.actionAtItemEnd = .none
         player.automaticallyWaitsToMinimizeStalling = true
-        healthMonitor = PlaybackHealthMonitor(player: player)  // 🆕 初始化健康度监控
+        healthMonitor = PlaybackHealthMonitor(player: player)
         observeTimeControl()
-        setupCacheCleanup()  // 🆕 设置AVPlayer缓存清理
+        setupCacheCleanup()
         NotificationCenter.default.publisher(for: Notification.Name("tvPlayerVideoRendered"))
             .receive(on: DispatchQueue.main)
             .sink { [weak self] note in
                 guard let self,
                       let renderedPlayer = note.object as? AVPlayer,
-                      renderedPlayer === self.player,
-                      self.player.currentItem?.status == .readyToPlay else { return }
+                      renderedPlayer === self.player else { return }
+                // 出画 = 最强正向证据：立刻 OK，取消一切起播兜底
                 self.hasRendered = true
                 if self.lastTimeProgressAt == .distantPast {
                     self.lastTimeProgressAt = Date()
+                }
+                if self.player.currentItem?.status == .readyToPlay || self.hasVideoFrameEvidence() {
+                    self.markTrulyReady(token: self.playToken)
                 }
             }
             .store(in: &cancellables)
@@ -152,17 +172,142 @@ final class PlayerEngine: ObservableObject {
             self.setupTimeObserver(token: token)
 
             if self.lineTimeoutEnabled {
-                self.scheduleTask(named: "startup", token: token, timeout: Self.startupTimeoutNs) { [weak self] in
-                    guard let self, self.lineTimeoutEnabled, !self.isReady, !self.hasRendered else { return }
-                    self.cancelAllTasks()
-                    self.onStartupTimeout?()
-                }
+                self.armEvidenceDrivenWatch(token: token)
             }
 
-            // 强制播放，确保不会卡住
             self.player.play()
             self.player.rate = 1.0
         }
+    }
+
+    // MARK: - 证据驱动起播判定（替代纯 sleep 超时）
+
+    /// 正向证据 → 立刻 OK；负向证据 → 立刻失败；否则累计 strikes，到点才兜底
+    private func armEvidenceDrivenWatch(token: Int) {
+        evidenceTask?.cancel()
+        deadStrikes = 0
+        playStartedAt = Date()
+
+        // 墙钟硬兜底（防止逻辑漏判一直黑屏）
+        scheduleTask(named: "startup", token: token, timeout: Self.startupHardTimeoutNs) { [weak self] in
+            guard let self, self.lineTimeoutEnabled, self.playToken == token else { return }
+            guard !self.isReady, !self.hasRendered else { return }
+            self.failStartup(token: token, reason: "起播超时")
+        }
+
+        evidenceTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.evidencePollNs)
+                guard let self, !Task.isCancelled, self.playToken == token else { return }
+                guard self.lineTimeoutEnabled else { return }
+                if self.isReady || self.hasRendered { return }
+
+                // ① 负向证据：立刻失败（不等待）
+                if let neg = self.negativeEvidence() {
+                    self.failStartup(token: token, reason: neg)
+                    return
+                }
+
+                // ② 正向证据：立刻成功
+                if self.positiveEvidence() {
+                    self.markTrulyReady(token: token)
+                    return
+                }
+
+                // ③ 尚无结论：按「有无希望」累计
+                if self.startupHasStrongHope() {
+                    self.deadStrikes = 0
+                    continue
+                }
+                if self.startupHasHope() {
+                    self.deadStrikes += 1
+                    if self.deadStrikes >= Self.softEvidenceStrikes {
+                        self.failStartup(token: token, reason: "起播无画面")
+                        return
+                    }
+                } else {
+                    self.deadStrikes += 1
+                    if self.deadStrikes >= Self.deadEvidenceStrikes {
+                        self.failStartup(token: token, reason: "线路无响应")
+                        return
+                    }
+                }
+            }
+        }
+    }
+
+    private func failStartup(token: Int, reason: String) {
+        guard playToken == token, !isReady, !hasRendered else { return }
+        evidenceTask?.cancel()
+        evidenceTask = nil
+        cancelTask(named: "startup")
+        cancelTask(named: "startupFast")
+        cancelTask(named: "startupSoft")
+        cancelAllTasks()
+        _ = reason
+        onStartupTimeout?()
+    }
+
+    /// 正向：已出画 / 有视频尺寸且时钟在走 / 有视频轨且 likelyToKeepUp
+    private func positiveEvidence() -> Bool {
+        if hasRendered { return true }
+        if hasVideoFrameEvidence() { return true }
+        guard let item = player.currentItem else { return false }
+        if item.status == .readyToPlay,
+           item.presentationSize.width > 1,
+           lastTimeProgressAt != .distantPast {
+            return true
+        }
+        return false
+    }
+
+    /// 负向：item failed、致命 errorLog、明确无法播放
+    private func negativeEvidence() -> String? {
+        guard let item = player.currentItem else { return "无播放项" }
+        if item.status == .failed {
+            return item.error?.localizedDescription ?? "线路失败"
+        }
+        if let log = item.errorLog() {
+            for e in log.events.suffix(3) {
+                let code = e.errorStatusCode
+                // 常见致命：4xx/5xx、I/O、-1102 等
+                if code == 404 || code == 403 || code == 410 || code == 502 || code == 503 {
+                    return "源返回 \(code)"
+                }
+                if code < 0, let msg = e.errorComment, !msg.isEmpty {
+                    let lower = msg.lowercased()
+                    if lower.contains("404") || lower.contains("forbidden")
+                        || lower.contains("not found") || lower.contains("unauthorized") {
+                        return "源拒绝访问"
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    private func startupHasHope() -> Bool {
+        guard let item = player.currentItem else { return false }
+        if item.status == .readyToPlay { return true }
+        if item.presentationSize.width > 1 { return true }
+        if !item.isPlaybackBufferEmpty { return true }
+        if item.loadedTimeRanges.isEmpty == false { return true }
+        let speed = sampleObservedSpeedKBps()
+        if speed >= Self.deadSpeedKBps { return true }
+        if let log = item.accessLog(), let e = log.events.last, e.numberOfBytesTransferred > 1024 {
+            return true
+        }
+        return false
+    }
+
+    private func startupHasStrongHope() -> Bool {
+        guard let item = player.currentItem else { return false }
+        if item.status == .readyToPlay, item.presentationSize.width > 1 { return true }
+        if hasVideoFrameEvidence() { return true }
+        let speed = sampleObservedSpeedKBps()
+        if speed >= Self.minUsefulSpeedKBps { return true }
+        if item.isPlaybackLikelyToKeepUp, !item.loadedTimeRanges.isEmpty { return true }
+        return false
     }
 
     func pause() {
@@ -187,6 +332,9 @@ final class PlayerEngine: ObservableObject {
             timeObserver = nil
         }
         cancelAllTasks()
+        evidenceTask?.cancel()
+        evidenceTask = nil
+        clearItemNotificationObservers()
         stopHealthCheck()
         stopSpeedCheck()
         player.replaceCurrentItem(with: nil)
@@ -223,9 +371,13 @@ final class PlayerEngine: ObservableObject {
 
     private func resetState(for token: Int) {
         cancelAllTasks()
+        evidenceTask?.cancel()
+        evidenceTask = nil
+        clearItemNotificationObservers()
         stopHealthCheck()
         stopSpeedCheck()
         consecutiveStallCount = 0
+        deadStrikes = 0
         stallWatchEnabled = false
         continuousStall = false
         hasRendered = false
@@ -274,7 +426,9 @@ final class PlayerEngine: ObservableObject {
     // MARK: - Private — Observers
 
     private func setupItemObserver(_ item: AVPlayerItem, token: Int) {
-        statusObserver = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+        clearItemNotificationObservers()
+
+        statusObserver = item.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
             guard let self else { return }
             if item.status == .readyToPlay {
                 Task { @MainActor [weak self] in
@@ -284,9 +438,54 @@ final class PlayerEngine: ObservableObject {
             } else if item.status == .failed {
                 Task { @MainActor [weak self] in
                     guard let self, self.playToken == token else { return }
-                    self.handleItemFailed(token: token)
+                    // 负向证据：几乎立刻失败
+                    self.handleItemFailed(token: token, immediate: true)
                 }
             }
+        }
+
+        // 播放中途致命错误 → 立刻换线信号
+        itemErrorObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemNewErrorLogEntry,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.playToken == token else { return }
+                if let neg = self.negativeEvidence(), !self.isReady {
+                    self.failStartup(token: token, reason: neg)
+                }
+            }
+        }
+
+        itemEndFailObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.playToken == token else { return }
+                if self.isReady {
+                    self.onError?()
+                } else {
+                    self.handleItemFailed(token: token, immediate: true)
+                }
+            }
+        }
+    }
+
+    private func clearItemNotificationObservers() {
+        if let itemErrorObserver {
+            NotificationCenter.default.removeObserver(itemErrorObserver)
+            self.itemErrorObserver = nil
+        }
+        if let itemEndFailObserver {
+            NotificationCenter.default.removeObserver(itemEndFailObserver)
+            self.itemEndFailObserver = nil
+        }
+        if let bufferEmptyObserver {
+            NotificationCenter.default.removeObserver(bufferEmptyObserver)
+            self.bufferEmptyObserver = nil
         }
     }
 
@@ -362,12 +561,17 @@ final class PlayerEngine: ObservableObject {
 
     private func markTrulyReady(token: Int) {
         guard playToken == token else { return }
-        // Audio-only streams can advance AVPlayer's clock and report
-        // readyToPlay. Do not expose them as a healthy video channel.
-        guard hasVideoFrameEvidence() else { return }
+        guard hasVideoFrameEvidence() || hasRendered else { return }
+        if isReady { return }
+        evidenceTask?.cancel()
+        evidenceTask = nil
+        deadStrikes = 0
         cancelTask(named: "startup")
+        cancelTask(named: "startupFast")
+        cancelTask(named: "startupSoft")
         cancelTask(named: "confirmReady")
         cancelTask(named: "confirmReady2")
+        cancelTask(named: "errorGrace")
         isReady = true
         hasRendered = true
         player.play()
@@ -388,14 +592,19 @@ final class PlayerEngine: ObservableObject {
         }
     }
 
-    private func handleItemFailed(token: Int) {
+    private func handleItemFailed(token: Int, immediate: Bool = false) {
         guard playToken == token else { return }
-        let elapsed = lastTimeProgressAt == .distantPast ? 0 : Date().timeIntervalSince(lastTimeProgressAt)
-        let graceRemain = max(0, Double(Self.errorGraceNs) / 1e9 - elapsed)
-
-        scheduleTask(named: "errorGrace", token: token, timeout: UInt64(graceRemain * 1_000_000_000)) { [weak self] in
+        if hasRendered || isReady {
+            // 已出画后的失败：走 error 换线
+            onError?()
+            return
+        }
+        let delay: UInt64 = immediate ? 0 : Self.errorGraceNs
+        scheduleTask(named: "errorGrace", token: token, timeout: delay) { [weak self] in
             guard let self, self.playToken == token else { return }
             if self.hasRendered || self.isReady { return }
+            self.evidenceTask?.cancel()
+            self.evidenceTask = nil
             self.cancelAllTasks()
             self.onError?()
         }
@@ -585,19 +794,34 @@ final class PlayerEngine: ObservableObject {
 
                 let speed = self.sampleObservedSpeedKBps()
                 let netOK = NetworkMonitor.shared.isSatisfied
+                // 画面仍在推进 = 有播，不因 accessLog 抖动误切
+                let progressOK = self.hasRendered
+                    && self.lastTimeProgressAt != .distantPast
+                    && Date().timeIntervalSince(self.lastTimeProgressAt) <= Self.progressStallThreshold
 
-                // (a) 网络未就绪 或 几乎无速度 → 累计后立刻换
+                if progressOK {
+                    self.zeroSpeedSince = nil
+                    self.lowSpeedSince = nil
+                    continue
+                }
+
+                // (a) 系统无网，或速度接近 0 且画面也不动
                 if !netOK || speed < Self.deadSpeedKBps {
                     if self.zeroSpeedSince == nil { self.zeroSpeedSince = Date() }
                     self.lowSpeedSince = nil
                     let elapsed = Date().timeIntervalSince(self.zeroSpeedSince ?? Date())
-                    // 已出画且仍无速：更快；未出画用起播超时兜底，这里略放宽
-                    let need = self.hasRendered || self.isReady
-                        ? Self.zeroSpeedSwitchSeconds
-                        : max(Self.zeroSpeedSwitchSeconds, 2.0)
+                    let need: TimeInterval
+                    if !netOK {
+                        need = Self.zeroSpeedSwitchSeconds
+                    } else if self.hasRendered || self.isReady {
+                        need = Self.zeroSpeedSwitchSecondsAfterRender
+                    } else {
+                        // 未出画：交给 startup 超时为主，这里只作慢兜底
+                        need = max(Self.zeroSpeedSwitchSecondsAfterRender, 8.0)
+                    }
                     if elapsed >= need {
                         self.zeroSpeedSince = nil
-                        let hint = !netOK ? "网络未连接" : "无网速"
+                        let hint = !netOK ? "网络未连接" : "无数据"
                         self.onLowSpeed?(hint)
                         return
                     }
@@ -606,13 +830,13 @@ final class PlayerEngine: ObservableObject {
 
                 self.zeroSpeedSince = nil
 
-                // (b) 有数据进来 → 不切（哪怕画面卡，高峰正常）
+                // (b) 有有效速度 → 不切（高峰卡顿正常）
                 if speed >= Self.minUsefulSpeedKBps {
                     self.lowSpeedSince = nil
                     continue
                 }
 
-                // (c) 极低但非零：持续一段时间当「没数据」
+                // (c) 极低速 + 画面也不动：持续确认后换
                 if self.lowSpeedSince == nil { self.lowSpeedSince = Date() }
                 let lowElapsed = Date().timeIntervalSince(self.lowSpeedSince ?? Date())
                 if lowElapsed >= Self.lowSpeedSwitchSeconds {
