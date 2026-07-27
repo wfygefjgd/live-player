@@ -12,14 +12,14 @@ final class PlayerEngine: ObservableObject {
     static let silentAudioPollIntervalNs: UInt64 = 1_000_000_000
     static let progressStallThreshold: TimeInterval = 4.0
 
-    /// 网速阈值（KB/s）：≥ 此值暂缓换线；持续低于则快切
-    static let minUsefulSpeedKBps: Double = 50
-    /// 判定「几乎无速度」
-    static let deadSpeedKBps: Double = 5
-    /// 低速持续多久才换线（秒）
-    static let lowSpeedSwitchSeconds: TimeInterval = 5.0
-    /// 无网/无速度多久立刻换（秒）
-    static let zeroSpeedSwitchSeconds: TimeInterval = 3.5
+    /// 有数据进来的下限（KB/s）：≥ 此值认为「有网」，高峰卡顿也不切
+    static let minUsefulSpeedKBps: Double = 15
+    /// 判定「几乎无数据」
+    static let deadSpeedKBps: Double = 3
+    /// 偏低但非零：持续多久才当无数据（秒）
+    static let lowSpeedSwitchSeconds: TimeInterval = 8.0
+    /// 无网/完全无速度多久立刻换（秒）
+    static let zeroSpeedSwitchSeconds: TimeInterval = 2.5
 
     static var stallTimeoutNs: UInt64 {
         NetworkMonitor.shared.isWiFi ? 4_000_000_000 : 6_000_000_000
@@ -430,12 +430,13 @@ final class PlayerEngine: ObservableObject {
         let token = playToken
         scheduleTask(named: "stall", token: token, timeout: Self.stallTimeoutNs) { [weak self] in
             guard let self, self.lineTimeoutEnabled, self.playToken == token, self.stallWatchEnabled else { return }
-            // 有够用网速时暂缓换线（正在缓冲加载）
+            // 高峰卡顿很常见：只要还有数据进来就不因 stall 换线
             let speed = self.sampleObservedSpeedKBps()
-            if speed >= Self.minUsefulSpeedKBps {
+            if speed >= Self.deadSpeedKBps {
                 self.continuousStall = false
                 return
             }
+            // 完全无数据 + 卡死才上报（交给无数据策略）
             let waiting = self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate
             let noProgress = self.hasRendered
                 && self.lastTimeProgressAt != .distantPast
@@ -448,7 +449,8 @@ final class PlayerEngine: ObservableObject {
                 return
             }
             self.continuousStall = false
-            self.onPlaybackStall?()
+            // 映射为无数据，而不是「卡顿换线」
+            self.onLowSpeed?("无数据")
         }
     }
 
@@ -543,35 +545,18 @@ final class PlayerEngine: ObservableObject {
                     continue
                 }
 
-                // 有够用的网速时：不因短暂 waiting 误切（用户要求：有速度先等）
+                // 有任何数据进来就不因卡顿/健康度换线（高峰拥堵正常）
                 let speed = self.sampleObservedSpeedKBps()
-                if speed >= Self.minUsefulSpeedKBps {
+                if speed >= Self.deadSpeedKBps {
                     self.consecutiveStallCount = 0
                     self.lowSpeedSince = nil
                     self.zeroSpeedSince = nil
                     continue
                 }
 
-                if let monitor = self.healthMonitor {
-                    let immediate = monitor.shouldSwitchImmediately()
-                    if immediate.should {
-                        self.onHealthCritical?(immediate.reason)
-                        return
-                    }
-                }
-
-                if let item = self.player.currentItem, item.isPlaybackBufferEmpty {
-                    self.healthMonitor?.recordBufferEmpty()
-                }
-
+                // 无数据时只累计，真正换线交给 startSpeedCheck / 起播超时
                 if self.isStalled() {
-                    self.healthMonitor?.recordStall()
                     self.consecutiveStallCount += 1
-                    if self.consecutiveStallCount >= 2 {
-                        self.consecutiveStallCount = 0
-                        self.onExtendedStall?()
-                        return
-                    }
                 } else {
                     self.consecutiveStallCount = 0
                 }
@@ -621,18 +606,18 @@ final class PlayerEngine: ObservableObject {
 
                 self.zeroSpeedSince = nil
 
-                // (b) 有够用速度 → 暂缓，不切
+                // (b) 有数据进来 → 不切（哪怕画面卡，高峰正常）
                 if speed >= Self.minUsefulSpeedKBps {
                     self.lowSpeedSince = nil
                     continue
                 }
 
-                // (c) 50KB 以下：持续一段时间再切
+                // (c) 极低但非零：持续一段时间当「没数据」
                 if self.lowSpeedSince == nil { self.lowSpeedSince = Date() }
                 let lowElapsed = Date().timeIntervalSince(self.lowSpeedSince ?? Date())
                 if lowElapsed >= Self.lowSpeedSwitchSeconds {
                     self.lowSpeedSince = nil
-                    self.onLowSpeed?(String(format: "网速偏低 %.0fKB/s", speed))
+                    self.onLowSpeed?("几乎无数据")
                     return
                 }
             }

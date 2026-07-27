@@ -814,33 +814,32 @@ final class PlayerViewModel: ObservableObject {
         autoSwitchLine(hint: "线路失败", reason: .hardFail)
     }
     private func onStartupTimeout() {
+        // 第一道：长时间无画面 ≈ 没数据进来
         guard lineTimeoutEnabled, !userPaused, !panelVisible else { return }
-        autoSwitchLine(hint: "线路超时无画面", reason: .startupTimeout)
+        autoSwitchLine(hint: "无数据/无画面", reason: .noData)
     }
     private func onPlaybackStall() {
-        guard lineTimeoutEnabled, !userPaused, !panelVisible else { return }
-        autoSwitchLine(hint: "画面卡顿", reason: .stall)
+        // 高峰拥堵也会卡，不当作坏线；有数据进来就继续等
     }
     private func onExtendedStall() {
-        guard lineTimeoutEnabled, !userPaused, !panelVisible else { return }
-        autoSwitchLine(hint: "画面持续卡顿", reason: .stall)
+        // 同上：卡顿不自动切
     }
 
     private func onHealthCritical(_ reason: String) {
-        guard lineTimeoutEnabled, !userPaused, !panelVisible else { return }
-        autoSwitchLine(hint: reason, reason: .healthCritical)
+        // 健康度卡顿类不切；真正无数据由超时/低速处理
     }
 
     private func onLowSpeed(_ reason: String) {
+        // 第一道：无网 / 几乎无速度 → 立刻换
         guard lineTimeoutEnabled, !userPaused, !panelVisible else { return }
-        autoSwitchLine(hint: reason, reason: .lowSpeed)
+        autoSwitchLine(hint: reason, reason: .noData)
     }
 
     // MARK: - 静音检测
 
     private func onSilentAudio() {
-        guard !panelVisible else { return }
-        // 仅多线路 + 已稳定 + 仍无音轨时才切；HLS 起播慢选轨不误杀
+        // 第二道：有画无声再切
+        guard lineTimeoutEnabled, !panelVisible else { return }
         guard currentChannel != nil else { return }
         guard playbackStable, player.isReady else { return }
         guard player.hasActiveAudioTrack == false else { return }
@@ -849,26 +848,19 @@ final class PlayerViewModel: ObservableObject {
             return
         }
         lastSilentSwitchAt = now
-        autoSwitchLine(hint: "当前线路无声音", reason: .silentAudio)
+        autoSwitchLine(hint: "无声音", reason: .noAudio)
     }
 
+    /// 自动换线只认两类：没数据；无声/无画（确认后）
     private enum FailReason {
-        case hardFail
-        case startupTimeout
-        case stall
-        case healthCritical
-        case silentAudio
-        case lowSpeed
+        case hardFail   // 播放器错误
+        case noData     // 无网/无速度/起播无画面
+        case noAudio    // 有播放但无音轨
 
-        var isConfirmedBad: Bool {
-            switch self {
-            case .hardFail, .startupTimeout, .stall, .healthCritical, .silentAudio, .lowSpeed:
-                return true
-            }
-        }
+        var isConfirmedBad: Bool { true }
     }
 
-    /// 自动切线：仅确认坏线才切；同频道试完所有线路后按浏览序切下一台
+    /// 自动切线：无数据优先；同台线试完再切下一台
     private func autoSwitchLine(hint: String, reason: FailReason) {
         // 侧栏操作中：禁止自动换线/换台，避免打断选台
         if panelVisible { return }
@@ -880,21 +872,21 @@ final class PlayerViewModel: ObservableObject {
             showIndicator(hint)
             return
         }
-        // 冷却期只抑制“软问题”重复触发；硬失败/超时必须放行
+        // 冷却期：无数据/硬失败必须放行；无声可被冷却挡住防抖
         if autoSwitchState == .cooldown {
             switch reason {
-            case .hardFail, .startupTimeout:
+            case .hardFail, .noData:
                 cooldownTask?.cancel()
                 autoSwitchState = .idle
-            default:
+            case .noAudio:
                 return
             }
         }
         if autoSwitchState == .switching {
             switch reason {
-            case .hardFail, .startupTimeout:
+            case .hardFail, .noData:
                 break
-            default:
+            case .noAudio:
                 return
             }
         }
