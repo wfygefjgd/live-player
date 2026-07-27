@@ -83,12 +83,29 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         root?.setNeedsUpdateOfSupportedInterfaceOrientations()
         UIViewController.attemptRotationToDeviceOrientation()
         guard let scene else { return }
+        if scene.interfaceOrientation.isLandscape {
+            return
+        }
         if #available(iOS 16.0, *) {
             let prefs = UIWindowScene.GeometryPreferences.iOS(interfaceOrientations: .landscape)
             scene.requestGeometryUpdate(prefs) { error in
                 print("requestGeometryUpdate failed: \(error.localizedDescription)")
             }
         }
+    }
+
+    func handleSceneWillEnterForeground(_ scene: UIWindowScene) {
+        requestLandscape(for: scene, root: rootContainer)
+        rootContainer?.refreshSystemChrome()
+        WindowVideoSurface.shared.rebindPlayer()
+    }
+
+    func handleSceneDidBecomeActive(_ scene: UIWindowScene) {
+        requestLandscape(for: scene, root: rootContainer)
+        rootContainer?.refreshSystemChrome()
+        viewModel?.resumeIfAppropriate()
+        viewModel?.onAppBecameActive()
+        WindowVideoSurface.shared.rebindPlayer()
     }
 
     private func setupAudioSession() {
@@ -125,27 +142,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         center.changePlaybackRateCommand.isEnabled = false
     }
 
-    func applicationDidBecomeActive(_ application: UIApplication) {
-        requestLandscape(for: window?.windowScene, root: rootContainer)
-        rootContainer?.refreshSystemChrome()
-        viewModel?.resumeIfAppropriate()
-        viewModel?.onAppBecameActive()
-        WindowVideoSurface.shared.rebindPlayer()
-    }
-
     func applicationWillResignActive(_ application: UIApplication) {
         NotificationCenter.default.post(name: .tvPlayerWillResignActive, object: nil)
     }
 
     func applicationDidEnterBackground(_ application: UIApplication) {
         NotificationCenter.default.post(name: .tvPlayerDidEnterBackground, object: nil)
-    }
-
-    func applicationWillEnterForeground(_ application: UIApplication) {
-        requestLandscape(for: window?.windowScene, root: rootContainer)
-        viewModel?.resumeIfAppropriate()
-        viewModel?.onAppBecameActive()
-        WindowVideoSurface.shared.rebindPlayer()
     }
 
     func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
@@ -170,17 +172,15 @@ final class SceneDelegate: NSObject, UIWindowSceneDelegate {
     }
 
     func sceneDidBecomeActive(_ scene: UIScene) {
-        if let app = UIApplication.shared.delegate as? AppDelegate {
-            (app.window?.rootViewController as? FullScreenRootController)?.refreshSystemChrome()
-        }
-        WindowVideoSurface.shared.rebindPlayer()
+        guard let windowScene = scene as? UIWindowScene else { return }
+        guard let app = UIApplication.shared.delegate as? AppDelegate else { return }
+        app.handleSceneDidBecomeActive(windowScene)
     }
 
     func sceneWillEnterForeground(_ scene: UIScene) {
-        if let app = UIApplication.shared.delegate as? AppDelegate {
-            (app.window?.rootViewController as? FullScreenRootController)?.refreshSystemChrome()
-        }
-        WindowVideoSurface.shared.rebindPlayer()
+        guard let windowScene = scene as? UIWindowScene else { return }
+        guard let app = UIApplication.shared.delegate as? AppDelegate else { return }
+        app.handleSceneWillEnterForeground(windowScene)
     }
 }
 
