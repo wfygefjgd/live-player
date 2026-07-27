@@ -53,7 +53,7 @@ FF_TIMEOUT = 12                # 进程总超时
 MIN_VIDEO_FRAMES = 20          # 至少解出的视频帧（约 4s@5fps 也够）
 MIN_SIZE_KB = 40               # 至少拉到的数据量
 MIN_BITRATE_KBPS = 150         # 平均码率下限（kbps，直播波动大）
-MAX_URLS_PER_CH = 2
+MAX_URLS_PER_CH = 4            # 每台最多保留 4 条可用线
 PRECHECK_WORKERS = 36
 FF_WORKERS = 6                 # ffmpeg 并发低一些，减少假失败
 PRECHECK_TIMEOUT = 3.5
@@ -342,7 +342,8 @@ def main() -> int:
     for c in channels:
         key = norm_key(c["name"])
         flag = is_flagship(c["name"], c.get("group", ""))
-        limit = 5 if flag else 3
+        # 多测几条候选，才能筛出每台 4 条好线
+        limit = 10 if flag else 8
         for u in c["urls"][:limit]:
             url_jobs.append((u, key, flag))
 
@@ -379,8 +380,8 @@ def main() -> int:
     # 旗舰全部测；非旗舰可截断预算
     flag_jobs = [j for j in ff_list if j[2]]
     other_jobs = [j for j in ff_list if not j[2]]
-    # 其它最多 500 条，优先已连通
-    other_jobs = other_jobs[:500]
+    # 其它线预算放宽，保证非旗舰也能凑满 4 线
+    other_jobs = other_jobs[:900]
     ff_list = flag_jobs + other_jobs
     log(f"\n[3/4] ffmpeg 真实拉流 n={len(ff_list)} (旗舰{len(flag_jobs)}+其它{len(other_jobs)})")
     log(f"  条件: ≥{FF_SECONDS}s, 帧≥{MIN_VIDEO_FRAMES} 或 体积≥{MIN_SIZE_KB}kB, 码率≥{MIN_BITRATE_KBPS}kbps")
