@@ -3,8 +3,8 @@ import AVKit
 import UIKit
 import MediaPlayer
 
-// 默认 M3U 源：Guovin/iptv-api 每日两次自动采集+测速+筛选的产物。
-// raw 地址由 MirrorResolver 在拉取时自动扩展 jsDelivr/ghproxy 镜像，国内可直连
+// 默认 M3U 源：本仓库严格筛选后的 validated-channels（央视/卫视保底）。
+// 拉取时 MirrorResolver 自动展开 jsDelivr / Pages / ghproxy / raw 镜像竞速
 let DEFAULT_SOURCE_URL = "https://cdn.jsdelivr.net/gh/wfygefjgd/live-player@main/iptv-mirrors/validated-channels.m3u"
 
 private let CHANNEL_OSD_MS: UInt64 = 2_500_000_000
@@ -13,19 +13,25 @@ private let AUTO_SWITCH_COOLDOWN_NS: UInt64 = 600_000_000
 private let SILENT_AUDIO_GRACE_NS: UInt64 = 5_000_000_000  // 5s 静音切换冷却
 private let AUTO_RECOVER_MAX_CHANNELS = 30                 // 连续自动切台上限
 
-// 已筛选列表（JSON，303 台）专用地址，勿当 m3u 源塞进 PRESET
+// 精选列表 JSON（Bundle 快速启动 / 旁路刷新），勿当 m3u 源重复塞进 PRESET
 let VALIDATED_CHANNELS_MIRROR =
     "https://wfygefjgd.github.io/live-player/iptv-mirrors/validated-channels.json"
 let VALIDATED_M3U_MIRROR =
     "https://wfygefjgd.github.io/live-player/iptv-mirrors/validated-channels.m3u"
 let VALIDATED_M3U_CDN_MIRROR =
     "https://cdn.jsdelivr.net/gh/wfygefjgd/live-player@main/iptv-mirrors/validated-channels.m3u"
+let VALIDATED_M3U_FASTLY_MIRROR =
+    "https://fastly.jsdelivr.net/gh/wfygefjgd/live-player@main/iptv-mirrors/validated-channels.m3u"
+let VALIDATED_M3U_RAW =
+    "https://raw.githubusercontent.com/wfygefjgd/live-player/main/iptv-mirrors/validated-channels.m3u"
 
 // M3U 预置源（GitHub 系地址拉取时自动扩镜像，见 MirrorResolver）
 let PRESET_SOURCES: [(name: String, url: String)] = [
-    ("Validated GitHub mirror", VALIDATED_M3U_MIRROR),
-    ("Validated jsDelivr mirror", VALIDATED_M3U_CDN_MIRROR),
-    ("Guovin 自动筛选源（推荐）", "https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u"),
+    ("精选默认源 jsDelivr", VALIDATED_M3U_CDN_MIRROR),
+    ("精选默认源 Fastly", VALIDATED_M3U_FASTLY_MIRROR),
+    ("精选默认源 Pages", VALIDATED_M3U_MIRROR),
+    ("精选默认源 raw", VALIDATED_M3U_RAW),
+    ("Guovin 自动筛选源", "https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u"),
     ("vbskycn 双栈源", "https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv4.m3u"),
     ("fanmingming IPv6 源", "https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/ipv6.m3u"),
     ("BurningC4 中国源", "https://wfygefjgd.github.io/live-player/iptv-mirrors/burningc4-chinese-iptv.m3u"),
@@ -111,24 +117,12 @@ final class PlayerViewModel: ObservableObject {
 
         restoreSources()
 
-        // ① 缓存 / Bundle 预筛列表立刻出画
-        // ② 后台拉 GitHub 镜像预筛列表（主路径）
-        // ③ 镜像失败再走融合兜底（不再一上来全量塞列表）
+        // ① 缓存 / Bundle 立刻出画
+        // ② 后台按当前活动源刷新（默认 DEFAULT_SOURCE_URL，不再走 JSON 旁路）
         if applyQuickStartChannels() {
-            Task { [weak self] in
-                await self?.refreshChannelsFromRemote(silent: true)
-            }
+            loadChannels(force: true, silent: true, preferActiveOnly: true)
         } else {
-            isBootstrapping = true
-            bootstrapMessage = "正在加载已筛选频道..."
-            indicatorText = ""
-            Task { [weak self] in
-                guard let self else { return }
-                let ok = await self.refreshChannelsFromRemote(silent: false)
-                if !ok, self.channels.isEmpty {
-                    self.beginBootstrapLoad()
-                }
-            }
+            beginBootstrapLoad()
         }
     }
 
@@ -173,8 +167,7 @@ final class PlayerViewModel: ObservableObject {
         if !cached.isEmpty {
             channels = cached
         } else {
-            // 直接加载频道，不显示引导界面
-            loadChannels(force: true, silent: true, preferActiveOnly: false)
+            loadChannels(force: true, silent: true, preferActiveOnly: true)
         }
     }
 
@@ -183,13 +176,10 @@ final class PlayerViewModel: ObservableObject {
     private func beginBootstrapLoad() {
         isBootstrapping = true
         indicatorText = ""
-        if NetworkMonitor.shared.isSatisfied {
-            bootstrapMessage = "正在加载频道列表..."
-            loadChannels(force: true, silent: false, preferActiveOnly: false)
-            scheduleRetryLoads()
-            return
-        }
-        bootstrapMessage = "等待网络权限（请点「允许」）..."
+        bootstrapMessage = NetworkMonitor.shared.isSatisfied
+            ? "正在加载频道列表..."
+            : "等待网络权限（请点「允许」）..."
+        // 始终优先当前活动源（默认源），不融合多源
         loadChannels(force: true, silent: false, preferActiveOnly: true)
         scheduleRetryLoads()
     }
@@ -206,7 +196,7 @@ final class PlayerViewModel: ObservableObject {
                     return
                 }
                 self.bootstrapMessage = "正在重新加载频道..."
-                self.loadChannels(force: true, silent: false, preferActiveOnly: false)
+                self.loadChannels(force: true, silent: false, preferActiveOnly: true)
             }
             while !Task.isCancelled {
                 if !self.channels.isEmpty {
@@ -216,7 +206,7 @@ final class PlayerViewModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 guard !Task.isCancelled else { return }
                 self.bootstrapMessage = "仍无频道，继续刷新..."
-                self.loadChannels(force: true, silent: false, preferActiveOnly: false)
+                self.loadChannels(force: true, silent: false, preferActiveOnly: true)
             }
         }
     }
@@ -226,7 +216,7 @@ final class PlayerViewModel: ObservableObject {
         if channels.isEmpty {
             bootstrapMessage = "网络已连接，加载频道..."
             isBootstrapping = true
-            loadChannels(force: true, silent: false, preferActiveOnly: false)
+            loadChannels(force: true, silent: false, preferActiveOnly: true)
         }
     }
 
@@ -263,7 +253,7 @@ final class PlayerViewModel: ObservableObject {
         isBootstrapping = true
         bootstrapMessage = "正在加载频道列表..."
         indicatorText = ""
-        loadChannels(force: true, silent: false, preferActiveOnly: false)
+        loadChannels(force: true, silent: false, preferActiveOnly: true)
         scheduleRetryLoads()
     }
 

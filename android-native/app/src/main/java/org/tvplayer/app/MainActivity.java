@@ -56,22 +56,22 @@ import java.util.concurrent.Executors;
 
 public class MainActivity extends AppCompatActivity {
 
-    // 多源配置：6个优质源自动拼接
-    private static final String[] MULTI_SOURCE_URLS = {
-            "best-fan/iptv-sources/master/cn_all_status.m3u8",
-            "fanmingming/live/main/tv/m3u/ipv6.m3u",
-            "YueChan/Live/main/IPTV.m3u",
-            "Supprise0901/TVBox_live/main/live.txt",
-            "vbskycn/iptv/master/tv/tv.m3u",
-            "YanG-1989/m3u/main/Gather.m3u"
-    };
+    // 默认源：本仓库严格筛选 validated-channels（拉取时 MirrorResolver 扩镜像竞速）
+    private static final String DEFAULT_SOURCE_URL =
+            "https://cdn.jsdelivr.net/gh/wfygefjgd/live-player@main/iptv-mirrors/validated-channels.m3u";
 
-    // 镜像加速前缀
-    private static final String[] MIRROR_PREFIXES = {
-            "https://ghfast.top/raw.githubusercontent.com/",
-            "https://raw.gitmirror.com/",
-            "https://raw.kkgithub.com/",
-            "https://gcore.jsdelivr.net/gh/"
+    // 预置 M3U 源（与 iOS PRESET_SOURCES 对齐）
+    private static final String[] MULTI_SOURCE_URLS = {
+            "https://cdn.jsdelivr.net/gh/wfygefjgd/live-player@main/iptv-mirrors/validated-channels.m3u",
+            "https://fastly.jsdelivr.net/gh/wfygefjgd/live-player@main/iptv-mirrors/validated-channels.m3u",
+            "https://wfygefjgd.github.io/live-player/iptv-mirrors/validated-channels.m3u",
+            "https://raw.githubusercontent.com/wfygefjgd/live-player/main/iptv-mirrors/validated-channels.m3u",
+            "https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/result.m3u",
+            "https://raw.githubusercontent.com/vbskycn/iptv/master/tv/iptv4.m3u",
+            "https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/ipv6.m3u",
+            "https://wfygefjgd.github.io/live-player/iptv-mirrors/burningc4-chinese-iptv.m3u",
+            "https://wfygefjgd.github.io/live-player/iptv-mirrors/zbefine-iptv.m3u",
+            "https://wfygefjgd.github.io/live-player/iptv-mirrors/suxuang-myiptv.m3u"
     };
 
     private static final long CHANNEL_OSD_MS = 2500L;
@@ -653,9 +653,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private List<Channel> fetchChannels() {
-        for (String url : buildSourceCandidates()) {
+        for (String logical : buildSourceCandidates()) {
             try {
-                String body = httpGet(url);
+                String body = httpGetWithMirrors(logical);
                 if (body != null && !body.isEmpty()) {
                     List<Channel> parsed = M3UParser.parse(body);
                     if (!parsed.isEmpty()) {
@@ -668,21 +668,24 @@ public class MainActivity extends AppCompatActivity {
         return new ArrayList<>();
     }
 
+    /** 逻辑源列表（未展开镜像）；实际拉取走 httpGetWithMirrors */
     private List<String> buildSourceCandidates() {
-        List<String> urls = new ArrayList<>();
-        if (!activeSourceUrl.isEmpty()) {
-            urls.add(activeSourceUrl);
+        LinkedHashSet<String> urls = new LinkedHashSet<>();
+        if (activeSourceUrl != null && !activeSourceUrl.isEmpty()) {
+            urls.add(activeSourceUrl.trim());
         }
-        // 如果activeSourceUrl为空或加载失败，尝试所有镜像源
-        for (String sourceUrl : MULTI_SOURCE_URLS) {
-            for (String prefix : MIRROR_PREFIXES) {
-                String fullUrl = prefix + sourceUrl;
-                if (!urls.contains(fullUrl)) {
-                    urls.add(fullUrl);
-                }
+        if (sourceUrls != null) {
+            for (String u : sourceUrls) {
+                if (u != null && !u.trim().isEmpty()) urls.add(u.trim());
             }
         }
-        return urls;
+        for (String sourceUrl : MULTI_SOURCE_URLS) {
+            urls.add(sourceUrl);
+        }
+        if (urls.isEmpty()) {
+            urls.add(DEFAULT_SOURCE_URL);
+        }
+        return new ArrayList<>(urls);
     }
 
     private void showSourceInputDialog() {
@@ -890,6 +893,9 @@ public class MainActivity extends AppCompatActivity {
 
     private void restoreSourceState() {
         LinkedHashSet<String> urls = new LinkedHashSet<>();
+        for (String preset : MULTI_SOURCE_URLS) {
+            urls.add(preset);
+        }
         urls.addAll(storage.loadSourceUrls());
         String legacy = storage.loadCustomSourceUrl();
         if (legacy != null && !legacy.trim().isEmpty()) {
@@ -904,7 +910,10 @@ public class MainActivity extends AppCompatActivity {
                 sourceUrls.add(activeSourceUrl);
             }
         } else {
-            activeSourceUrl = "";
+            activeSourceUrl = DEFAULT_SOURCE_URL;
+            if (!sourceUrls.contains(activeSourceUrl)) {
+                sourceUrls.add(0, activeSourceUrl);
+            }
         }
         persistSourceState();
     }
@@ -921,9 +930,9 @@ public class MainActivity extends AppCompatActivity {
 
     private String httpGet(String urlStr) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
-        conn.setConnectTimeout(8000);
+        conn.setConnectTimeout(6000);
         conn.setReadTimeout(10000);
-        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 10)");
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 10) TVPlayer/1.5.6");
         conn.setInstanceFollowRedirects(true);
         int code = conn.getResponseCode();
         if (code < 200 || code >= 300) {
@@ -940,6 +949,56 @@ public class MainActivity extends AppCompatActivity {
         br.close();
         conn.disconnect();
         return sb.toString();
+    }
+
+    /**
+     * 单一逻辑源 + 镜像竞速：GitHub 系地址自动展开镜像并发请求，任一候选返回可用文本即胜出。
+     * 对齐 iOS NetworkService.fetchTextWithMirrors。
+     */
+    private String httpGetWithMirrors(String logicalUrl) {
+        if (logicalUrl == null || logicalUrl.trim().isEmpty()) return null;
+        List<String> candidates = MirrorResolver.candidates(logicalUrl.trim());
+        if (candidates.isEmpty()) return null;
+        if (candidates.size() == 1) {
+            try {
+                return httpGet(candidates.get(0));
+            } catch (Exception e) {
+                return null;
+            }
+        }
+        final java.util.concurrent.atomic.AtomicReference<String> winner =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        final java.util.concurrent.CountDownLatch done =
+                new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.atomic.AtomicInteger remaining =
+                new java.util.concurrent.atomic.AtomicInteger(candidates.size());
+        for (String cand : candidates) {
+            netPool.execute(() -> {
+                if (winner.get() != null) {
+                    if (remaining.decrementAndGet() == 0) done.countDown();
+                    return;
+                }
+                try {
+                    String body = httpGet(cand);
+                    if (body != null && !body.isEmpty()) {
+                        if (winner.compareAndSet(null, body)) {
+                            done.countDown();
+                        }
+                    }
+                } catch (Exception ignored) {
+                } finally {
+                    if (remaining.decrementAndGet() == 0) {
+                        done.countDown();
+                    }
+                }
+            });
+        }
+        try {
+            done.await(12, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return winner.get();
     }
 
     private boolean inReadyProtect() {
@@ -1373,7 +1432,37 @@ public class MainActivity extends AppCompatActivity {
         return output;
     }
 
+    /**
+     * 判断是否应跳过该线路（黑名单 / 无效协议 / 质量过滤）
+     * 对齐 iOS applyRules + M3UParser 质量筛选逻辑
+     */
     private boolean shouldSkipChannelLine(String key, int index, String url) {
+        if (url == null || url.trim().isEmpty()) {
+            return true;
+        }
+        // 黑名单线路：跳过（保留至少一条兜底）
+        if (reputation != null && reputation.isBlacklisted(url)) {
+            return true;
+        }
+        // 无效协议
+        String u = url.trim().toLowerCase();
+        if (!u.startsWith("http://") && !u.startsWith("https://")
+                && !u.startsWith("rtmp://") && !u.startsWith("rtsp://")) {
+            return true;
+        }
+        // 测试/示例链接
+        if (u.contains("test") || u.contains("demo") || u.contains("example")) {
+            return true;
+        }
+        // 非标准端口（排除常见端口）
+        try {
+            java.net.URI uri = new java.net.URI(url);
+            int port = uri.getPort();
+            if (port > 0 && port != 80 && port != 443 && port != 8080 && port != 1935) {
+                return true;
+            }
+        } catch (Exception ignored) {
+        }
         return false;
     }
 
@@ -1623,7 +1712,7 @@ public class MainActivity extends AppCompatActivity {
     /**
      * 从多个源加载并合并频道（受 fusionMode 控制，对齐 iOS）
      */
-    /** 构建本轮要拉的源列表：用户源优先，再补内置镜像 */
+    /** 构建本轮要拉的逻辑源（未展开镜像）：用户源优先，再补预置源 */
     private List<String> buildFusionFetchUrls(String mode, int limit) {
         LinkedHashSet<String> ordered = new LinkedHashSet<>();
         if (activeSourceUrl != null && !activeSourceUrl.trim().isEmpty()) {
@@ -1636,43 +1725,35 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
         }
-        int built = 0;
+        int built = ordered.isEmpty() ? 0 : 1;
         for (String sourceUrl : MULTI_SOURCE_URLS) {
             if (built >= limit) break;
-            for (String prefix : MIRROR_PREFIXES) {
-                ordered.add(prefix + sourceUrl);
+            if (ordered.add(sourceUrl)) {
+                built++;
             }
-            built++;
         }
-        return new ArrayList<>(ordered);
+        if (ordered.isEmpty()) {
+            ordered.add(DEFAULT_SOURCE_URL);
+        }
+        // 截到 limit 个逻辑源
+        List<String> list = new ArrayList<>();
+        for (String u : ordered) {
+            if (list.size() >= limit) break;
+            list.add(u);
+        }
+        return list;
     }
 
-    private List<Channel> fetchOneSource(String fullUrl) {
-        HttpURLConnection conn = null;
+    /** 拉取单一逻辑源（内部镜像竞速）并解析频道 */
+    private List<Channel> fetchOneSource(String logicalUrl) {
         try {
-            URL url = new URL(fullUrl);
-            conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(10000);
-            conn.setRequestProperty("User-Agent", "TVPlayer/1.0");
-            if (conn.getResponseCode() != 200) {
+            String body = httpGetWithMirrors(logicalUrl);
+            if (body == null || body.isEmpty()) {
                 return new ArrayList<>();
             }
-            BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(conn.getInputStream(), "UTF-8"));
-            StringBuilder sb = new StringBuilder();
-            String line;
-            while ((line = reader.readLine()) != null) {
-                sb.append(line).append("\n");
-            }
-            reader.close();
-            return M3UParser.parse(sb.toString());
+            return M3UParser.parse(body);
         } catch (Exception e) {
             return new ArrayList<>();
-        } finally {
-            if (conn != null) {
-                try { conn.disconnect(); } catch (Exception ignored) {}
-            }
         }
     }
 
@@ -1692,20 +1773,14 @@ public class MainActivity extends AppCompatActivity {
                 List<Channel> parsed = new ArrayList<>();
                 String url = (activeSourceUrl != null && !activeSourceUrl.trim().isEmpty())
                         ? activeSourceUrl.trim()
-                        : (sourceUrls.isEmpty() ? "" : sourceUrls.get(0));
-                if (!url.isEmpty()) {
-                    try {
-                        String body = httpGet(url);
-                        if (body != null && !body.isEmpty()) {
-                            parsed = M3UParser.parse(body);
-                        }
-                    } catch (Exception ignored) {
-                    }
+                        : (sourceUrls.isEmpty() ? DEFAULT_SOURCE_URL : sourceUrls.get(0));
+                if (url == null || url.isEmpty()) {
+                    url = DEFAULT_SOURCE_URL;
                 }
+                parsed = fetchOneSource(url);
                 if (parsed.isEmpty()) {
-                    // 兜底：第一个内置镜像
-                    List<String> fallback = buildFusionFetchUrls("fast", 1);
-                    for (String u : fallback) {
+                    for (String u : MULTI_SOURCE_URLS) {
+                        if (u.equals(url)) continue;
                         parsed = fetchOneSource(u);
                         if (!parsed.isEmpty()) break;
                     }
