@@ -243,8 +243,8 @@ final class PlayerEngine: ObservableObject {
         // 最强正向：已出画
         if s.hasRendered { return .ok }
         // 最强负向：item 已失败 or 致命错误 → 单信号即判
-        if s.itemStatus == .failed { return .fail("线路失败", strong: true) }
-        if s.errorLogHasFatal { return .fail("源不可用", strong: true) }
+        if s.itemStatus == .failed { return .fail(reason: "线路失败", strong: true) }
+        if s.errorLogHasFatal { return .fail(reason: "源不可用", strong: true) }
 
         var pos = 0
         var neg = 0
@@ -274,11 +274,11 @@ final class PlayerEngine: ObservableObject {
 
         // --- 融合决策 ---
         if pos >= Self.positiveVoteThreshold { return .ok }
-        if neg >= Self.negativeVoteThreshold { return .fail("多信号异常", strong: false) }
+        if neg >= Self.negativeVoteThreshold { return .fail(reason: "多信号异常", strong: false) }
 
         // 单维度强负向（仅当极端）：长时间完全无进度+无缓冲+无速
         if !s.clockAdvancing && s.isBufferEmpty && s.speedKBps < Self.deadSpeedKBps && s.elapsed > 4 {
-            return .fail("线路无数据", strong: false)
+            return .fail(reason: "线路无数据", strong: false)
         }
 
         return .undetermined(pos: pos, neg: neg)
@@ -412,7 +412,7 @@ final class PlayerEngine: ObservableObject {
         stopHealthCheck()
         stopSpeedCheck()
         consecutiveStallCount = 0
-        deadStrikes = 0
+        persistentNegativeScore = 0
         stallWatchEnabled = false
         continuousStall = false
         hasRendered = false
@@ -487,8 +487,10 @@ final class PlayerEngine: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.playToken == token else { return }
-                if let neg = self.negativeEvidence(), !self.isReady {
-                    self.failStartup(token: token, reason: neg)
+                if !self.isReady {
+                    if let item = self.player.currentItem, item.status == .failed {
+                        self.failStartup(token: token, reason: item.error?.localizedDescription ?? "线路失败")
+                    }
                 }
             }
         }
@@ -600,7 +602,7 @@ final class PlayerEngine: ObservableObject {
         if isReady { return }
         evidenceTask?.cancel()
         evidenceTask = nil
-        deadStrikes = 0
+        persistentNegativeScore = 0
         cancelTask(named: "startup")
         cancelTask(named: "startupFast")
         cancelTask(named: "startupSoft")
@@ -858,8 +860,8 @@ final class PlayerEngine: ObservableObject {
         if s.hasRendered && s.clockAdvancing { return .ok }
         if s.hasRendered && s.isLikelyToKeepUp && !s.isBufferEmpty { return .ok }
         // 强负向单信号
-        if s.itemStatus == .failed { return .fail("线路中断", strong: true) }
-        if s.errorLogHasFatal { return .fail("源错误", strong: true) }
+        if s.itemStatus == .failed { return .fail(reason: "线路中断", strong: true) }
+        if s.errorLogHasFatal { return .fail(reason: "源错误", strong: true) }
 
         var pos = 0
         var neg = 0
@@ -882,7 +884,7 @@ final class PlayerEngine: ObservableObject {
         if !s.loadedRangesGrowing && s.isBufferEmpty { neg += 1 }
 
         if pos >= Self.positiveVoteThreshold { return .ok }
-        if neg >= Self.negativeVoteThreshold { return .fail("播放异常", strong: false) }
+        if neg >= Self.negativeVoteThreshold { return .fail(reason: "播放异常", strong: false) }
         return .undetermined(pos: pos, neg: neg)
     }
 
