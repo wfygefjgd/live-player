@@ -1,39 +1,26 @@
 # IPTV 源镜像
 
-自动同步 + 本地严格筛选后的 IPTV 源镜像，解决国内无代理无法访问 GitHub raw 的问题。
+自动同步的 IPTV 源镜像，解决国内无代理无法访问 GitHub raw 的问题。
 
-## 默认推荐源（严格筛选）
+## 可用镜像
 
-| 文件 | 说明 |
-|------|------|
-| [validated-channels.m3u](validated-channels.m3u) | 默认播放列表（App 默认源） |
-| [validated-channels.json](validated-channels.json) | 同内容 JSON（Bundle / 快速启动） |
+| 源名称 | 原始地址 | 镜像地址 |
+|--------|---------|---------|
+| BurningC4 Chinese-IPTV | [GitHub](https://github.com/BurningC4/Chinese-IPTV) | [burningc4-chinese-iptv.m3u](burningc4-chinese-iptv.m3u) |
+| zbefine IPTV | [GitHub](https://github.com/zbefine/iptv) | [zbefine-iptv.m3u](zbefine-iptv.m3u) |
+| suxuang myIPTV | [GitHub](https://github.com/suxuang/myIPTV) | [suxuang-myiptv.m3u](suxuang-myiptv.m3u) |
 
-### 镜像访问（国内优先）
+## 更新频率
 
+每天自动同步一次（北京时间 6:00）
+
+## 访问方式
+
+通过 GitHub Pages 访问：
 ```
-# jsDelivr CDN（推荐默认）
-https://cdn.jsdelivr.net/gh/wfygefjgd/live-player@main/iptv-mirrors/validated-channels.m3u
-https://fastly.jsdelivr.net/gh/wfygefjgd/live-player@main/iptv-mirrors/validated-channels.m3u
-
-# GitHub Pages
-https://wfygefjgd.github.io/live-player/iptv-mirrors/validated-channels.m3u
-https://wfygefjgd.github.io/live-player/iptv-mirrors/validated-channels.json
-
-# raw（需代理或走 gh-proxy）
-https://raw.githubusercontent.com/wfygefjgd/live-player/main/iptv-mirrors/validated-channels.m3u
-https://gh-proxy.com/https://raw.githubusercontent.com/wfygefjgd/live-player/main/iptv-mirrors/validated-channels.m3u
+https://wfygefjgd.github.io/live-player/iptv-mirrors/burningc4-chinese-iptv.m3u
+https://wfygefjgd.github.io/live-player/iptv-mirrors/zbefine-iptv.m3u
+https://wfygefjgd.github.io/live-player/iptv-mirrors/suxuang-myiptv.m3u
 ```
 
-## 其它镜像
-
-| 源名称 | 镜像文件 |
-|--------|---------|
-| BurningC4 Chinese-IPTV | [burningc4-chinese-iptv.m3u](burningc4-chinese-iptv.m3u) |
-| zbefine IPTV | [zbefine-iptv.m3u](zbefine-iptv.m3u) |
-| suxuang myIPTV | [suxuang-myiptv.m3u](suxuang-myiptv.m3u) |
-
-## 更新
-
-- 第三方源：每天自动同步（北京时间 6:00）
-- 精选默认源：本地 multi-pass + 严格质量筛选后手动/脚本推送
+最后更新时间：$(date -u +"%Y-%m-%d %H:%M:%S UTC")
