@@ -4,7 +4,7 @@ import UIKit
 import MediaPlayer
 
 // =============================================================================
-// v1.5.57：画面脱离 SwiftUI 布局
+// 视频画面脱离 SwiftUI 布局
 //
 // 现象 1+4：中间小框四周黑 + 小白条顶起
 // 根因：VideoPlayerView 在 SwiftUI/Hosting 安全区内，被缩成中间卡片

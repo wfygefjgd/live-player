@@ -103,7 +103,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     func handleSceneDidBecomeActive(_ scene: UIWindowScene) {
         requestLandscape(for: scene, root: rootContainer)
         rootContainer?.refreshSystemChrome()
-        viewModel?.resumeIfAppropriate()
         viewModel?.onAppBecameActive()
         WindowVideoSurface.shared.rebindPlayer()
     }

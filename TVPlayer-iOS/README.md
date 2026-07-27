@@ -1,11 +1,12 @@
-# TVPlayer iOS
+# TVPlayer iOS 1.8 Stable
 
-自签侧载版本的 TVPlayer 直播播放器。
+自签侧载版本的 TVPlayer 1.8 稳定版直播播放器。
 
 ## 功能特性
 
 - M3U/M3U8 直播源播放
-- 多线路自动切换（竞速取最快）
+- 源可以自定义，支持添加和切换 M3U/M3U8 地址
+- 多线路自动切换（超时、卡顿、无声自动切线）
 - 智能切线：无声音/卡顿/超时自动切换
 - 后台音频播放
 - 数字键选台（iPad 外接键盘）
@@ -24,8 +25,8 @@
    - `TEAM_ID`: Apple Developer Team ID（可选）
 3. 推送一个 tag 触发构建：
    ```bash
-   git tag v1.0.0
-   git push origin v1.0.0
+   git tag v1.8
+   git push origin v1.8
    ```
 4. 在 Actions 页面等待构建完成
 5. 在 Release 页面下载 `TVPlayer.ipa`

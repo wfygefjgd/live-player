@@ -5,12 +5,10 @@ struct SourceManagementSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var inputUrl = ""
     @State private var showInvalidAlert = false
-    @State private var showFusionSettings = false
 
     var body: some View {
         NavigationView {
             VStack(spacing: 12) {
-                // 输入区域
                 VStack(spacing: 8) {
                     HStack(spacing: 8) {
                         TextField("输入 m3u / m3u8 地址", text: $inputUrl)
@@ -26,11 +24,9 @@ struct SourceManagementSheet: View {
                             .disabled(inputUrl.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
 
-                    // 快捷粘贴按钮
                     if inputUrl.isEmpty {
                         Button {
-                            if let pasted = UIPasteboard.general.string,
-                               !pasted.isEmpty {
+                            if let pasted = UIPasteboard.general.string, !pasted.isEmpty {
                                 inputUrl = pasted.trimmingCharacters(in: .whitespacesAndNewlines)
                             }
                         } label: {
@@ -45,7 +41,6 @@ struct SourceManagementSheet: View {
                     }
                 }
 
-                // 源列表
                 List {
                     Section {
                         Toggle(isOn: Binding(
@@ -57,26 +52,10 @@ struct SourceManagementSheet: View {
                                     .foregroundColor(.orange)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("线路超时")
-                                    Text("关闭后不因超时/卡顿自动换线")
+                                    Text("关闭后不会因超时、卡顿自动换线")
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }
-                            }
-                        }
-
-                        Button(action: { showFusionSettings = true }) {
-                            HStack {
-                                Image(systemName: "wand.and.stars")
-                                    .foregroundColor(.purple)
-                                Text("融合模式设置")
-                                    .foregroundColor(.primary)
-                                Spacer()
-                                Text(fusionModeText)
-                                    .foregroundColor(.secondary)
-                                    .font(.caption)
-                                Image(systemName: "chevron.right")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
                             }
                         }
                     } header: {
@@ -84,7 +63,24 @@ struct SourceManagementSheet: View {
                     }
 
                     Section {
-                        ForEach(Array(vm.sourceUrls.enumerated()), id: \.element) { (i, url) in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("TVPlayer 1.8 稳定版")
+                                .font(.headline)
+                            Text("• 源可以自定义，支持添加和切换 M3U / M3U8 地址")
+                            Text("• 支持预置源与自定义源切换，频道列表可自动刷新")
+                            Text("• 支持多线路自动换线，遇到超时、卡顿、无声会自动切线")
+                            Text("• 支持收藏频道、隐藏线路、后台音频播放")
+                            Text("• 支持键盘数字选台与手势切台")
+                        }
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(.vertical, 4)
+                    } header: {
+                        Text("版本说明")
+                    }
+
+                    Section {
+                        ForEach(Array(vm.sourceUrls.enumerated()), id: \.element) { i, url in
                             sourceRow(index: i, url: url)
                         }
                         .onDelete { offsets in
@@ -92,7 +88,7 @@ struct SourceManagementSheet: View {
                         }
                     } header: {
                         HStack {
-                            Text("当前源: \(activeSourceLabel)")
+                            Text("当前源：\(activeSourceLabel)")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                             Spacer()
@@ -115,25 +111,11 @@ struct SourceManagementSheet: View {
                     Button("关闭") { dismiss() }
                 }
             }
-            .sheet(isPresented: $showFusionSettings) {
-                FusionModeSettingsView()
-                    .environmentObject(vm)
-            }
         }
         .alert("地址无效", isPresented: $showInvalidAlert) {
-            Button("确定", role: .cancel) { }
+            Button("确定", role: .cancel) {}
         } message: {
             Text("请输入以 http:// 或 https:// 开头的有效地址")
-        }
-    }
-
-    private var fusionModeText: String {
-        switch vm.fusionMode {
-        case .off: return "关闭融合"
-        case .fast: return "快速"
-        case .balanced: return "平衡"
-        case .complete: return "完整"
-        case .smart: return "智能"
         }
     }
 
@@ -152,13 +134,11 @@ struct SourceManagementSheet: View {
                 dismiss()
             } label: {
                 HStack {
-                    // 选中标记
                     Image(systemName: url == vm.activeSourceUrl ? "largecircle.fill.circle" : "circle")
                         .foregroundColor(url == vm.activeSourceUrl ? .blue : .gray)
                         .font(.body)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        // 预置源显示名称，自定义源显示 URL
                         Text(displayName(for: url))
                             .font(.body)
                             .foregroundColor(.primary)
@@ -173,7 +153,6 @@ struct SourceManagementSheet: View {
 
                     Spacer()
 
-                    // 预置源标签
                     if isBuiltin(url) {
                         Text("预置")
                             .font(.caption2)
@@ -212,7 +191,6 @@ struct SourceManagementSheet: View {
         let url = inputUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !url.isEmpty else { return }
 
-        // URL 格式校验
         guard url.hasPrefix("http://") || url.hasPrefix("https://"),
               URL(string: url) != nil else {
             showInvalidAlert = true
@@ -224,7 +202,6 @@ struct SourceManagementSheet: View {
     }
 
     private func deleteSources(at offsets: IndexSet) {
-        // 从后往前删，避免索引偏移
         for i in offsets.sorted(by: >) {
             guard i < vm.sourceUrls.count else { continue }
             let url = vm.sourceUrls[i]

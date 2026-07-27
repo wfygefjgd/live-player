@@ -54,8 +54,6 @@ final class PlayerViewModel: ObservableObject {
     @Published var bootstrapMessage = "正在连接网络..."
     @Published var playerLayoutEpoch: Int = 0
 
-    // 智能融合相关（默认关闭：仅使用单一源）
-    @Published var fusionMode: FusionMode = .off
     /// 线路超时自动换线（默认关，便于先测镜像源）
     @Published var lineTimeoutEnabled: Bool = true
     private let fusionEngine = SmartFusionEngine.shared
@@ -74,10 +72,6 @@ final class PlayerViewModel: ObservableObject {
     private var indTask: Task<Void, Never>?
     private var cooldownTask: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
-
-    // NotificationCenter 观察者
-    private var fusionObserver: NSObjectProtocol?
-    private var firstBatchObserver: NSObjectProtocol?
 
     private var lastVolumeTranslation: CGFloat = 0
     private var lastSilentSwitchAt: Date = .distantPast
@@ -99,8 +93,6 @@ final class PlayerViewModel: ObservableObject {
         favorites = storage.loadFavorites()
         UIApplication.shared.isIdleTimerDisabled = true
 
-        setupFusionObserver()
-        restoreFusionMode()
         restoreLineTimeoutEnabled()
 
         player.onReady = { [weak self] in self?.onPlayerReady() }
@@ -176,8 +168,6 @@ final class PlayerViewModel: ObservableObject {
         started = true
         favorites = storage.loadFavorites()
 
-        setupFusionObserver()
-        restoreFusionMode()
         restoreLineTimeoutEnabled()
         restoreSources()
 
@@ -254,6 +244,7 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func onAppBecameActive() {
+        UIApplication.shared.isIdleTimerDisabled = true
         WindowVideoSurface.shared.rebindPlayer()
         if channels.isEmpty {
             retryLoadSources()
@@ -267,6 +258,8 @@ final class PlayerViewModel: ObservableObject {
         if !player.isPlaying {
             player.resume()
         }
+        bumpPlayerLayout()
+        updateNowPlaying()
     }
 
     func retryLoadSources() {
@@ -378,10 +371,7 @@ final class PlayerViewModel: ObservableObject {
         let urls = preferActiveOnly ? [activeSourceUrl] : buildCandidates()
         loadGeneration += 1
         let gen = loadGeneration
-        let mode = fusionMode
-        // 作废上一轮后台融合通知，并绑定本轮 session
         fusionEngine.invalidateSession()
-        let fusionSession = fusionEngine.session
 
         Task { [weak self] in
             guard let self else { return }
@@ -390,14 +380,10 @@ final class PlayerViewModel: ObservableObject {
                 self.bootstrapMessage = message
             }
 
-            let (loaded, errMsg) = await self.fusionEngine.smartFusion(
-                sourceUrls: urls,
-                mode: mode
-            )
+            let (loaded, errMsg) = await self.fusionEngine.loadChannels(sourceUrls: urls)
 
             await MainActor.run { [weak self] in
                 guard let self, self.loadGeneration == gen else { return }
-                guard self.fusionEngine.session == fusionSession else { return }
                 self.onChannelsLoaded(loaded, errorMessage: errMsg, silent: silent)
             }
         }
@@ -1137,24 +1123,6 @@ final class PlayerViewModel: ObservableObject {
         updateNowPlaying()
     }
 
-    /// 回前台：非用户暂停时续播；item 丢失则重拉
-    func resumeIfAppropriate() {
-        guard !userPaused else { return }
-        UIApplication.shared.isIdleTimerDisabled = true
-        if player.player.currentItem == nil {
-            if currentChannel != nil {
-                playCurrent(showOSD: false, resetTried: false)
-            }
-            return
-        }
-        if !player.isPlaying {
-            player.resume()
-        }
-        bumpPlayerLayout()
-        updateNowPlaying()
-        WindowVideoSurface.shared.rebindPlayer()
-    }
-
     func noteInterruptionBegan() {
         wasPlayingBeforeInterruption = player.isPlaying && !userPaused
     }
@@ -1182,103 +1150,14 @@ final class PlayerViewModel: ObservableObject {
         if ended { lastBrightnessTranslation = 0 }
     }
 
-    // MARK: - 智能融合相关
-
-    /// 监听首源批次 + 后台全量优化：软合并，不打断稳定播放
-    private func setupFusionObserver() {
-        if let observer = fusionObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        if let observer = firstBatchObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        fusionObserver = NotificationCenter.default.addObserver(
-            forName: .channelsOptimized,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard let self else { return }
-            if let s = notification.userInfo?["session"] as? Int, s != self.fusionEngine.session {
-                return
-            }
-            guard let optimized = notification.object as? [Channel] else { return }
-            self.mergeOptimizedChannels(optimized)
-        }
-        // channelsFirstBatch 已停用双投递；保留 observer 槽位以免旧通知误伤
-        firstBatchObserver = nil
-    }
-
-    /// 融合后台优化结果软合并：保留当前台/当前线，只更新列表与排序
-    private func mergeOptimizedChannels(_ optimized: [Channel]) {
-        let prevKey = currentChannel?.key
-        let prevURL = currentUrl
-        let applied = reputation.applyToChannels(optimized)
-        rawChannels = applied
-        channels = applyRules(applied)
-        guard !channels.isEmpty else { return }
-        storage.saveChannels(applied)
-
-        if let prevKey, let idx = channels.firstIndex(where: { $0.key == prevKey }) {
-            currentIndex = idx
-            if let prevURL, let li = channels[idx].urls.firstIndex(of: prevURL) {
-                currentSourceIndex = li
-            } else {
-                currentSourceIndex = min(currentSourceIndex, max(0, channels[idx].sourceCount - 1))
-            }
-            if !player.isReady && !playbackStable && !userPaused {
-                playCurrent(showOSD: false, resetTried: true)
-            }
-        } else if !player.isReady && !userPaused {
-            restoreLastChannelPosition()
-            playCurrent(showOSD: false, resetTried: true)
-        }
-
-        let totalLines = channels.reduce(0) { $0 + $1.sourceCount }
-        showIndicator("线路优化完成 · \(channels.count) 台 / \(totalLines) 线")
-    }
-
     deinit {
-        let obs1 = fusionObserver
-        let obs2 = firstBatchObserver
         osdTask?.cancel()
         indTask?.cancel()
         cooldownTask?.cancel()
         retryTask?.cancel()
         preferStableTask?.cancel()
         DispatchQueue.main.async {
-            if let obs1 { NotificationCenter.default.removeObserver(obs1) }
-            if let obs2 { NotificationCenter.default.removeObserver(obs2) }
             UIApplication.shared.isIdleTimerDisabled = false
-        }
-    }
-
-    /// 切换融合模式（每次切换强制新一轮融合，避免「第二次不启动」）
-    func switchFusionMode(_ mode: FusionMode) {
-        fusionMode = mode
-        UserDefaults.standard.set(mode.rawValue, forKey: "fusionMode")
-
-        let modeName: String
-        switch mode {
-        case .off: modeName = "关闭融合"
-        case .fast: modeName = "快速"
-        case .balanced: modeName = "平衡"
-        case .complete: modeName = "完整"
-        case .smart: modeName = "智能"
-        }
-
-        showIndicator("已切换到\(modeName)模式 · 正在融合")
-        bootstrapMessage = "正在按\(modeName)模式融合..."
-        // loadChannels 内部会 invalidateSession；这里不再重复调用，避免 session 错位
-        loadChannels(force: true, silent: false, preferActiveOnly: false)
-    }
-
-    /// 从 UserDefaults 恢复融合模式设置（无记录时保持 .off）
-    func restoreFusionMode() {
-        if let saved = UserDefaults.standard.string(forKey: "fusionMode"),
-           let mode = FusionMode(rawValue: saved) {
-            fusionMode = mode
-        } else {
-            fusionMode = .off
         }
     }
 
