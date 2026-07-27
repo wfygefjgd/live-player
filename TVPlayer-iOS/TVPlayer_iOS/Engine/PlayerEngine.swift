@@ -87,8 +87,11 @@ final class PlayerEngine: ObservableObject {
     private var itemErrorObserver: NSObjectProtocol?
     private var itemEndFailObserver: NSObjectProtocol?
     private var bufferEmptyObserver: NSObjectProtocol?
-    private var deadStrikes = 0
     private var playStartedAt: Date = .distantPast
+    private var lastLoadedRangesCount = 0
+    private var lastErrorLogCount = 0
+    // 负向分持续累计（多信号融合用）
+    private var persistentNegativeScore = 0
 
     init() {
         player.actionAtItemEnd = .none
@@ -180,15 +183,116 @@ final class PlayerEngine: ObservableObject {
         }
     }
 
-    // MARK: - 证据驱动起播判定（替代纯 sleep 超时）
+    // MARK: - 多信号融合评估器（统一采集 + 加权投票）
 
-    /// 正向证据 → 立刻 OK；负向证据 → 立刻失败；否则累计 strikes，到点才兜底
+    /// 采集当前所有信号
+    private func collectSignals() -> PlaybackSignals {
+        guard let item = player.currentItem else {
+            return PlaybackSignals(itemStatus: .unknown, hasRendered: false)
+        }
+        let log = item.accessLog()
+        let lastEvent = log?.events.last
+        let speed = sampleObservedSpeedKBps()
+        let clockAdvancing = hasRendered
+            && lastTimeProgressAt != .distantPast
+            && Date().timeIntervalSince(lastTimeProgressAt) <= Self.progressStallThreshold
+        // loadedTimeRanges 是否增长
+        let ranges = item.loadedTimeRanges
+        let rangesCount = ranges.count
+        let rangesGrowing = rangesCount > lastLoadedRangesCount
+        lastLoadedRangesCount = rangesCount
+        // errorLog 条数
+        let errorCount = log?.events.count ?? 0
+        let newErrors = errorCount - lastErrorLogCount
+        lastErrorLogCount = errorCount
+
+        return PlaybackSignals(
+            itemStatus: item.status,
+            hasRendered: hasRendered,
+            hasVideoDimensions: item.presentationSize.width > 1 && item.presentationSize.height > 1,
+            clockAdvancing: clockAdvancing,
+            speedKBps: speed,
+            isBufferEmpty: item.isPlaybackBufferEmpty,
+            isLikelyToKeepUp: item.isPlaybackLikelyToKeepUp,
+            isWaiting: player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+            loadedRangesCount: rangesCount,
+            loadedRangesGrowing: rangesGrowing,
+            errorLogNewErrors: newErrors,
+            errorLogHasFatal: hasFatalError(log: log),
+            elapsed: playStartedAt == .distantPast ? 0 : Date().timeIntervalSince(playStartedAt)
+        )
+    }
+
+    private func hasFatalError(log: AVPlayerItemErrorLog?) -> Bool {
+        guard let log = log else { return false }
+        for e in log.events.suffix(4) {
+            let code = e.errorStatusCode
+            if code == 404 || code == 403 || code == 410 || code == 502 || code == 503 { return true }
+            if code < 0, let msg = e.errorComment?.lowercased() {
+                if msg.contains("404") || msg.contains("forbidden")
+                    || msg.contains("not found") || msg.contains("unauthorized") {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    /// 多信号融合投票：正/负分累计，多信号一致才决策
+    private func fuseVote(_ s: PlaybackSignals) -> FusionVerdict {
+        // 最强正向：已出画
+        if s.hasRendered { return .ok }
+        // 最强负向：item 已失败 or 致命错误 → 单信号即判
+        if s.itemStatus == .failed { return .fail("线路失败", strong: true) }
+        if s.errorLogHasFatal { return .fail("源不可用", strong: true) }
+
+        var pos = 0
+        var neg = 0
+
+        // --- 正向信号 ---
+        if s.itemStatus == .readyToPlay && s.hasVideoDimensions {
+            pos += 3   // 明确已准备好且有画面尺寸
+        } else if s.itemStatus == .readyToPlay {
+            pos += 1
+        }
+        if s.clockAdvancing { pos += 3 }        // 时钟推进 = 在播
+        if s.speedKBps >= Self.minUsefulSpeedKBps { pos += 2 }
+        else if s.speedKBps >= Self.deadSpeedKBps { pos += 1 }
+        if s.isLikelyToKeepUp && !s.isBufferEmpty { pos += 2 }
+        else if !s.isBufferEmpty { pos += 1 }
+        if s.loadedRangesGrowing { pos += 1 }
+
+        // --- 负向信号 ---
+        if !s.hasVideoDimensions && s.elapsed > 2.5 { neg += 2 }
+        if s.isBufferEmpty && s.isWaiting { neg += 2 }
+        else if s.isBufferEmpty { neg += 1 }
+        if s.speedKBps < Self.deadSpeedKBps { neg += 2 }
+        if s.speedKBps < Self.deadSpeedKBps && !s.clockAdvancing { neg += 3 }  // 无速且无进度 = 强负向
+        if !s.clockAdvancing && s.elapsed > Self.progressStallThreshold { neg += 2 }
+        if s.errorLogNewErrors > 0 { neg += 2 }
+        if !s.loadedRangesGrowing && s.isBufferEmpty { neg += 1 }  // 缓冲空且不增长
+
+        // --- 融合决策 ---
+        if pos >= Self.positiveVoteThreshold { return .ok }
+        if neg >= Self.negativeVoteThreshold { return .fail("多信号异常", strong: false) }
+
+        // 单维度强负向（仅当极端）：长时间完全无进度+无缓冲+无速
+        if !s.clockAdvancing && s.isBufferEmpty && s.speedKBps < Self.deadSpeedKBps && s.elapsed > 4 {
+            return .fail("线路无数据", strong: false)
+        }
+
+        return .undetermined(pos: pos, neg: neg)
+    }
+
+    /// 启动多信号融合评估（替代多个独立循环）
     private func armEvidenceDrivenWatch(token: Int) {
         evidenceTask?.cancel()
-        deadStrikes = 0
+        persistentNegativeScore = 0
+        lastLoadedRangesCount = 0
+        lastErrorLogCount = 0
         playStartedAt = Date()
 
-        // 墙钟硬兜底（防止逻辑漏判一直黑屏）
+        // 墙钟硬兜底
         scheduleTask(named: "startup", token: token, timeout: Self.startupHardTimeoutNs) { [weak self] in
             guard let self, self.lineTimeoutEnabled, self.playToken == token else { return }
             guard !self.isReady, !self.hasRendered else { return }
@@ -197,39 +301,35 @@ final class PlayerEngine: ObservableObject {
 
         evidenceTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: Self.evidencePollNs)
+                try? await Task.sleep(nanoseconds: Self.evalPollNs)
                 guard let self, !Task.isCancelled, self.playToken == token else { return }
                 guard self.lineTimeoutEnabled else { return }
                 if self.isReady || self.hasRendered { return }
 
-                // ① 负向证据：立刻失败（不等待）
-                if let neg = self.negativeEvidence() {
-                    self.failStartup(token: token, reason: neg)
-                    return
-                }
+                let signals = self.collectSignals()
+                let verdict = self.fuseVote(signals)
 
-                // ② 正向证据：立刻成功
-                if self.positiveEvidence() {
+                switch verdict {
+                case .ok:
                     self.markTrulyReady(token: token)
                     return
-                }
-
-                // ③ 尚无结论：按「有无希望」累计
-                if self.startupHasStrongHope() {
-                    self.deadStrikes = 0
-                    continue
-                }
-                if self.startupHasHope() {
-                    self.deadStrikes += 1
-                    if self.deadStrikes >= Self.softEvidenceStrikes {
-                        self.failStartup(token: token, reason: "起播无画面")
+                case .fail(let reason, let strong):
+                    if strong {
+                        self.failStartup(token: token, reason: reason)
                         return
                     }
-                } else {
-                    self.deadStrikes += 1
-                    if self.deadStrikes >= Self.deadEvidenceStrikes {
-                        self.failStartup(token: token, reason: "线路无响应")
+                    // 非强负向：多周期确认（防单信号抖动）
+                    self.persistentNegativeScore += 1
+                    if self.persistentNegativeScore >= 2 {
+                        self.failStartup(token: token, reason: reason)
                         return
+                    }
+                case .undetermined(let pos, let neg):
+                    // 趋势跟踪：若持续正向增长，减少误杀
+                    if pos > neg, pos >= 2 {
+                        self.persistentNegativeScore = max(0, self.persistentNegativeScore - 1)
+                    } else if neg > pos {
+                        self.persistentNegativeScore += 1
                     }
                 }
             }
@@ -241,73 +341,8 @@ final class PlayerEngine: ObservableObject {
         evidenceTask?.cancel()
         evidenceTask = nil
         cancelTask(named: "startup")
-        cancelTask(named: "startupFast")
-        cancelTask(named: "startupSoft")
         cancelAllTasks()
-        _ = reason
         onStartupTimeout?()
-    }
-
-    /// 正向：已出画 / 有视频尺寸且时钟在走 / 有视频轨且 likelyToKeepUp
-    private func positiveEvidence() -> Bool {
-        if hasRendered { return true }
-        if hasVideoFrameEvidence() { return true }
-        guard let item = player.currentItem else { return false }
-        if item.status == .readyToPlay,
-           item.presentationSize.width > 1,
-           lastTimeProgressAt != .distantPast {
-            return true
-        }
-        return false
-    }
-
-    /// 负向：item failed、致命 errorLog、明确无法播放
-    private func negativeEvidence() -> String? {
-        guard let item = player.currentItem else { return "无播放项" }
-        if item.status == .failed {
-            return item.error?.localizedDescription ?? "线路失败"
-        }
-        if let log = item.errorLog() {
-            for e in log.events.suffix(3) {
-                let code = e.errorStatusCode
-                // 常见致命：4xx/5xx、I/O、-1102 等
-                if code == 404 || code == 403 || code == 410 || code == 502 || code == 503 {
-                    return "源返回 \(code)"
-                }
-                if code < 0, let msg = e.errorComment, !msg.isEmpty {
-                    let lower = msg.lowercased()
-                    if lower.contains("404") || lower.contains("forbidden")
-                        || lower.contains("not found") || lower.contains("unauthorized") {
-                        return "源拒绝访问"
-                    }
-                }
-            }
-        }
-        return nil
-    }
-
-    private func startupHasHope() -> Bool {
-        guard let item = player.currentItem else { return false }
-        if item.status == .readyToPlay { return true }
-        if item.presentationSize.width > 1 { return true }
-        if !item.isPlaybackBufferEmpty { return true }
-        if item.loadedTimeRanges.isEmpty == false { return true }
-        let speed = sampleObservedSpeedKBps()
-        if speed >= Self.deadSpeedKBps { return true }
-        if let log = item.accessLog(), let e = log.events.last, e.numberOfBytesTransferred > 1024 {
-            return true
-        }
-        return false
-    }
-
-    private func startupHasStrongHope() -> Bool {
-        guard let item = player.currentItem else { return false }
-        if item.status == .readyToPlay, item.presentationSize.width > 1 { return true }
-        if hasVideoFrameEvidence() { return true }
-        let speed = sampleObservedSpeedKBps()
-        if speed >= Self.minUsefulSpeedKBps { return true }
-        if item.isPlaybackLikelyToKeepUp, !item.loadedTimeRanges.isEmpty { return true }
-        return false
     }
 
     func pause() {
@@ -778,76 +813,83 @@ final class PlayerEngine: ObservableObject {
         healthCheckTask = nil
     }
 
-    // MARK: - 网速驱动换线
+    // MARK: - 多信号融合「播放中」健康评估（统一采集 + 加权投票）
 
-    /// 起播后即采样 accessLog；无网/无速快切，有速暂缓，低速持续再切
+    /// 播放中健康评估：采集全部信号 → 融合投票 → 多信号一致才换线
     private func startSpeedCheck(token: Int) {
         stopSpeedCheck()
         guard lineTimeoutEnabled else { return }
-        speedCheckTask = Task { [weak self] in
-            // 起播阶段也采样（不必等 ready）
-            try? await Task.sleep(nanoseconds: 600_000_000)
+        speedCheckTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 500_000_000)
+                try? await Task.sleep(nanoseconds: 400_000_000)
                 guard let self, self.lineTimeoutEnabled, self.playToken == token, !Task.isCancelled else { return }
                 if self.player.timeControlStatus == .paused { continue }
+                guard self.isReady, self.stallWatchEnabled else { continue }
 
-                let speed = self.sampleObservedSpeedKBps()
-                let netOK = NetworkMonitor.shared.isSatisfied
-                // 画面仍在推进 = 有播，不因 accessLog 抖动误切
-                let progressOK = self.hasRendered
-                    && self.lastTimeProgressAt != .distantPast
-                    && Date().timeIntervalSince(self.lastTimeProgressAt) <= Self.progressStallThreshold
+                let signals = self.collectSignals()
+                let verdict = self.fusePostReadyVote(signals)
 
-                if progressOK {
+                switch verdict {
+                case .ok:
                     self.zeroSpeedSince = nil
                     self.lowSpeedSince = nil
-                    continue
-                }
-
-                // (a) 系统无网，或速度接近 0 且画面也不动
-                if !netOK || speed < Self.deadSpeedKBps {
-                    if self.zeroSpeedSince == nil { self.zeroSpeedSince = Date() }
-                    self.lowSpeedSince = nil
-                    let elapsed = Date().timeIntervalSince(self.zeroSpeedSince ?? Date())
-                    let need: TimeInterval
-                    if !netOK {
-                        need = Self.zeroSpeedSwitchSeconds
-                    } else if self.hasRendered || self.isReady {
-                        need = Self.zeroSpeedSwitchSecondsAfterRender
-                    } else {
-                        // 未出画：交给 startup 超时为主，这里只作慢兜底
-                        need = max(Self.zeroSpeedSwitchSecondsAfterRender, 8.0)
-                    }
-                    if elapsed >= need {
-                        self.zeroSpeedSince = nil
-                        let hint = !netOK ? "网络未连接" : "无数据"
-                        self.onLowSpeed?(hint)
+                    self.persistentNegativeScore = max(0, self.persistentNegativeScore - 1)
+                case .fail(let reason, let strong):
+                    if strong {
+                        self.onLowSpeed?(reason)
                         return
                     }
-                    continue
-                }
-
-                self.zeroSpeedSince = nil
-
-                // (b) 有有效速度 → 不切（高峰卡顿正常）
-                if speed >= Self.minUsefulSpeedKBps {
-                    self.lowSpeedSince = nil
-                    continue
-                }
-
-                // (c) 极低速 + 画面也不动：持续确认后换
-                if self.lowSpeedSince == nil { self.lowSpeedSince = Date() }
-                let lowElapsed = Date().timeIntervalSince(self.lowSpeedSince ?? Date())
-                if lowElapsed >= Self.lowSpeedSwitchSeconds {
-                    self.lowSpeedSince = nil
-                    self.onLowSpeed?("几乎无数据")
-                    return
+                    self.persistentNegativeScore += 1
+                    if self.persistentNegativeScore >= 3 {
+                        self.onLowSpeed?(reason)
+                        return
+                    }
+                case .undetermined:
+                    break
                 }
             }
         }
     }
 
+    /// 播放中信号融合（已出画后才有负向判定）
+    private func fusePostReadyVote(_ s: PlaybackSignals) -> FusionVerdict {
+        // 最强正向：出画 + 时钟推进
+        if s.hasRendered && s.clockAdvancing { return .ok }
+        if s.hasRendered && s.isLikelyToKeepUp && !s.isBufferEmpty { return .ok }
+        // 强负向单信号
+        if s.itemStatus == .failed { return .fail("线路中断", strong: true) }
+        if s.errorLogHasFatal { return .fail("源错误", strong: true) }
+
+        var pos = 0
+        var neg = 0
+
+        // 正向信号
+        if s.clockAdvancing { pos += 3 }
+        if s.speedKBps >= Self.minUsefulSpeedKBps { pos += 2 }
+        else if s.speedKBps >= Self.deadSpeedKBps { pos += 1 }
+        if s.isLikelyToKeepUp { pos += 2 }
+        if !s.isBufferEmpty { pos += 1 }
+        if s.loadedRangesGrowing { pos += 1 }
+
+        // 负向信号（已出画后才有意义）
+        if s.hasRendered && !s.clockAdvancing { neg += 3 }
+        if s.isBufferEmpty && s.isWaiting { neg += 2 }
+        else if s.isBufferEmpty { neg += 1 }
+        if s.speedKBps < Self.deadSpeedKBps { neg += 2 }
+        if s.speedKBps < Self.deadSpeedKBps && !s.clockAdvancing { neg += 2 }
+        if s.errorLogNewErrors > 0 { neg += 1 }
+        if !s.loadedRangesGrowing && s.isBufferEmpty { neg += 1 }
+
+        if pos >= Self.positiveVoteThreshold { return .ok }
+        if neg >= Self.negativeVoteThreshold { return .fail("播放异常", strong: false) }
+        return .undetermined(pos: pos, neg: neg)
+    }
+
+    private func stopSpeedCheck() {
+        speedCheckTask?.cancel()
+        speedCheckTask = nil
+    }
     private func stopSpeedCheck() {
         speedCheckTask?.cancel()
         speedCheckTask = nil
@@ -940,4 +982,50 @@ final class PlayerEngine: ObservableObject {
         }
         return false
     }
+}
+
+// MARK: - 多信号融合数据结构
+
+struct PlaybackSignals {
+    let itemStatus: AVPlayerItem.Status
+    let hasRendered: Bool
+    let hasVideoDimensions: Bool
+    let clockAdvancing: Bool
+    let speedKBps: Double
+    let isBufferEmpty: Bool
+    let isLikelyToKeepUp: Bool
+    let isWaiting: Bool
+    let loadedRangesCount: Int
+    let loadedRangesGrowing: Bool
+    let errorLogNewErrors: Int
+    let errorLogHasFatal: Bool
+    let elapsed: TimeInterval
+
+    init(itemStatus: AVPlayerItem.Status, hasRendered: Bool,
+         hasVideoDimensions: Bool = false, clockAdvancing: Bool = false,
+         speedKBps: Double = 0, isBufferEmpty: Bool = false,
+         isLikelyToKeepUp: Bool = false, isWaiting: Bool = false,
+         loadedRangesCount: Int = 0, loadedRangesGrowing: Bool = false,
+         errorLogNewErrors: Int = 0, errorLogHasFatal: Bool = false,
+         elapsed: TimeInterval = 0) {
+        self.itemStatus = itemStatus
+        self.hasRendered = hasRendered
+        self.hasVideoDimensions = hasVideoDimensions
+        self.clockAdvancing = clockAdvancing
+        self.speedKBps = speedKBps
+        self.isBufferEmpty = isBufferEmpty
+        self.isLikelyToKeepUp = isLikelyToKeepUp
+        self.isWaiting = isWaiting
+        self.loadedRangesCount = loadedRangesCount
+        self.loadedRangesGrowing = loadedRangesGrowing
+        self.errorLogNewErrors = errorLogNewErrors
+        self.errorLogHasFatal = errorLogHasFatal
+        self.elapsed = elapsed
+    }
+}
+
+enum FusionVerdict {
+    case ok
+    case fail(reason: String, strong: Bool)
+    case undetermined(pos: Int, neg: Int)
 }

@@ -52,10 +52,10 @@ final class PlaybackHealthMonitor {
 
     private var audioSession: AVAudioSession { AVAudioSession.sharedInstance() }
 
-    // 配置阈值（偏稳：健康度仅观测，真正换线在 PlayerEngine 无数据策略）
-    private let videoFreezeThreshold: TimeInterval = 8.0
-    private let bufferEmptyThreshold = 6
-    private let stallThreshold = 5
+    // 配置阈值（健康度仅作观测参考，真正换线由 PlayerEngine 多信号融合决定）
+    private let videoFreezeThreshold: TimeInterval = 10.0
+    private let bufferEmptyThreshold = 8
+    private let stallThreshold = 6
 
     // MARK: - 初始化
 
