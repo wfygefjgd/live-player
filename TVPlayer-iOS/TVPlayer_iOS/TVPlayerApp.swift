@@ -16,9 +16,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     ) -> Bool {
         setupAudioSession()
         setupRemoteCommands()
-        if let scene = application.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
-            installMainWindow(application: application, scene: scene)
-        }
         return true
     }
 
@@ -40,11 +37,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     func installMainWindow(application: UIApplication, scene: UIWindowScene? = nil) {
+        guard let scene else { return }
         if let window, rootContainer != nil {
-            if let scene {
+            if window.windowScene !== scene {
                 window.windowScene = scene
-                window.frame = scene.coordinateSpace.bounds
             }
+            window.frame = scene.coordinateSpace.bounds
             window.makeKeyAndVisible()
             requestLandscape(for: scene, root: rootContainer)
             rootContainer?.refreshSystemChrome()
@@ -68,23 +66,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         let container = FullScreenRootController(hosting: hosting)
         self.rootContainer = container
 
-        let resolvedScene = scene
-            ?? application.connectedScenes.compactMap({ $0 as? UIWindowScene }).first
-
-        // 使用 scene 自然 bounds，不手写对调宽高强改 window
-        let window: UIWindow
-        if let resolvedScene {
-            window = UIWindow(windowScene: resolvedScene)
-            window.frame = resolvedScene.coordinateSpace.bounds
-        } else {
-            window = UIWindow(frame: UIScreen.main.bounds)
-        }
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.coordinateSpace.bounds
         window.backgroundColor = .black
         window.isOpaque = true
         window.rootViewController = container
         self.window = window
         window.makeKeyAndVisible()
-        requestLandscape(for: resolvedScene, root: container)
+        requestLandscape(for: scene, root: container)
         WindowVideoSurface.shared.setPlayer(viewModel.player.player)
         WindowVideoSurface.shared.rebindPlayer()
         container.refreshSystemChrome()
@@ -176,13 +165,6 @@ final class SceneDelegate: NSObject, UIWindowSceneDelegate {
     ) {
         guard let windowScene = scene as? UIWindowScene else { return }
         guard let app = UIApplication.shared.delegate as? AppDelegate else { return }
-        if app.window == nil || app.window?.windowScene == nil {
-            app.installMainWindow(application: UIApplication.shared, scene: windowScene)
-        } else if app.window?.windowScene !== windowScene {
-            app.window?.windowScene = windowScene
-            app.window?.frame = windowScene.coordinateSpace.bounds
-            app.window?.makeKeyAndVisible()
-        }
         app.installMainWindow(application: UIApplication.shared, scene: windowScene)
         (app.window?.rootViewController as? FullScreenRootController)?.refreshSystemChrome()
     }
