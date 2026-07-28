@@ -84,6 +84,19 @@ struct SourceManagementSheet: View {
 
                 List {
                     Section {
+                        Button {
+                            UIPasteboard.general.string = vm.diagnosticsSummary
+                        } label: {
+                            Label("复制播放诊断", systemImage: "doc.on.doc")
+                        }
+                        Text("用于比较网页与 iPhone 的码率、缓冲、卡顿和线路切换情况")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    } header: {
+                        Text("故障排查")
+                    }
+
+                    Section {
                         Toggle(isOn: Binding(
                             get: { vm.lineTimeoutEnabled },
                             set: { vm.setLineTimeoutEnabled($0) }
@@ -171,7 +184,7 @@ struct SourceManagementSheet: View {
 
                     Section {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("TVPlayer 1.9.3 正式版")
+                            Text("TVPlayer 1.9.4 正式版")
                                 .font(.headline)
                             Text("• 起播恢复 4 秒短缓冲，有数据但未出画时最多观察 24 秒，避免误切")
                             Text("• 新增动态缓冲：出画后按 WiFi / 蜂窝网络扩大缓冲，降低直播抖动")
@@ -181,6 +194,9 @@ struct SourceManagementSheet: View {
                             Text("• 新增自动切换线路、自动切换频道开关，默认开启并支持关闭")
                             Text("• 新增失败线路黑名单功能，避免重复尝试失败线路")
                             Text("• 换源时自动清空黑名单，支持手动清空操作")
+                            Text("• 优化真实缓冲检测、相对码率判断和起播预检总时限")
+                            Text("• 过滤 iOS 原生不支持的 RTMP / RTSP 线路")
+                            Text("• 新增播放诊断复制，方便定位手机端卡顿")
                             Text("• 源可以自定义，支持添加和切换 M3U / M3U8 地址")
                             Text("• 支持多线路自动换线和自动换台，切换时会提示可在设置中关闭")
                             Text("• 支持收藏频道、隐藏线路、后台音频播放")

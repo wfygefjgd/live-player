@@ -10,14 +10,18 @@ final class LineQualityStore {
         var stalls = 0
         var stableSeconds: TimeInterval = 0
         var observedBitrate: Double = 0
+        var consecutiveFailures = 0
         var lastUpdated = Date()
 
         var score: Double {
-            Double(successfulStarts) * 24
+            let ageDays = max(0, Date().timeIntervalSince(lastUpdated) / 86_400)
+            let decay = pow(0.5, ageDays / 7.0)
+            return (log1p(Double(successfulStarts)) * 18
                 - Double(failures) * 55
                 - Double(stalls) * 12
+                - Double(consecutiveFailures) * 18
                 + min(stableSeconds / 15, 80)
-                + min(observedBitrate / 1_000_000, 8)
+                + min(observedBitrate / 1_000_000, 8)) * decay
         }
 
         var hasEvidence: Bool {
@@ -25,7 +29,8 @@ final class LineQualityStore {
         }
     }
 
-    private let key = "line_quality_records_v1"
+    // v2 增加连续失败和时间衰减；旧版累计分不迁移，避免历史偏差继续影响选线。
+    private let key = "line_quality_records_v2"
     private let defaults = UserDefaults.standard
     private let queue = DispatchQueue(label: "tvplayer.line-quality", qos: .utility)
     private var records: [String: Record]
@@ -58,17 +63,24 @@ final class LineQualityStore {
     func recordStart(url: String, startupSeconds: TimeInterval) {
         update(url: url) { record in
             record.successfulStarts += 1
+            record.consecutiveFailures = 0
             // 快速起播略加稳定信用，慢起播不作为失败。
             if startupSeconds <= 4 { record.stableSeconds += 3 }
         }
     }
 
     func recordFailure(url: String) {
-        update(url: url) { $0.failures += 1 }
+        update(url: url) {
+            $0.failures += 1
+            $0.consecutiveFailures += 1
+        }
     }
 
     func recordStall(url: String) {
-        update(url: url) { $0.stalls += 1 }
+        update(url: url) { record in
+            record.stalls += 1
+            record.consecutiveFailures = min(record.consecutiveFailures + 1, 8)
+        }
     }
 
     func recordStablePlayback(url: String, seconds: TimeInterval, observedBitrate: Double) {

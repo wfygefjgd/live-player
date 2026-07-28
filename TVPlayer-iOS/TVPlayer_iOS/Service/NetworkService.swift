@@ -49,6 +49,7 @@ final class NetworkService {
     private var isNetworkAvailable = true
     private var pendingRetry: (() -> Void)?
     private var retryTask: Task<Void, Never>?
+    private var cacheCleanupObservers: [NSObjectProtocol] = []
 
     private init() {
         startNetworkMonitor()
@@ -58,22 +59,22 @@ final class NetworkService {
     // 🆕 定时清理缓存机制
     private func setupCacheCleanup() {
         // App进入后台时清理缓存
-        NotificationCenter.default.addObserver(
+        cacheCleanupObservers.append(NotificationCenter.default.addObserver(
             forName: UIApplication.didEnterBackgroundNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             self?.clearCache()
-        }
+        })
 
         // App收到内存警告时清理缓存
-        NotificationCenter.default.addObserver(
+        cacheCleanupObservers.append(NotificationCenter.default.addObserver(
             forName: UIApplication.didReceiveMemoryWarningNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             self?.clearCache()
-        }
+        })
     }
 
     // 🆕 清理缓存
@@ -83,7 +84,7 @@ final class NetworkService {
     }
 
     deinit {
-        NotificationCenter.default.removeObserver(self)
+        cacheCleanupObservers.forEach { NotificationCenter.default.removeObserver($0) }
         monitor.cancel()
     }
 

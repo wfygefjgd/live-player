@@ -81,6 +81,7 @@ final class PlayerViewModel: ObservableObject {
     private let fusionEngine = SmartFusionEngine.shared
 
     let player = PlayerEngine()
+    var diagnosticsSummary: String { player.diagnosticsSummary }
     private let storage = StorageService()
     private var rawChannels: [Channel] = []
     var sourceUrls: [String] = []
@@ -922,19 +923,19 @@ final class PlayerViewModel: ObservableObject {
             }
 
             guard let u = URL(string: raw), let scheme = u.scheme?.lowercased(),
-                  scheme == "http" || scheme == "https" || scheme == "rtmp" || scheme == "rtsp" else {
+                  scheme == "http" || scheme == "https" else {
                 if lineTimeoutEnabled {
                     triedLineIndices.insert(idx)
                     currentSourceIndex = (idx + 1) % max(ch.sourceCount, 1)
                     continue
                 }
                 autoSwitchState = .idle
-                showIndicator("当前线路地址无效，请手动切换")
+                showIndicator("iOS 不支持此线路协议，请手动切换")
                 return
             }
 
             // 预检：只有 hardFail 才跳；超时/慢线 unknown 仍播放
-            if lineTimeoutEnabled && (scheme == "http" || scheme == "https") {
+            if lineTimeoutEnabled {
                 let result = await LineSpeedTester.shared.quickPreflight(raw, timeout: 2.5)
                 guard !Task.isCancelled, playGeneration == gen else { return }
                 guard currentChannel?.key == ch.key else { return }

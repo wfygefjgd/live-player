@@ -79,17 +79,13 @@ final class LineSpeedTester {
         }
 
         let start = Date()
-        // 1) Range GET
-        if let q = await probe(url: u, method: "GET", start: start, range: true, timeout: timeout) {
-            cache[url] = q
-            return .ok
-        }
-        // 2) 普通 GET 小包
+        // 单次 Range 请求使用完整预检预算；拿到响应头后立即结束，不下载直播响应体。
         var req = URLRequest(url: u)
         req.httpMethod = "GET"
         req.timeoutInterval = timeout
+        req.setValue("bytes=0-1", forHTTPHeaderField: "Range")
         do {
-            let (data, resp) = try await session.data(for: req)
+            let (_, resp) = try await session.bytes(for: req)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             if code == 404 || code == 403 || code == 410 || code == 451 {
                 hardFailCache[url] = Date()
@@ -105,7 +101,7 @@ final class LineSpeedTester {
                 )
                 return .ok
             }
-            // 其它状态：未知，仍尝试播放
+            // 其它状态或超时：未知，仍尝试播放，不叠加第二轮探测。
             return .unknown
         } catch let err as URLError {
             switch err.code {

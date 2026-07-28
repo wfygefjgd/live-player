@@ -19,6 +19,8 @@ final class PlayerEngine: ObservableObject {
 
     static let minUsefulSpeedKBps: Double = 5
     static let deadSpeedKBps: Double = 0.8
+    static let bufferGrowthEpsilon: TimeInterval = 0.15
+    static let recentBufferProgressWindow: TimeInterval = 3
 
     /// 正向 ≥ 此值 → 保活（易达标，少误杀）
     static let positiveVoteThreshold = 3
@@ -76,6 +78,12 @@ final class PlayerEngine: ObservableObject {
     @Published var observedSpeedKBps: Double = 0
     @Published private(set) var diagnostics = PlaybackDiagnostics()
 
+    var diagnosticsSummary: String {
+        let observed = diagnostics.observedBitrate > 0 ? String(format: "%.2f Mbps", diagnostics.observedBitrate / 1_000_000) : "未知"
+        let indicated = diagnostics.indicatedBitrate > 0 ? String(format: "%.2f Mbps", diagnostics.indicatedBitrate / 1_000_000) : "未知"
+        return "TVPlayer iOS 播放诊断\n线路: \(currentURLString.isEmpty ? "未知" : currentURLString)\n实际码率: \(observed)\n标称码率: \(indicated)\n缓冲: \(String(format: "%.1f", diagnostics.bufferSeconds)) 秒\n卡顿: \(diagnostics.stallCount) 次\n码率限制: \(diagnostics.peakBitRateLimit > 0 ? String(format: "%.2f Mbps", diagnostics.peakBitRateLimit / 1_000_000) : "自动")\n最近状态: \(diagnostics.reason.isEmpty ? "未知" : diagnostics.reason)"
+    }
+
     var onError: (() -> Void)?
     var onReady: (() -> Void)?
     var onStartupTimeout: (() -> Void)?
@@ -92,6 +100,8 @@ final class PlayerEngine: ObservableObject {
     private var bufferEmptyObserver: NSObjectProtocol?
     private var playStartedAt: Date = .distantPast
     private var lastLoadedRangesCount = 0
+    private var lastBufferedEnd: TimeInterval = 0
+    private var lastBufferProgressAt: Date = .distantPast
     private var lastErrorLogCount = 0
     // 负向分持续累计（多信号融合用）
     private var persistentNegativeScore = 0
@@ -208,11 +218,25 @@ final class PlayerEngine: ObservableObject {
         let clockAdvancing = hasRendered
             && lastTimeProgressAt != .distantPast
             && Date().timeIntervalSince(lastTimeProgressAt) <= Self.progressStallThreshold
-        // loadedTimeRanges 是否增长
+        // AVPlayer 通常只维护一个 loadedTimeRange，比较区间终点才能识别真实下载进度。
         let ranges = item.loadedTimeRanges
         let rangesCount = ranges.count
-        let rangesGrowing = rangesCount > lastLoadedRangesCount
+        let bufferedEnd = ranges.compactMap { value -> TimeInterval? in
+            let end = CMTimeGetSeconds(CMTimeRangeGetEnd(value.timeRangeValue))
+            return end.isFinite ? end : nil
+        }.max() ?? 0
+        let rangesGrowing = bufferedEnd > lastBufferedEnd + Self.bufferGrowthEpsilon
+        if rangesGrowing { lastBufferProgressAt = Date() }
+        lastBufferedEnd = max(lastBufferedEnd, bufferedEnd)
         lastLoadedRangesCount = rangesCount
+        let currentSeconds = CMTimeGetSeconds(item.currentTime())
+        let bufferedSeconds = max(0, bufferedEnd - (currentSeconds.isFinite ? currentSeconds : 0))
+        let bufferProgressRecent = lastBufferProgressAt != .distantPast
+            && Date().timeIntervalSince(lastBufferProgressAt) <= Self.recentBufferProgressWindow
+        let event = accessLog?.events.last
+        let observedBitrate = event?.observedBitrate ?? 0
+        let indicatedBitrate = event?.indicatedBitrate ?? 0
+        let throughputRatio = indicatedBitrate > 0 ? observedBitrate / indicatedBitrate : 0
         // errorLog 条数
         let errorCount = errorLog?.events.count ?? 0
         let newErrors = errorCount - lastErrorLogCount
@@ -229,6 +253,9 @@ final class PlayerEngine: ObservableObject {
             isWaiting: player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
             loadedRangesCount: rangesCount,
             loadedRangesGrowing: rangesGrowing,
+            bufferProgressRecent: bufferProgressRecent,
+            bufferedSeconds: bufferedSeconds,
+            throughputRatio: throughputRatio,
             errorLogNewErrors: newErrors,
             errorLogHasFatal: hasFatalError(log: errorLog),
             elapsed: playStartedAt == .distantPast ? 0 : Date().timeIntervalSince(playStartedAt)
@@ -293,6 +320,8 @@ final class PlayerEngine: ObservableObject {
         evidenceTask?.cancel()
         persistentNegativeScore = 0
         lastLoadedRangesCount = 0
+        lastBufferedEnd = 0
+        lastBufferProgressAt = .distantPast
         lastErrorLogCount = 0
         playStartedAt = Date()
 
@@ -361,12 +390,9 @@ final class PlayerEngine: ObservableObject {
             return
         }
 
-        let hasNetworkProgress = signals.itemStatus == .readyToPlay
-            || signals.hasVideoDimensions
-            || signals.speedKBps >= Self.deadSpeedKBps
-            || signals.loadedRangesCount > 0
-            || signals.loadedRangesGrowing
-            || signals.isLikelyToKeepUp
+        let hasNetworkProgress = signals.hasVideoDimensions
+            || signals.bufferProgressRecent
+            || (signals.isLikelyToKeepUp && signals.bufferedSeconds > 0)
 
         if hasNetworkProgress, startupExtensionCount < Self.maxStartupExtensions {
             startupExtensionCount += 1
@@ -833,8 +859,7 @@ final class PlayerEngine: ObservableObject {
             observedBitrate: event?.observedBitrate ?? 0,
             indicatedBitrate: event?.indicatedBitrate ?? 0,
             stallCount: recentStalls.count,
-            bufferSeconds: player.currentItem?.preferredForwardBufferDuration
-                ?? Self.initialBufferSeconds,
+            bufferSeconds: currentBufferedSeconds(),
             peakBitRateLimit: activePeakBitRate,
             reason: reason
         )
@@ -969,7 +994,7 @@ final class PlayerEngine: ObservableObject {
         // 有画面推进 → 绝不换
         if s.hasRendered && s.clockAdvancing { return .ok }
         if s.hasRendered && s.isLikelyToKeepUp { return .ok }
-        if s.hasRendered && !s.isBufferEmpty && s.speedKBps >= Self.deadSpeedKBps { return .ok }
+        if s.hasRendered && s.bufferedSeconds >= 2 && (s.bufferProgressRecent || s.throughputRatio >= 0.9) { return .ok }
 
         // 仅硬事件
         if s.itemStatus == .failed { return .fail(reason: "线路中断", strong: true) }
@@ -984,6 +1009,8 @@ final class PlayerEngine: ObservableObject {
         if s.isLikelyToKeepUp { pos += 2 }
         if !s.isBufferEmpty { pos += 1 }
         if s.loadedRangesGrowing { pos += 1 }
+        if s.throughputRatio >= 1.15 { pos += 2 }
+        else if s.throughputRatio >= 0.9 { pos += 1 }
 
         // 卡顿单独：最多 +1，达不到阈值
         if s.isBufferEmpty && s.isWaiting { neg += 1 }
@@ -992,7 +1019,8 @@ final class PlayerEngine: ObservableObject {
             neg += 2
             if s.speedKBps < Self.deadSpeedKBps { neg += 3 }
             if s.isBufferEmpty { neg += 2 }
-            if !s.loadedRangesGrowing { neg += 1 }
+            if !s.bufferProgressRecent { neg += 1 }
+            if s.throughputRatio > 0 && s.throughputRatio < 0.65 && s.bufferedSeconds < 1.5 { neg += 2 }
         }
         if s.errorLogNewErrors > 0 { neg += 1 }
 
@@ -1004,6 +1032,19 @@ final class PlayerEngine: ObservableObject {
     private func stopSpeedCheck() {
         speedCheckTask?.cancel()
         speedCheckTask = nil
+    }
+
+    private func currentBufferedSeconds() -> TimeInterval {
+        guard let item = player.currentItem else { return 0 }
+        let current = CMTimeGetSeconds(item.currentTime())
+        guard current.isFinite else { return 0 }
+        return item.loadedTimeRanges.reduce(0) { best, value in
+            let range = value.timeRangeValue
+            let start = CMTimeGetSeconds(range.start)
+            let end = CMTimeGetSeconds(CMTimeRangeGetEnd(range))
+            guard start.isFinite, end.isFinite, current >= start - 0.1, current <= end else { return best }
+            return max(best, end - current)
+        }
     }
 
     /// 从 AVPlayerItemAccessLog 估算 KB/s
@@ -1079,6 +1120,9 @@ struct PlaybackSignals {
     let isWaiting: Bool
     let loadedRangesCount: Int
     let loadedRangesGrowing: Bool
+    let bufferProgressRecent: Bool
+    let bufferedSeconds: TimeInterval
+    let throughputRatio: Double
     let errorLogNewErrors: Int
     let errorLogHasFatal: Bool
     let elapsed: TimeInterval
@@ -1088,6 +1132,8 @@ struct PlaybackSignals {
          speedKBps: Double = 0, isBufferEmpty: Bool = false,
          isLikelyToKeepUp: Bool = false, isWaiting: Bool = false,
          loadedRangesCount: Int = 0, loadedRangesGrowing: Bool = false,
+         bufferProgressRecent: Bool = false, bufferedSeconds: TimeInterval = 0,
+         throughputRatio: Double = 0,
          errorLogNewErrors: Int = 0, errorLogHasFatal: Bool = false,
          elapsed: TimeInterval = 0) {
         self.itemStatus = itemStatus
@@ -1100,6 +1146,9 @@ struct PlaybackSignals {
         self.isWaiting = isWaiting
         self.loadedRangesCount = loadedRangesCount
         self.loadedRangesGrowing = loadedRangesGrowing
+        self.bufferProgressRecent = bufferProgressRecent
+        self.bufferedSeconds = bufferedSeconds
+        self.throughputRatio = throughputRatio
         self.errorLogNewErrors = errorLogNewErrors
         self.errorLogHasFatal = errorLogHasFatal
         self.elapsed = elapsed
