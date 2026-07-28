@@ -717,7 +717,7 @@ final class PlayerViewModel: ObservableObject {
     func applyRules(_ input: [Channel]) -> [Channel] {
         let hiddenLines = storage.loadHiddenLines()
         let blacklistedLines = autoBlacklistEnabled ? storage.loadBlacklistedLines() : []
-        input.compactMap { src in
+        return input.compactMap { src in
             var filtered = Channel(name: src.name, group: src.group, key: src.key)
             for url in src.urls {
                 // 跳过手动隐藏的线路
