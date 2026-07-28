@@ -161,8 +161,8 @@ final class WindowPanelSurface {
         // 全屏/隐藏状态栏时 window.safeArea 常为 0，需从 scene 与设备兜底取值
         let safe = effectiveSafeAreaInsets(for: win)
         let isLandscape = bounds.width > bounds.height
-        // 灵动岛横屏切入约 59pt；再多留一点，避免 CCTV-1 被切字
-        let islandFallback: CGFloat = isLandscape ? 62 : 0
+        // 有系统 safe.left 用系统值；否则横屏兜底避开灵动岛
+        let islandFallback: CGFloat = (isLandscape && safe.left < 1) ? 54 : 0
         let leadingInset = max(safe.left, islandFallback)
         let topInset = max(safe.top, isLandscape ? 10 : 12)
         let bottomInset = max(safe.bottom, 0)

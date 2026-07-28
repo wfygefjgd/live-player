@@ -4,43 +4,36 @@ import Combine
 /// 起播/卡顿检测/静音检测引擎 — 结构化并发优化版
 @MainActor
 final class PlayerEngine: ObservableObject {
-    // MARK: - 配置常量（证据驱动：事件判定为主，超时仅兜底）
-    /// 起播墙钟上限（仅兜底，正常靠 failed/出画事件结束）
-    static let startupHardTimeoutNs: UInt64 = 7_000_000_000
-    /// 证据轮询间隔
-    static let evidencePollNs: UInt64 = 350_000_000
-    /// 连续 N 次「无任何正向证据」→ 判死线（约 3.5s）
-    static let deadEvidenceStrikes = 10
-    /// 有弱希望但一直无画面：再给若干轮（合计约 6～7s 到 hard）
-    static let softEvidenceStrikes = 16
-    /// 出画后保护
-    static let readyProtectNs: UInt64 = 2_000_000_000
-    /// 硬失败后极短确认（防瞬时 glitch）；有负向证据可直接 0
-    static let errorGraceNs: UInt64 = 200_000_000
-    static let silentAudioCheckNs: UInt64 = 8_000_000_000
-    static let silentAudioPollIntervalNs: UInt64 = 1_500_000_000
-    static let progressStallThreshold: TimeInterval = 6.0
+    // MARK: - 配置（事件驱动：硬失败立刻切；软问题多事件+长确认才切）
+    /// 起播硬上限：慢 HLS 也要给足时间，避免「没几个能看」
+    static let startupHardTimeoutNs: UInt64 = 12_000_000_000
+    /// 评估周期
+    static let evalPollNs: UInt64 = 500_000_000
+    /// 出画后保护：此期间禁止因软问题换线
+    static let readyProtectNs: UInt64 = 4_000_000_000
+    static let errorGraceNs: UInt64 = 300_000_000
+    /// 默认不做无声自动换线（纯视频台太多）；保留检测接口
+    static let silentAudioCheckNs: UInt64 = 15_000_000_000
+    static let silentAudioPollIntervalNs: UInt64 = 2_000_000_000
+    static let progressStallThreshold: TimeInterval = 8.0
 
-    static let minUsefulSpeedKBps: Double = 8
-    static let deadSpeedKBps: Double = 1.5
-    static let lowSpeedSwitchSeconds: TimeInterval = 10.0
-    static let zeroSpeedSwitchSeconds: TimeInterval = 4.0
-    static let zeroSpeedSwitchSecondsAfterRender: TimeInterval = 6.0
+    static let minUsefulSpeedKBps: Double = 5
+    static let deadSpeedKBps: Double = 0.8
 
-    // 多信号融合投票阈值
-    static let positiveVoteThreshold = 4
-    static let negativeVoteThreshold = 5
-    /// 统一评估周期（别名）
-    static let evalPollNs: UInt64 = 400_000_000
+    /// 正向 ≥ 此值 → 保活（易达标，少误杀）
+    static let positiveVoteThreshold = 3
+    /// 负向 ≥ 此值 → 才考虑换线（更严，少乱切）
+    static let negativeVoteThreshold = 8
+    /// 非强失败需连续确认次数（起播）
+    static let softFailConfirmCount = 5
+    /// 播放中非强失败需连续确认次数
+    static let postReadyFailConfirmCount = 6
 
     static var stallTimeoutNs: UInt64 {
-        NetworkMonitor.shared.isWiFi ? 6_000_000_000 : 8_000_000_000
+        NetworkMonitor.shared.isWiFi ? 10_000_000_000 : 12_000_000_000
     }
 
     static var startupTimeoutNs: UInt64 { startupHardTimeoutNs }
-    /// 兼容旧分级名
-    static var startupFastFailNs: UInt64 { UInt64(deadEvidenceStrikes) * evidencePollNs }
-    static var startupSoftTimeoutNs: UInt64 { UInt64(softEvidenceStrikes) * evidencePollNs }
 
     let player = AVPlayer()
     private var cancellables = Set<AnyCancellable>()
@@ -244,49 +237,41 @@ final class PlayerEngine: ObservableObject {
         return false
     }
 
-    /// 多信号融合投票：正/负分累计，多信号一致才决策
+    /// 起播投票：强事件立刻切；软问题要多信号 + 长时间才切
     private func fuseVote(_ s: PlaybackSignals) -> FusionVerdict {
-        // 最强正向：已出画
+        // 出画 / 有尺寸且 ready → OK
         if s.hasRendered { return .ok }
-        // 最强负向：item 已失败 or 致命错误 → 单信号即判
+        if s.itemStatus == .readyToPlay && s.hasVideoDimensions { return .ok }
+
+        // 仅硬事件立刻失败
         if s.itemStatus == .failed { return .fail(reason: "线路失败", strong: true) }
         if s.errorLogHasFatal { return .fail(reason: "源不可用", strong: true) }
 
         var pos = 0
         var neg = 0
 
-        // --- 正向信号 ---
-        if s.itemStatus == .readyToPlay && s.hasVideoDimensions {
-            pos += 3   // 明确已准备好且有画面尺寸
-        } else if s.itemStatus == .readyToPlay {
-            pos += 1
-        }
-        if s.clockAdvancing { pos += 3 }        // 时钟推进 = 在播
+        // 正向：任何进展都加分，避免过早判死
+        if s.itemStatus == .readyToPlay { pos += 2 }
+        if s.hasVideoDimensions { pos += 3 }
         if s.speedKBps >= Self.minUsefulSpeedKBps { pos += 2 }
         else if s.speedKBps >= Self.deadSpeedKBps { pos += 1 }
-        if s.isLikelyToKeepUp && !s.isBufferEmpty { pos += 2 }
-        else if !s.isBufferEmpty { pos += 1 }
-        if s.loadedRangesGrowing { pos += 1 }
+        if s.isLikelyToKeepUp { pos += 2 }
+        if !s.isBufferEmpty { pos += 1 }
+        if s.loadedRangesGrowing { pos += 2 }
+        if s.loadedRangesCount > 0 { pos += 1 }
 
-        // --- 负向信号 ---
-        if !s.hasVideoDimensions && s.elapsed > 2.5 { neg += 2 }
-        if s.isBufferEmpty && s.isWaiting { neg += 2 }
-        else if s.isBufferEmpty { neg += 1 }
-        if s.speedKBps < Self.deadSpeedKBps { neg += 2 }
-        if s.speedKBps < Self.deadSpeedKBps && !s.clockAdvancing { neg += 3 }  // 无速且无进度 = 强负向
-        if !s.clockAdvancing && s.elapsed > Self.progressStallThreshold { neg += 2 }
-        if s.errorLogNewErrors > 0 { neg += 2 }
-        if !s.loadedRangesGrowing && s.isBufferEmpty { neg += 1 }  // 缓冲空且不增长
-
-        // --- 融合决策 ---
-        if pos >= Self.positiveVoteThreshold { return .ok }
-        if neg >= Self.negativeVoteThreshold { return .fail(reason: "多信号异常", strong: false) }
-
-        // 单维度强负向（仅当极端）：长时间完全无进度+无缓冲+无速
-        if !s.clockAdvancing && s.isBufferEmpty && s.speedKBps < Self.deadSpeedKBps && s.elapsed > 4 {
-            return .fail(reason: "线路无数据", strong: false)
+        // 负向：单项弱；只有「完全没动静」才叠高分
+        // 注意：起播阶段 clockAdvancing 几乎总是 false，不能当负向
+        if s.elapsed > 6, !s.hasVideoDimensions, s.itemStatus != .readyToPlay,
+           s.speedKBps < Self.deadSpeedKBps, s.isBufferEmpty, !s.loadedRangesGrowing {
+            neg += 4  // 6s 后仍完全死寂
+        } else if s.elapsed > 4, !s.hasVideoDimensions, s.speedKBps < Self.deadSpeedKBps, s.isBufferEmpty {
+            neg += 2
         }
+        if s.errorLogNewErrors > 0 { neg += 1 }
 
+        if pos >= Self.positiveVoteThreshold { return .ok }
+        if neg >= Self.negativeVoteThreshold { return .fail(reason: "起播无响应", strong: false) }
         return .undetermined(pos: pos, neg: neg)
     }
 
@@ -324,17 +309,16 @@ final class PlayerEngine: ObservableObject {
                         self.failStartup(token: token, reason: reason)
                         return
                     }
-                    // 非强负向：多周期确认（防单信号抖动）
+                    // 软失败：需连续多周期确认（约 softFailConfirmCount * 0.5s）
                     self.persistentNegativeScore += 1
-                    if self.persistentNegativeScore >= 2 {
+                    if self.persistentNegativeScore >= Self.softFailConfirmCount {
                         self.failStartup(token: token, reason: reason)
                         return
                     }
                 case .undetermined(let pos, let neg):
-                    // 趋势跟踪：若持续正向增长，减少误杀
-                    if pos > neg, pos >= 2 {
-                        self.persistentNegativeScore = max(0, self.persistentNegativeScore - 1)
-                    } else if neg > pos {
+                    if pos > neg {
+                        self.persistentNegativeScore = max(0, self.persistentNegativeScore - 2)
+                    } else if neg > pos + 2 {
                         self.persistentNegativeScore += 1
                     }
                 }
@@ -628,9 +612,9 @@ final class PlayerEngine: ObservableObject {
             guard let self, self.playToken == token else { return }
             self.stallWatchEnabled = true
         }
-        scheduleSilentAudioCheck(token: token)
+        // 默认不做无声自动换线（很多台本身无音轨，会疯狂跳）
+        // scheduleSilentAudioCheck(token: token)
         if lineTimeoutEnabled {
-            startHealthCheck(token: token)
             startSpeedCheck(token: token)
         }
     }
@@ -676,33 +660,14 @@ final class PlayerEngine: ObservableObject {
     }
 
     private func beginStallCheck() {
+        // 卡顿事件本身不换线；由 startSpeedCheck 多信号融合统一判定
+        // 这里只做状态复位，避免 continuousStall 卡死
         guard lineTimeoutEnabled else { return }
-        guard !continuousStall else { return }
         continuousStall = true
         let token = playToken
         scheduleTask(named: "stall", token: token, timeout: Self.stallTimeoutNs) { [weak self] in
-            guard let self, self.lineTimeoutEnabled, self.playToken == token, self.stallWatchEnabled else { return }
-            // 高峰卡顿很常见：只要还有数据进来就不因 stall 换线
-            let speed = self.sampleObservedSpeedKBps()
-            if speed >= Self.deadSpeedKBps {
-                self.continuousStall = false
-                return
-            }
-            // 完全无数据 + 卡死才上报（交给无数据策略）
-            let waiting = self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate
-            let noProgress = self.hasRendered
-                && self.lastTimeProgressAt != .distantPast
-                && Date().timeIntervalSince(self.lastTimeProgressAt) > Self.progressStallThreshold
-            let frozenPlaying = self.player.timeControlStatus == .playing
-                && self.player.rate > 0.01
-                && noProgress
-            guard waiting || frozenPlaying || self.isStalled() else {
-                self.continuousStall = false
-                return
-            }
+            guard let self, self.playToken == token else { return }
             self.continuousStall = false
-            // 映射为无数据，而不是「卡顿换线」
-            self.onLowSpeed?("无数据")
         }
     }
 
@@ -849,48 +814,51 @@ final class PlayerEngine: ObservableObject {
                         return
                     }
                     self.persistentNegativeScore += 1
-                    if self.persistentNegativeScore >= 3 {
+                    if self.persistentNegativeScore >= Self.postReadyFailConfirmCount {
                         self.onLowSpeed?(reason)
                         return
                     }
                 case .undetermined:
-                    break
+                    self.persistentNegativeScore = max(0, self.persistentNegativeScore - 1)
                 }
             }
         }
     }
 
-    /// 播放中信号融合（已出画后才有负向判定）
+    /// 播放中：只有硬失败立刻切；卡顿/缓冲单独不切；需「停画+无数据」等多事件
     private func fusePostReadyVote(_ s: PlaybackSignals) -> FusionVerdict {
-        // 最强正向：出画 + 时钟推进
+        // 有画面推进 → 绝不换
         if s.hasRendered && s.clockAdvancing { return .ok }
-        if s.hasRendered && s.isLikelyToKeepUp && !s.isBufferEmpty { return .ok }
-        // 强负向单信号
+        if s.hasRendered && s.isLikelyToKeepUp { return .ok }
+        if s.hasRendered && !s.isBufferEmpty && s.speedKBps >= Self.deadSpeedKBps { return .ok }
+
+        // 仅硬事件
         if s.itemStatus == .failed { return .fail(reason: "线路中断", strong: true) }
         if s.errorLogHasFatal { return .fail(reason: "源错误", strong: true) }
 
         var pos = 0
         var neg = 0
 
-        // 正向信号
-        if s.clockAdvancing { pos += 3 }
+        if s.clockAdvancing { pos += 4 }
         if s.speedKBps >= Self.minUsefulSpeedKBps { pos += 2 }
         else if s.speedKBps >= Self.deadSpeedKBps { pos += 1 }
         if s.isLikelyToKeepUp { pos += 2 }
         if !s.isBufferEmpty { pos += 1 }
         if s.loadedRangesGrowing { pos += 1 }
 
-        // 负向信号（已出画后才有意义）
-        if s.hasRendered && !s.clockAdvancing { neg += 3 }
-        if s.isBufferEmpty && s.isWaiting { neg += 2 }
-        else if s.isBufferEmpty { neg += 1 }
-        if s.speedKBps < Self.deadSpeedKBps { neg += 2 }
-        if s.speedKBps < Self.deadSpeedKBps && !s.clockAdvancing { neg += 2 }
+        // 卡顿单独：最多 +1，达不到阈值
+        if s.isBufferEmpty && s.isWaiting { neg += 1 }
+        // 真正坏：已出画但长时间停画 + 无数据 + 缓冲空
+        if s.hasRendered && !s.clockAdvancing {
+            neg += 2
+            if s.speedKBps < Self.deadSpeedKBps { neg += 3 }
+            if s.isBufferEmpty { neg += 2 }
+            if !s.loadedRangesGrowing { neg += 1 }
+        }
         if s.errorLogNewErrors > 0 { neg += 1 }
-        if !s.loadedRangesGrowing && s.isBufferEmpty { neg += 1 }
 
         if pos >= Self.positiveVoteThreshold { return .ok }
-        if neg >= Self.negativeVoteThreshold { return .fail(reason: "播放异常", strong: false) }
+        if neg >= Self.negativeVoteThreshold { return .fail(reason: "画面中断无数据", strong: false) }
         return .undetermined(pos: pos, neg: neg)
     }
 

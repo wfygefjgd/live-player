@@ -13,6 +13,13 @@ struct LineQuality: Codable {
     }
 }
 
+/// 预检结果：只有 hardFail 才跳过；unknown 仍交给 AVPlayer
+enum PreflightResult {
+    case ok
+    case hardFail   // 明确死链：404/403/连接失败
+    case unknown    // 超时/慢/拒 HEAD：不判死，继续播
+}
+
 /// 线路速度检测器
 @MainActor
 final class LineSpeedTester {
@@ -21,6 +28,8 @@ final class LineSpeedTester {
     private let session: URLSession
     private let timeout: TimeInterval = 5.0
     private var cache: [String: LineQuality] = [:]
+    /// hardFail 才缓存为不可用；unknown 不缓存，避免误杀
+    private var hardFailCache: [String: Date] = [:]
 
     init() {
         let config = URLSessionConfiguration.default
@@ -55,42 +64,65 @@ final class LineSpeedTester {
         return LineQuality(url: url, responseTime: Int.max, isAvailable: false, lastChecked: Date())
     }
 
-    /// 起播前快速预检：1.5s 内拉到首包才值得交给 AVPlayer（死链可跳过等待）
-    func quickPreflight(_ url: String, timeout: TimeInterval = 1.5) async -> Bool {
+    /// 起播前预检：仅 hardFail 跳过；超时/慢线返回 unknown，交给播放器
+    func quickPreflight(_ url: String, timeout: TimeInterval = 2.5) async -> PreflightResult {
         guard let u = URL(string: url), let scheme = u.scheme?.lowercased(),
               scheme == "http" || scheme == "https" else {
-            return false
+            return .hardFail
         }
-        // 短缓存：同一死链短时间不重复打
-        if let cached = cache[url], Date().timeIntervalSince(cached.lastChecked) < 60 {
-            return cached.isAvailable
+        if let t = hardFailCache[url], Date().timeIntervalSince(t) < 120 {
+            return .hardFail
         }
+        if let cached = cache[url], cached.isAvailable,
+           Date().timeIntervalSince(cached.lastChecked) < 120 {
+            return .ok
+        }
+
         let start = Date()
+        // 1) Range GET
         if let q = await probe(url: u, method: "GET", start: start, range: true, timeout: timeout) {
             cache[url] = q
-            return q.isAvailable
+            return .ok
         }
-        // GET 失败再试一次不带 Range（部分源拒 Range）
+        // 2) 普通 GET 小包
         var req = URLRequest(url: u)
         req.httpMethod = "GET"
         req.timeoutInterval = timeout
-        req.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
         do {
             let (data, resp) = try await session.data(for: req)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            let ok = (200...399).contains(code) && data.count > 0
-            cache[url] = LineQuality(
-                url: url,
-                responseTime: Int(Date().timeIntervalSince(start) * 1000),
-                isAvailable: ok,
-                lastChecked: Date()
-            )
-            return ok
+            if code == 404 || code == 403 || code == 410 || code == 451 {
+                hardFailCache[url] = Date()
+                cache[url] = LineQuality(url: url, responseTime: Int.max, isAvailable: false, lastChecked: Date())
+                return .hardFail
+            }
+            if (200...399).contains(code) {
+                cache[url] = LineQuality(
+                    url: url,
+                    responseTime: Int(Date().timeIntervalSince(start) * 1000),
+                    isAvailable: true,
+                    lastChecked: Date()
+                )
+                return .ok
+            }
+            // 其它状态：未知，仍尝试播放
+            return .unknown
+        } catch let err as URLError {
+            switch err.code {
+            case .timedOut, .cannotFindHost, .cannotConnectToHost, .networkConnectionLost,
+                 .dnsLookupFailed, .notConnectedToInternet:
+                // 超时/连不上：多数是慢或临时网络，不当 hardFail（否则可播率崩）
+                // 仅「明确无法解析的非法 host」才 hard——这里统一 unknown，让 AVPlayer 再试
+                if err.code == .cannotFindHost || err.code == .dnsLookupFailed {
+                    hardFailCache[url] = Date()
+                    return .hardFail
+                }
+                return .unknown
+            default:
+                return .unknown
+            }
         } catch {
-            cache[url] = LineQuality(
-                url: url, responseTime: Int.max, isAvailable: false, lastChecked: Date()
-            )
-            return false
+            return .unknown
         }
     }
 
@@ -105,6 +137,9 @@ final class LineSpeedTester {
             let (_, response) = try await session.data(for: request)
             let elapsed = Int(Date().timeIntervalSince(start) * 1000)
             guard let http = response as? HTTPURLResponse else { return nil }
+            if http.statusCode == 404 || http.statusCode == 403 || http.statusCode == 410 {
+                return nil
+            }
             guard (200...399).contains(http.statusCode) else { return nil }
             return LineQuality(url: url.absoluteString, responseTime: elapsed, isAvailable: true, lastChecked: Date())
         } catch {
@@ -115,8 +150,6 @@ final class LineSpeedTester {
     /// 批量测试多条线路（并发）
     func testLines(_ urls: [String], maxConcurrent: Int = 8) async -> [LineQuality] {
         var results: [LineQuality] = []
-
-        // 分批并发测试
         for batch in urls.chunked(into: maxConcurrent) {
             let batchResults = await withTaskGroup(of: LineQuality.self) { group in
                 for url in batch {
@@ -124,7 +157,6 @@ final class LineSpeedTester {
                         await self.testLine(url)
                     }
                 }
-
                 var collected: [LineQuality] = []
                 for await result in group {
                     collected.append(result)
@@ -133,13 +165,12 @@ final class LineSpeedTester {
             }
             results.append(contentsOf: batchResults)
         }
-
         return results
     }
 
-    /// 清除缓存
     func clearCache() {
         cache.removeAll()
+        hardFailCache.removeAll()
     }
 }
 

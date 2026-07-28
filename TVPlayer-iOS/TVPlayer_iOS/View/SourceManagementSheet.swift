@@ -93,7 +93,7 @@ struct SourceManagementSheet: View {
                                     .foregroundColor(.orange)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("自动跳过失败线路")
-                                    Text("预检死链秒切；出画/失败看事件；卡顿不切，无数据才换")
+                                    Text("仅线路失败/源错误/长时间无画面才换；卡顿与慢线不切")
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }
