@@ -27,6 +27,12 @@ final class PlayerEngine: ObservableObject {
     static let zeroSpeedSwitchSeconds: TimeInterval = 4.0
     static let zeroSpeedSwitchSecondsAfterRender: TimeInterval = 6.0
 
+    // 多信号融合投票阈值
+    static let positiveVoteThreshold = 4
+    static let negativeVoteThreshold = 5
+    /// 统一评估周期（别名）
+    static let evalPollNs: UInt64 = 400_000_000
+
     static var stallTimeoutNs: UInt64 {
         NetworkMonitor.shared.isWiFi ? 6_000_000_000 : 8_000_000_000
     }
