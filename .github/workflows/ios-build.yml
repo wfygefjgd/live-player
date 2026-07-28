@@ -50,8 +50,6 @@ jobs:
             CODE_SIGNING_ALLOWED="NO" \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            MARKETING_VERSION=1.4.6 \
-            CURRENT_PROJECT_VERSION=32 \
             build
 
       - name: Verify app version in Info.plist
@@ -60,7 +58,8 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist"
           VER=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
-          test "$VER" = "1.4.6"
+          EXPECTED=$(grep 'MARKETING_VERSION:' TVPlayer-iOS/project.yml | tail -1 | sed 's/.*"\(.*\)".*/\1/')
+          test "$VER" = "$EXPECTED"
 
       - name: Package .ipa
         run: |

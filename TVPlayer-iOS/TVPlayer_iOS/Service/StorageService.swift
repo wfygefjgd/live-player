@@ -18,6 +18,8 @@ final class StorageService {
     private let kDataVersion = "data_version"
     private let kLineTimeoutEnabled = "line_timeout_enabled"
     private let kAutoBlacklistEnabled = "auto_blacklist_enabled"
+    private let kAutoAdvanceOnExhaustion = "auto_advance_on_exhaustion"
+    private let autoBlacklistTTL: TimeInterval = 15 * 60
 
     private let currentDataVersion = 1
 
@@ -26,6 +28,35 @@ final class StorageService {
         let version: Int
         let count: Int
         let updatedAt: Date
+    }
+
+    private typealias BlacklistRecords = [String: Date]
+
+    /// Reads the current format and migrates the old permanent string array on first access.
+    private func loadBlacklistRecords() -> BlacklistRecords {
+        if let data = defaults.data(forKey: kBlacklistedLines),
+           let records = try? JSONDecoder().decode(BlacklistRecords.self, from: data) {
+            return records
+        }
+
+        guard let legacy = defaults.stringArray(forKey: kBlacklistedLines), !legacy.isEmpty else {
+            return [:]
+        }
+        let expiry = Date().addingTimeInterval(autoBlacklistTTL)
+        var records: BlacklistRecords = [:]
+        for line in legacy {
+            records[line] = expiry
+        }
+        if let data = try? JSONEncoder().encode(records) {
+            defaults.set(data, forKey: kBlacklistedLines)
+        }
+        return records
+    }
+
+    private func saveBlacklistRecords(_ records: BlacklistRecords) {
+        if let data = try? JSONEncoder().encode(records) {
+            defaults.set(data, forKey: kBlacklistedLines)
+        }
     }
 
     // MARK: - 频道缓存（异步 + 分批）
@@ -182,26 +213,31 @@ final class StorageService {
     // MARK: - 黑名单管理
 
     func loadBlacklistedLines() -> Set<String> {
-        queue.sync {
-            Set(defaults.stringArray(forKey: kBlacklistedLines) ?? [])
+        queue.sync(flags: .barrier) {
+            let now = Date()
+            let active = loadBlacklistRecords().filter { $0.value > now }
+            saveBlacklistRecords(active)
+            return Set(active.keys)
         }
     }
 
-    /// 同步添加到黑名单
+    /// 同步添加临时黑名单；同一条线路失败后重新计时。
     func blacklistLine(_ url: String) {
         let clean = url.trimmingCharacters(in: .whitespaces)
         guard !clean.isEmpty else { return }
         queue.sync(flags: .barrier) {
-            var lines = Set(defaults.stringArray(forKey: kBlacklistedLines) ?? [])
-            lines.insert(clean)
-            defaults.set(Array(lines), forKey: kBlacklistedLines)
+            let now = Date()
+            var records = loadBlacklistRecords().filter { $0.value > now }
+            records[clean] = now.addingTimeInterval(autoBlacklistTTL)
+            saveBlacklistRecords(records)
         }
     }
 
     func isLineBlacklisted(_ url: String) -> Bool {
         queue.sync {
-            let lines = Set(defaults.stringArray(forKey: kBlacklistedLines) ?? [])
-            return lines.contains(url.trimmingCharacters(in: .whitespaces))
+            let clean = url.trimmingCharacters(in: .whitespaces)
+            guard let expiry = loadBlacklistRecords()[clean] else { return false }
+            return expiry > Date()
         }
     }
 
@@ -243,6 +279,23 @@ final class StorageService {
         queue.sync {
             // 默认关闭
             defaults.bool(forKey: kAutoBlacklistEnabled)
+        }
+    }
+
+    func saveAutoAdvanceOnExhaustion(_ enabled: Bool) {
+        queue.async(flags: .barrier) { [weak self] in
+            guard let self else { return }
+            self.defaults.set(enabled, forKey: self.kAutoAdvanceOnExhaustion)
+        }
+    }
+
+    func loadAutoAdvanceOnExhaustion() -> Bool {
+        queue.sync {
+            // 保持历史版本的自动切台行为，用户可在设置中关闭。
+            if defaults.object(forKey: kAutoAdvanceOnExhaustion) == nil {
+                return true
+            }
+            return defaults.bool(forKey: kAutoAdvanceOnExhaustion)
         }
     }
 
@@ -303,10 +356,10 @@ final class StorageService {
         queue.async(flags: .barrier) { [weak self] in
             guard let self else { return }
             for key in [self.kChannels, self.kChannelsMeta, self.kSourceUrls,
-                        self.kSelectedSource, self.kCustomSource, self.kHiddenLines,
-                        self.kBlacklistedLines, self.kFavorites, self.kLastChannelKey,
-                        self.kLastSourceIndex, self.kDataVersion, self.kLineTimeoutEnabled,
-                        self.kAutoBlacklistEnabled] {
+                         self.kSelectedSource, self.kCustomSource, self.kHiddenLines,
+                         self.kBlacklistedLines, self.kFavorites, self.kLastChannelKey,
+                         self.kLastSourceIndex, self.kDataVersion, self.kLineTimeoutEnabled,
+                         self.kAutoBlacklistEnabled, self.kAutoAdvanceOnExhaustion] {
                 self.defaults.removeObject(forKey: key)
             }
         }

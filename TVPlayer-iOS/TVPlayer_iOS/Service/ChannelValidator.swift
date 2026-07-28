@@ -44,35 +44,28 @@ final class ChannelValidator: ObservableObject {
         var validChannels: [String: [String]] = [:]
         var validCount = 0
 
-        // 并发验证采样的线路
-        await withTaskGroup(of: (String, String, Bool).self) { group in
-            // 分批并发验证
-            for (channel, url) in sampledValidations {
-                group.addTask {
-                    let isValid = await self.validateURL(url)
-                    await MainActor.run {
-                        self.testedCount += 1
-                        self.progress = Double(self.testedCount) / Double(self.totalCount)
-                    }
-                    return (channel.name, url, isValid)
-                }
-
-                // 控制并发数
-                if group.isEmpty == false && sampledValidations.count > self.concurrentValidations {
-                    if let result = await group.next() {
-                        if result.2 {
-                            validChannels[result.0, default: []].append(result.1)
-                            validCount += 1
+        // 固定批次并发。原实现每添加一个任务就等待一个完成，超过 20 条时会退化为串行。
+        let batchSize = max(1, concurrentValidations)
+        for start in stride(from: 0, to: sampledValidations.count, by: batchSize) {
+            let end = min(start + batchSize, sampledValidations.count)
+            let batch = Array(sampledValidations[start..<end])
+            await withTaskGroup(of: (String, String, Bool).self) { group in
+                for (channel, url) in batch {
+                    group.addTask {
+                        let isValid = await self.validateURL(url)
+                        await MainActor.run {
+                            self.testedCount += 1
+                            self.progress = Double(self.testedCount) / Double(max(self.totalCount, 1))
                         }
+                        return (channel.name, url, isValid)
                     }
                 }
-            }
 
-            // 收集剩余结果
-            for await result in group {
-                if result.2 {
-                    validChannels[result.0, default: []].append(result.1)
-                    validCount += 1
+                for await result in group {
+                    if result.2 {
+                        validChannels[result.0, default: []].append(result.1)
+                        validCount += 1
+                    }
                 }
             }
         }

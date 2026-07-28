@@ -75,6 +75,8 @@ final class PlayerViewModel: ObservableObject {
     @Published var lineTimeoutEnabled: Bool = true
     /// 失败线路自动加入黑名单（默认关）
     @Published var autoBlacklistEnabled: Bool = false
+    /// 当前频道没有可用线路后是否继续自动切台（默认开启，保持历史行为）
+    @Published var autoAdvanceOnExhaustion: Bool = true
     private let fusionEngine = SmartFusionEngine.shared
 
     let player = PlayerEngine()
@@ -115,6 +117,7 @@ final class PlayerViewModel: ObservableObject {
 
         restoreLineTimeoutEnabled()
         restoreAutoBlacklistEnabled()
+        restoreAutoAdvanceOnExhaustion()
 
         player.onReady = { [weak self] in self?.onPlayerReady() }
         player.onError = { [weak self] in self?.onPlayerError() }
@@ -175,6 +178,7 @@ final class PlayerViewModel: ObservableObject {
         favorites = storage.loadFavorites()
 
         restoreLineTimeoutEnabled()
+        restoreAutoAdvanceOnExhaustion()
         restoreSources()
 
         // 只加载频道，不启动播放器
@@ -309,21 +313,20 @@ final class PlayerViewModel: ObservableObject {
             }
         }
 
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
             guard let self else { return }
             let (loaded, errMsg) = await self.fusionEngine.loadChannels(sourceUrls: urls)
-            await MainActor.run { [weak self] in
-                guard let self, self.loadGeneration == gen else { return }
-                self.isRefreshingLatest = false
-                if loaded.isEmpty {
-                    self.showIndicator(self.chineseLoadError(errMsg))
-                    return
-                }
-                // 最新线路：允许打断当前列表，整表替换
-                self.onChannelsLoaded(loaded, errorMessage: nil, silent: false)
-                let lines = loaded.reduce(0) { $0 + $1.sourceCount }
-                self.showIndicator("最新线路 · \(loaded.count) 台 / \(lines) 线")
+            // 如果期间切源/重载导致结果过期，也必须释放刷新锁，否则按钮会永久禁用。
+            self.isRefreshingLatest = false
+            guard self.loadGeneration == gen else { return }
+            if loaded.isEmpty {
+                self.showIndicator(self.chineseLoadError(errMsg))
+                return
             }
+            // 最新线路：允许打断当前列表，整表替换
+            self.onChannelsLoaded(loaded, errorMessage: nil, silent: false)
+            let lines = loaded.reduce(0) { $0 + $1.sourceCount }
+            self.showIndicator("最新线路 · \(loaded.count) 台 / \(lines) 线")
         }
     }
 
@@ -393,6 +396,8 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func reloadActiveSource() {
+        playGeneration &+= 1
+        playTask?.cancel()
         channels = []
         rawChannels = []
         currentIndex = 0
@@ -670,6 +675,8 @@ final class PlayerViewModel: ObservableObject {
         let ordered = browseOrderedChannels()
         guard !ordered.isEmpty else { return }
         if userInitiated {
+            // A user action must cancel a queued automatic channel hop.
+            recoverGeneration &+= 1
             let now = Date()
             if now.timeIntervalSince(lastChannelSwitchAt) < channelSwitchDebounceInterval { return }
             lastChannelSwitchAt = now
@@ -891,6 +898,8 @@ final class PlayerViewModel: ObservableObject {
             return
         }
         guard playGeneration == gen else { return }
+        // 当前事务已经尝试完所有线路，允许 autoSwitchLine 决定是否切下一台。
+        autoSwitchState = .idle
         showIndicator("当前频道无可用线路")
         autoSwitchLine(hint: "当前频道无可用线路", reason: .hardFail)
     }
@@ -926,7 +935,7 @@ final class PlayerViewModel: ObservableObject {
 
     private func onPlayerError() {
         // 必要条件①：播放器硬失败（item failed），且用户未暂停、侧栏未开
-        guard !userPaused, !panelVisible else { return }
+        guard lineTimeoutEnabled, !userPaused, !panelVisible else { return }
         autoSwitchLine(hint: "线路失败", reason: .hardFail)
     }
     private func onStartupTimeout() {
@@ -977,12 +986,14 @@ final class PlayerViewModel: ObservableObject {
 
     /// 自动切线：只响应确认坏线事件；下一条统一走 playLineLoop（预检+黑名单）
     private func autoSwitchLine(hint: String, reason: FailReason) {
+        guard lineTimeoutEnabled else { return }
         if panelVisible { return }
         guard let ch = currentChannel else {
             showIndicator(hint)
             return
         }
         if reason == .noAudio { return }
+        if autoSwitchState == .cooldown, !autoAdvanceOnExhaustion { return }
 
         if autoSwitchState == .cooldown {
             switch reason {
@@ -993,7 +1004,9 @@ final class PlayerViewModel: ObservableObject {
                 return
             }
         }
-        if autoSwitchState == .switching, reason == .noAudio { return }
+        // AVPlayer may report status, error-log and end-time failures for one item.
+        // Keep one automatic switch transaction in flight until its preflight ends.
+        if autoSwitchState == .switching { return }
 
         autoSwitchState = .switching
         playbackStable = false
@@ -1032,6 +1045,11 @@ final class PlayerViewModel: ObservableObject {
         }
 
         autoSwitchState = .idle
+        guard autoAdvanceOnExhaustion else {
+            showIndicator("本台线路不可用，请手动换台")
+            beginCooldown()
+            return
+        }
         if autoRecoverChannelHops >= AUTO_RECOVER_MAX_CHANNELS {
             showIndicator("连续多台无可用线路，请手动换台或换源")
             beginCooldown()
@@ -1152,10 +1170,14 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func togglePanel() {
+        if !panelVisible {
+            recoverGeneration &+= 1
+        }
         panelVisible.toggle()
     }
 
     func pause() {
+        recoverGeneration &+= 1
         userPaused = true
         player.pause()
         UIApplication.shared.isIdleTimerDisabled = false
@@ -1229,6 +1251,16 @@ final class PlayerViewModel: ObservableObject {
 
     func restoreAutoBlacklistEnabled() {
         autoBlacklistEnabled = storage.loadAutoBlacklistEnabled()
+    }
+
+    func setAutoAdvanceOnExhaustion(_ enabled: Bool) {
+        autoAdvanceOnExhaustion = enabled
+        storage.saveAutoAdvanceOnExhaustion(enabled)
+        showIndicator(enabled ? "线路耗尽后自动切下一台" : "线路耗尽后等待手动换台")
+    }
+
+    func restoreAutoAdvanceOnExhaustion() {
+        autoAdvanceOnExhaustion = storage.loadAutoAdvanceOnExhaustion()
     }
 
     /// 手动清空黑名单

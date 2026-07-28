@@ -109,7 +109,23 @@ struct SourceManagementSheet: View {
                                     .foregroundColor(.red)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("失败线路黑名单")
-                                    Text("失败线路自动加入黑名单，换源后自动清空")
+                                    Text("失败线路临时排除，15分钟后自动恢复；换源后清空")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+
+                        Toggle(isOn: Binding(
+                            get: { vm.autoAdvanceOnExhaustion },
+                            set: { vm.setAutoAdvanceOnExhaustion($0) }
+                        )) {
+                            HStack {
+                                Image(systemName: "forward.end.fill")
+                                    .foregroundColor(.green)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("线路耗尽后自动切台")
+                                    Text("当前频道所有线路失败后，自动尝试下一台")
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }
