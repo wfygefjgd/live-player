@@ -36,6 +36,23 @@ struct ContentView: View {
 
             floatingChrome()
                 .zIndex(5)
+
+            if vm.player.isReady && !vm.player.isPlaying && !vm.panelVisible {
+                Button {
+                    vm.resume()
+                } label: {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 76, height: 76)
+                        .background(Color.black.opacity(0.62))
+                        .clipShape(Circle())
+                        .overlay(Circle().stroke(Color.white.opacity(0.8), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("恢复播放")
+                .zIndex(6)
+            }
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .ignoresSafeArea()

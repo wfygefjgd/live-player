@@ -152,7 +152,7 @@ struct SourceManagementSheet: View {
 
                     Section {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("TVPlayer 1.9.6 正式版")
+                            Text("TVPlayer 1.9.7 正式版")
                                 .font(.headline)
                             Text("• 起播恢复 4 秒短缓冲，有数据但未出画时最多观察 24 秒，避免误切")
                             Text("• 新增动态缓冲：出画后按 WiFi / 蜂窝网络扩大缓冲，降低直播抖动")
@@ -165,6 +165,7 @@ struct SourceManagementSheet: View {
                             Text("• 新增播放诊断复制，方便定位手机端卡顿")
                             Text("• 重排来源设置界面，地址输入固定在顶部，常用操作更紧凑")
                             Text("• 支持单击画面暂停与恢复播放，双击面板操作保持不变")
+                            Text("• 暂停后显示居中恢复播放按钮，支持点击恢复")
                             Text("• 支持自定义来源、收藏频道、隐藏线路和后台音频播放")
                         }
                         .font(.caption)
