@@ -78,6 +78,8 @@ final class PlayerViewModel: ObservableObject {
     @Published var autoBlacklistEnabled: Bool = false
     /// 当前频道没有可用线路后是否继续自动切台（默认开启，保持历史行为）
     @Published var autoAdvanceOnExhaustion: Bool = true
+    /// 用户主动暂停状态，供画面层显示恢复按钮。
+    @Published private(set) var playbackPaused = false
     private let fusionEngine = SmartFusionEngine.shared
 
     let player = PlayerEngine()
@@ -879,6 +881,8 @@ final class PlayerViewModel: ObservableObject {
             return
         }
 
+        playbackPaused = false
+
         if resetTried {
             triedLineIndices.removeAll()
             cooldownTask?.cancel()
@@ -1246,12 +1250,14 @@ final class PlayerViewModel: ObservableObject {
     func pause() {
         recoverGeneration &+= 1
         userPaused = true
+        playbackPaused = true
         player.pause()
         UIApplication.shared.isIdleTimerDisabled = false
         updateNowPlaying()
     }
     func resume() {
         userPaused = false
+        playbackPaused = false
         player.resume()
         UIApplication.shared.isIdleTimerDisabled = true
         bumpPlayerLayout()

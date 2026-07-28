@@ -28,16 +28,16 @@ struct ContentView: View {
                 .contentShape(Rectangle())
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                 .ignoresSafeArea()
-                .highPriorityGesture(longPressGesture())
+                .highPriorityGesture(playerDragGesture())
+                .simultaneousGesture(longPressGesture())
                 .simultaneousGesture(doubleTapGesture())
                 .simultaneousGesture(singleTapGesture())
-                .simultaneousGesture(playerDragGesture())
                 .zIndex(2)
 
             floatingChrome()
                 .zIndex(5)
 
-            if vm.player.isReady && !vm.player.isPlaying && !vm.panelVisible {
+            if vm.playbackPaused && !vm.panelVisible {
                 Button {
                     vm.resume()
                 } label: {
