@@ -171,7 +171,7 @@ struct SourceManagementSheet: View {
 
                     Section {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("TVPlayer 1.9 正式版")
+                            Text("TVPlayer 1.9.1 正式版")
                                 .font(.headline)
                             Text("• 新增「加载最新线路」：GitHub 数据与软件发版分离")
                             Text("• 新增自动切换线路、自动切换频道开关，默认开启并支持关闭")
