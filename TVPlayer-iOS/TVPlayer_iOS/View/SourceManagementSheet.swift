@@ -9,93 +9,30 @@ struct SourceManagementSheet: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 12) {
-                // 软件 / 数据分离：一键拉 GitHub 官方最新线路
-                Button {
-                    vm.refreshLatestLineup()
-                    dismiss()
-                } label: {
-                    HStack(spacing: 10) {
-                        if vm.isRefreshingLatest {
-                            ProgressView()
-                                .progressViewStyle(.circular)
-                                .tint(.white)
-                        } else {
-                            Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
-                                .font(.system(size: 22))
-                        }
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(vm.isRefreshingLatest ? "正在加载最新线路…" : "加载最新线路")
-                                .font(.headline)
-                            Text("从 GitHub 官方源更新频道（改仓库文件即可，不必重装 App）")
-                                .font(.caption2)
-                                .foregroundColor(.white.opacity(0.85))
-                                .lineLimit(2)
-                        }
-                        Spacer(minLength: 0)
+                HStack(spacing: 8) {
+                    TextField("输入 m3u / m3u8 地址", text: $inputUrl)
+                        .textFieldStyle(.roundedBorder)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                        .keyboardType(.URL)
+                        .submitLabel(.done)
+                        .onSubmit { add() }
+
+                    Button {
+                        pasteClipboard()
+                    } label: {
+                        Image(systemName: "doc.on.clipboard")
                     }
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        LinearGradient(
-                            colors: [Color.blue, Color.cyan.opacity(0.85)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .cornerRadius(12)
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("粘贴剪贴板内容")
+
+                    Button("添加") { add() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(inputUrl.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
-                .buttonStyle(.plain)
-                .disabled(vm.isRefreshingLatest)
-                .padding(.horizontal, 4)
-
-                VStack(spacing: 8) {
-                    HStack(spacing: 8) {
-                        TextField("输入 m3u / m3u8 地址", text: $inputUrl)
-                            .textFieldStyle(.roundedBorder)
-                            .autocapitalization(.none)
-                            .disableAutocorrection(true)
-                            .keyboardType(.URL)
-                            .submitLabel(.done)
-                            .onSubmit { add() }
-
-                        Button("添加") { add() }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(inputUrl.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-
-                    if inputUrl.isEmpty {
-                        Button {
-                            if let pasted = UIPasteboard.general.string, !pasted.isEmpty {
-                                inputUrl = pasted.trimmingCharacters(in: .whitespacesAndNewlines)
-                            }
-                        } label: {
-                            HStack {
-                                Image(systemName: "doc.on.clipboard")
-                                Text("粘贴剪贴板内容")
-                            }
-                            .font(.caption)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-                }
+                .padding(.horizontal, 12)
 
                 List {
-                    Section {
-                        Button {
-                            UIPasteboard.general.string = vm.diagnosticsSummary
-                        } label: {
-                            Label("复制播放诊断", systemImage: "doc.on.doc")
-                        }
-                        Text("用于比较网页与 iPhone 的码率、缓冲、卡顿和线路切换情况")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    } header: {
-                        Text("故障排查")
-                    }
-
                     Section {
                         Toggle(isOn: Binding(
                             get: { vm.lineTimeoutEnabled },
@@ -162,53 +99,6 @@ struct SourceManagementSheet: View {
                     }
 
                     Section {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("数据更新（与 App 发版无关）")
-                                .font(.subheadline.weight(.semibold))
-                            Text("官方线路文件：")
-                                .font(.caption)
-                            Text("iptv-mirrors/validated-channels.m3u")
-                                .font(.caption2.monospaced())
-                                .foregroundColor(.secondary)
-                            Text("你在 GitHub 改这个文件并 push 后，用户点「加载最新线路」即可更新，不必重新安装。")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                            Text("说明：Pages/raw 通常很快；jsDelivr 可能有数小时缓存，按钮会优先 Pages。")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                        .padding(.vertical, 4)
-                    } header: {
-                        Text("最新线路")
-                    }
-
-                    Section {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("TVPlayer 1.9.4 正式版")
-                                .font(.headline)
-                            Text("• 起播恢复 4 秒短缓冲，有数据但未出画时最多观察 24 秒，避免误切")
-                            Text("• 新增动态缓冲：出画后按 WiFi / 蜂窝网络扩大缓冲，降低直播抖动")
-                            Text("• 连续卡顿时临时降低自适应码率，稳定 90 秒后自动恢复画质")
-                            Text("• 记忆线路起播、卡顿和稳定播放质量，下次优先选择更稳定线路")
-                            Text("• 新增「加载最新线路」：GitHub 数据与软件发版分离")
-                            Text("• 新增自动切换线路、自动切换频道开关，默认开启并支持关闭")
-                            Text("• 新增失败线路黑名单功能，避免重复尝试失败线路")
-                            Text("• 换源时自动清空黑名单，支持手动清空操作")
-                            Text("• 优化真实缓冲检测、相对码率判断和起播预检总时限")
-                            Text("• 过滤 iOS 原生不支持的 RTMP / RTSP 线路")
-                            Text("• 新增播放诊断复制，方便定位手机端卡顿")
-                            Text("• 源可以自定义，支持添加和切换 M3U / M3U8 地址")
-                            Text("• 支持多线路自动换线和自动换台，切换时会提示可在设置中关闭")
-                            Text("• 支持收藏频道、隐藏线路、后台音频播放")
-                        }
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .padding(.vertical, 4)
-                    } header: {
-                        Text("版本说明")
-                    }
-
-                    Section {
                         ForEach(Array(vm.sourceUrls.enumerated()), id: \.element) { i, url in
                             sourceRow(index: i, url: url)
                         }
@@ -222,6 +112,59 @@ struct SourceManagementSheet: View {
                                 .foregroundColor(.secondary)
                             Spacer()
                         }
+                    }
+
+                    Section {
+                        Button {
+                            vm.refreshLatestLineup()
+                            dismiss()
+                        } label: {
+                            HStack(spacing: 10) {
+                                if vm.isRefreshingLatest {
+                                    ProgressView()
+                                } else {
+                                    Image(systemName: "arrow.triangle.2.circlepath")
+                                }
+                                Text(vm.isRefreshingLatest ? "正在加载最新线路…" : "加载最新线路")
+                            }
+                        }
+                        .disabled(vm.isRefreshingLatest)
+                    }
+
+                    Section {
+                        Button {
+                            UIPasteboard.general.string = vm.diagnosticsSummary
+                        } label: {
+                            Label("复制播放诊断", systemImage: "doc.on.doc")
+                        }
+                        Text("用于比较网页与 iPhone 的码率、缓冲、卡顿和线路切换情况")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    } header: {
+                        Text("故障排查")
+                    }
+
+                    Section {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("TVPlayer 1.9.5 正式版")
+                                .font(.headline)
+                            Text("• 起播恢复 4 秒短缓冲，有数据但未出画时最多观察 24 秒，避免误切")
+                            Text("• 新增动态缓冲：出画后按 WiFi / 蜂窝网络扩大缓冲，降低直播抖动")
+                            Text("• 连续卡顿时临时降低自适应码率，稳定 90 秒后自动恢复画质")
+                            Text("• 记忆线路起播、卡顿和稳定播放质量，下次优先选择更稳定线路")
+                            Text("• 新增自动切换线路、自动切换频道开关，默认开启并支持关闭")
+                            Text("• 新增失败线路黑名单功能，避免重复尝试失败线路")
+                            Text("• 优化真实缓冲检测、相对码率判断和起播预检总时限")
+                            Text("• 过滤 iOS 原生不支持的 RTMP / RTSP 线路")
+                            Text("• 新增播放诊断复制，方便定位手机端卡顿")
+                            Text("• 重排来源设置界面，地址输入固定在顶部，常用操作更紧凑")
+                            Text("• 支持自定义来源、收藏频道、隐藏线路和后台音频播放")
+                        }
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(.vertical, 4)
+                    } header: {
+                        Text("版本说明")
                     }
                 }
                 .listStyle(.insetGrouped)
@@ -328,6 +271,11 @@ struct SourceManagementSheet: View {
 
         vm.selectSource(url)
         dismiss()
+    }
+
+    private func pasteClipboard() {
+        guard let pasted = UIPasteboard.general.string, !pasted.isEmpty else { return }
+        inputUrl = pasted.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func deleteSources(at offsets: IndexSet) {
