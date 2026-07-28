@@ -66,8 +66,6 @@
       "name": "CCTV-2",
       "group": "央视",
       "urls": [
-        "http://183.223.157.33:9901/tsfile/live/0002_1.m3u8?key=txiptv&playlive=1&authid=0",
-        "http://222.223.41.27:8888/hls/2/index.m3u8",
         "http://74.91.26.218:82/live/cctv2hd.m3u8"
       ]
     },
