@@ -1,14 +1,19 @@
-# TVPlayer iOS 1.9.1 正式版
+# TVPlayer iOS 1.9.2 正式版
 
 自签侧载版本的 **TVPlayer 正式版** 直播播放器。
 
 ## 版本
 
-- **Marketing Version:** 1.9.1
-- **Build:** 191
+- **Marketing Version:** 1.9.2
+- **Build:** 192
 - **显示名:** TVPlayer 正式版  
 
-## 新增功能 (v1.9.1)
+## 新增功能 (v1.9.2)
+
+- 动态缓冲：快速起播后自动扩大缓冲，WiFi 与蜂窝网络采用不同目标。
+- 连续卡顿时临时限制 HLS 峰值码率，稳定后自动恢复自动画质。
+- 本地记录线路起播、卡顿、实际码率与稳定时长，下次优先稳定线路。
+- 保留 v1.9.1 的自动换线、自动换台和临时黑名单设置。
 
 - ✨ **自动切换线路开关** - 默认开启，支持在设置中关闭
 - ✨ **自动切换频道开关** - 默认开启，支持在设置中关闭
@@ -28,8 +33,8 @@
 ## 发布
 
 ```bash
-git tag v1.9-ios
-git push origin v1.9-ios
+git tag v1.9.2-ios
+git push origin v1.9.2-ios
 ```
 
 GitHub Actions 会构建 IPA 并创建 Release。

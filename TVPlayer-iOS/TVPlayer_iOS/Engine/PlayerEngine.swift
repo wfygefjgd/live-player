@@ -29,6 +29,14 @@ final class PlayerEngine: ObservableObject {
     /// 播放中非强失败需连续确认次数
     static let postReadyFailConfirmCount = 6
 
+    static var initialBufferSeconds: TimeInterval {
+        NetworkMonitor.shared.isCellular ? 8 : 6
+    }
+
+    static var steadyBufferSeconds: TimeInterval {
+        NetworkMonitor.shared.isCellular ? 16 : 12
+    }
+
     static var stallTimeoutNs: UInt64 {
         NetworkMonitor.shared.isWiFi ? 10_000_000_000 : 12_000_000_000
     }
@@ -64,6 +72,7 @@ final class PlayerEngine: ObservableObject {
     @Published var isPlaying = false
     /// 最近采样网速 KB/s（供 UI/调试）
     @Published var observedSpeedKBps: Double = 0
+    @Published private(set) var diagnostics = PlaybackDiagnostics()
 
     var onError: (() -> Void)?
     var onReady: (() -> Void)?
@@ -84,6 +93,12 @@ final class PlayerEngine: ObservableObject {
     private var lastErrorLogCount = 0
     // 负向分持续累计（多信号融合用）
     private var persistentNegativeScore = 0
+    private var currentURLString = ""
+    private var recentStalls: [Date] = []
+    private var lastStallAt: Date = .distantPast
+    private var lastQualitySampleAt: Date = .distantPast
+    private var activePeakBitRate: Double = 0
+    private var failureRecorded = false
 
     init() {
         player.actionAtItemEnd = .none
@@ -145,13 +160,16 @@ final class PlayerEngine: ObservableObject {
         statusObserver = nil
 
         resetState(for: token)
+        currentURLString = url.absoluteString
+        playStartedAt = Date()
 
         let asset = AVURLAsset(url: url, options: [
             AVURLAssetPreferPreciseDurationAndTimingKey: false,
             "AVURLAssetHTTPHeaderFieldsKey": ["User-Agent": "Mozilla/5.0 (iPhone; CPU iOS 17_0 like Mac OS X)"]
         ])
         let item = AVPlayerItem(asset: asset)
-        item.preferredForwardBufferDuration = 4
+        item.preferredForwardBufferDuration = Self.initialBufferSeconds
+        item.preferredPeakBitRate = 0
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = false
         player.automaticallyWaitsToMinimizeStalling = true
 
@@ -320,6 +338,8 @@ final class PlayerEngine: ObservableObject {
 
     private func failStartup(token: Int, reason: String) {
         guard playToken == token, !isReady, !hasRendered else { return }
+        recordFailureOnce()
+        updateDiagnostics(reason: reason)
         evidenceTask?.cancel()
         evidenceTask = nil
         cancelTask(named: "startup")
@@ -348,6 +368,9 @@ final class PlayerEngine: ObservableObject {
             evidenceTask = nil
             stopSpeedCheck()
             cancelAllTasks()
+            activePeakBitRate = 0
+            player.currentItem?.preferredPeakBitRate = 0
+            player.currentItem?.preferredForwardBufferDuration = Self.steadyBufferSeconds
             return
         }
 
@@ -431,6 +454,12 @@ final class PlayerEngine: ObservableObject {
         observedSpeedKBps = 0
         lowSpeedSince = nil
         zeroSpeedSince = nil
+        recentStalls.removeAll()
+        lastStallAt = .distantPast
+        lastQualitySampleAt = .distantPast
+        activePeakBitRate = 0
+        failureRecorded = false
+        diagnostics = PlaybackDiagnostics(bufferSeconds: Self.initialBufferSeconds)
         isReady = false
         if let obs = timeObserver {
             player.removeTimeObserver(obs)
@@ -613,6 +642,14 @@ final class PlayerEngine: ObservableObject {
         cancelTask(named: "errorGrace")
         isReady = true
         hasRendered = true
+        player.currentItem?.preferredForwardBufferDuration = Self.steadyBufferSeconds
+        let startupSeconds = playStartedAt == .distantPast
+            ? 0 : Date().timeIntervalSince(playStartedAt)
+        LineQualityStore.shared.recordStart(
+            url: currentURLString,
+            startupSeconds: startupSeconds
+        )
+        updateDiagnostics(reason: "播放稳定")
         player.play()
         player.rate = 1.0
         isPlaying = true
@@ -633,6 +670,7 @@ final class PlayerEngine: ObservableObject {
 
     private func handleItemFailed(token: Int, immediate: Bool = false) {
         guard playToken == token else { return }
+        recordFailureOnce()
         if hasRendered || isReady {
             // 已出画后的失败：走 error 换线
             onError?()
@@ -659,10 +697,14 @@ final class PlayerEngine: ObservableObject {
         }
         switch status {
         case .waitingToPlayAtSpecifiedRate:
+            if !continuousStall {
+                registerStall()
+            }
             beginStallCheck()
         case .playing:
             cancelTask(named: "stall")
             continuousStall = false
+            scheduleBitrateRecoveryIfNeeded()
         case .paused:
             cancelTask(named: "stall")
             continuousStall = false
@@ -681,6 +723,76 @@ final class PlayerEngine: ObservableObject {
             guard let self, self.playToken == token else { return }
             self.continuousStall = false
         }
+    }
+
+    // MARK: - Adaptive Buffering
+
+    private func registerStall() {
+        guard isReady, let item = player.currentItem else { return }
+        let now = Date()
+        lastStallAt = now
+        recentStalls = recentStalls.filter { now.timeIntervalSince($0) <= 45 }
+        recentStalls.append(now)
+        LineQualityStore.shared.recordStall(url: currentURLString)
+
+        // 第一次卡顿先扩大缓冲；连续卡顿才降码率，避免轻微网络抖动损失画质。
+        item.preferredForwardBufferDuration = min(Self.steadyBufferSeconds + 4, 22)
+        if recentStalls.count >= 2 {
+            applyTemporaryBitrateLimit(to: item)
+        }
+        updateDiagnostics(reason: recentStalls.count >= 2 ? "连续卡顿，已自适应" : "正在扩大缓冲")
+    }
+
+    private func applyTemporaryBitrateLimit(to item: AVPlayerItem) {
+        guard let event = item.accessLog()?.events.last else { return }
+        let streamBitrate = event.indicatedBitrate
+        let observedBitrate = event.observedBitrate
+        let basis: Double
+        if streamBitrate > 0, observedBitrate > 0 {
+            basis = min(streamBitrate, observedBitrate)
+        } else {
+            basis = max(streamBitrate, observedBitrate)
+        }
+        guard basis > 0 else { return }
+
+        let proposed = max(700_000, min(basis * 0.75, 4_500_000))
+        if activePeakBitRate == 0 || proposed < activePeakBitRate {
+            activePeakBitRate = proposed
+            item.preferredPeakBitRate = proposed
+        }
+    }
+
+    private func scheduleBitrateRecoveryIfNeeded() {
+        guard activePeakBitRate > 0 else { return }
+        let token = playToken
+        scheduleTask(named: "bitrateRecovery", token: token, timeout: 90_000_000_000) { [weak self] in
+            guard let self, self.playToken == token else { return }
+            guard Date().timeIntervalSince(self.lastStallAt) >= 85 else { return }
+            self.activePeakBitRate = 0
+            self.player.currentItem?.preferredPeakBitRate = 0
+            self.player.currentItem?.preferredForwardBufferDuration = Self.steadyBufferSeconds
+            self.recentStalls.removeAll()
+            self.updateDiagnostics(reason: "网络稳定，已恢复自动画质")
+        }
+    }
+
+    private func recordFailureOnce() {
+        guard !failureRecorded else { return }
+        failureRecorded = true
+        LineQualityStore.shared.recordFailure(url: currentURLString)
+    }
+
+    private func updateDiagnostics(reason: String) {
+        let event = player.currentItem?.accessLog()?.events.last
+        diagnostics = PlaybackDiagnostics(
+            observedBitrate: event?.observedBitrate ?? 0,
+            indicatedBitrate: event?.indicatedBitrate ?? 0,
+            stallCount: recentStalls.count,
+            bufferSeconds: player.currentItem?.preferredForwardBufferDuration
+                ?? Self.initialBufferSeconds,
+            peakBitRateLimit: activePeakBitRate,
+            reason: reason
+        )
     }
 
     // MARK: - Private — Silent Audio Detection
@@ -771,6 +883,18 @@ final class PlayerEngine: ObservableObject {
                 guard self.isReady, self.stallWatchEnabled else { continue }
 
                 let signals = self.collectSignals()
+                let now = Date()
+                if signals.clockAdvancing,
+                   now.timeIntervalSince(self.lastQualitySampleAt) >= 15 {
+                    let event = self.player.currentItem?.accessLog()?.events.last
+                    LineQualityStore.shared.recordStablePlayback(
+                        url: self.currentURLString,
+                        seconds: 15,
+                        observedBitrate: event?.observedBitrate ?? 0
+                    )
+                    self.lastQualitySampleAt = now
+                    self.updateDiagnostics(reason: "播放稳定")
+                }
                 let verdict = self.fusePostReadyVote(signals)
 
                 switch verdict {
@@ -941,4 +1065,29 @@ enum FusionVerdict {
     case ok
     case fail(reason: String, strong: Bool)
     case undetermined(pos: Int, neg: Int)
+}
+
+struct PlaybackDiagnostics: Equatable {
+    var observedBitrate: Double
+    var indicatedBitrate: Double
+    var stallCount: Int
+    var bufferSeconds: TimeInterval
+    var peakBitRateLimit: Double
+    var reason: String
+
+    init(
+        observedBitrate: Double = 0,
+        indicatedBitrate: Double = 0,
+        stallCount: Int = 0,
+        bufferSeconds: TimeInterval = 0,
+        peakBitRateLimit: Double = 0,
+        reason: String = ""
+    ) {
+        self.observedBitrate = observedBitrate
+        self.indicatedBitrate = indicatedBitrate
+        self.stallCount = stallCount
+        self.bufferSeconds = bufferSeconds
+        self.peakBitRateLimit = peakBitRateLimit
+        self.reason = reason
+    }
 }

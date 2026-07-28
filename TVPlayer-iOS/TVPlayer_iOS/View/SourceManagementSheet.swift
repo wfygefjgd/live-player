@@ -171,8 +171,11 @@ struct SourceManagementSheet: View {
 
                     Section {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("TVPlayer 1.9.1 正式版")
+                            Text("TVPlayer 1.9.2 正式版")
                                 .font(.headline)
+                            Text("• 新增动态缓冲：出画后按 WiFi / 蜂窝网络扩大缓冲，降低直播抖动")
+                            Text("• 连续卡顿时临时降低自适应码率，稳定 90 秒后自动恢复画质")
+                            Text("• 记忆线路起播、卡顿和稳定播放质量，下次优先选择更稳定线路")
                             Text("• 新增「加载最新线路」：GitHub 数据与软件发版分离")
                             Text("• 新增自动切换线路、自动切换频道开关，默认开启并支持关闭")
                             Text("• 新增失败线路黑名单功能，避免重复尝试失败线路")

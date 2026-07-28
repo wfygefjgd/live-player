@@ -883,7 +883,7 @@ final class PlayerViewModel: ObservableObject {
             cooldownTask?.cancel()
             autoSwitchState = .idle
             playbackStable = false
-            currentSourceIndex = 0
+            currentSourceIndex = LineQualityStore.shared.preferredIndex(in: ch.urls) ?? 0
         }
 
         playGeneration &+= 1
@@ -940,6 +940,7 @@ final class PlayerViewModel: ObservableObject {
                 guard currentChannel?.key == ch.key else { return }
                 if lineTimeoutEnabled && result == .hardFail {
                     triedLineIndices.insert(idx)
+                    LineQualityStore.shared.recordFailure(url: raw)
                     if autoBlacklistEnabled { storage.blacklistLine(raw) }
                     currentSourceIndex = (idx + 1) % max(ch.sourceCount, 1)
                     if guardLoops < ch.sourceCount {
