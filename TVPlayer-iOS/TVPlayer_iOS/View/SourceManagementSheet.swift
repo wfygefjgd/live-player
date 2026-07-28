@@ -11,7 +11,11 @@ struct SourceManagementSheet: View {
             VStack(spacing: 12) {
                 HStack(spacing: 8) {
                     TextField("输入 m3u / m3u8 地址", text: $inputUrl)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.plain)
+                        .padding(.horizontal, 16)
+                        .frame(height: 40)
+                        .background(Color(.secondarySystemBackground))
+                        .clipShape(Capsule())
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
                         .keyboardType(.URL)
@@ -24,13 +28,15 @@ struct SourceManagementSheet: View {
                         Image(systemName: "doc.on.clipboard")
                     }
                     .buttonStyle(.bordered)
+                    .buttonBorderShape(.capsule)
                     .accessibilityLabel("粘贴剪贴板内容")
 
                     Button("添加") { add() }
                         .buttonStyle(.borderedProminent)
+                        .buttonBorderShape(.capsule)
                         .disabled(inputUrl.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 20)
 
                 List {
                     Section {
@@ -99,6 +105,23 @@ struct SourceManagementSheet: View {
                     }
 
                     Section {
+                        Button {
+                            vm.refreshLatestLineup()
+                            dismiss()
+                        } label: {
+                            HStack(spacing: 10) {
+                                if vm.isRefreshingLatest {
+                                    ProgressView()
+                                } else {
+                                    Image(systemName: "arrow.triangle.2.circlepath")
+                                }
+                                Text(vm.isRefreshingLatest ? "正在刷新 GitHub 最新源…" : "GitHub 最新源刷新")
+                            }
+                        }
+                        .disabled(vm.isRefreshingLatest)
+                    }
+
+                    Section {
                         ForEach(Array(vm.sourceUrls.enumerated()), id: \.element) { i, url in
                             sourceRow(index: i, url: url)
                         }
@@ -116,23 +139,6 @@ struct SourceManagementSheet: View {
 
                     Section {
                         Button {
-                            vm.refreshLatestLineup()
-                            dismiss()
-                        } label: {
-                            HStack(spacing: 10) {
-                                if vm.isRefreshingLatest {
-                                    ProgressView()
-                                } else {
-                                    Image(systemName: "arrow.triangle.2.circlepath")
-                                }
-                                Text(vm.isRefreshingLatest ? "正在加载最新线路…" : "加载最新线路")
-                            }
-                        }
-                        .disabled(vm.isRefreshingLatest)
-                    }
-
-                    Section {
-                        Button {
                             UIPasteboard.general.string = vm.diagnosticsSummary
                         } label: {
                             Label("复制播放诊断", systemImage: "doc.on.doc")
@@ -146,7 +152,7 @@ struct SourceManagementSheet: View {
 
                     Section {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("TVPlayer 1.9.5 正式版")
+                            Text("TVPlayer 1.9.6 正式版")
                                 .font(.headline)
                             Text("• 起播恢复 4 秒短缓冲，有数据但未出画时最多观察 24 秒，避免误切")
                             Text("• 新增动态缓冲：出画后按 WiFi / 蜂窝网络扩大缓冲，降低直播抖动")
@@ -158,6 +164,7 @@ struct SourceManagementSheet: View {
                             Text("• 过滤 iOS 原生不支持的 RTMP / RTSP 线路")
                             Text("• 新增播放诊断复制，方便定位手机端卡顿")
                             Text("• 重排来源设置界面，地址输入固定在顶部，常用操作更紧凑")
+                            Text("• 支持单击画面暂停与恢复播放，双击面板操作保持不变")
                             Text("• 支持自定义来源、收藏频道、隐藏线路和后台音频播放")
                         }
                         .font(.caption)

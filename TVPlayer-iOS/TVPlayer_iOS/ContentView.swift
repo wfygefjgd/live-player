@@ -10,6 +10,7 @@ struct ContentView: View {
 
     @State private var numberInput = ""
     @State private var numberInputTask: Task<Void, Never>?
+    @State private var singleTapTask: Task<Void, Never>?
 
     var body: some View {
         ZStack {
@@ -29,6 +30,7 @@ struct ContentView: View {
                 .ignoresSafeArea()
                 .highPriorityGesture(longPressGesture())
                 .simultaneousGesture(doubleTapGesture())
+                .simultaneousGesture(singleTapGesture())
                 .simultaneousGesture(playerDragGesture())
                 .zIndex(2)
 
@@ -81,6 +83,9 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .tvPlayerInterruptionEnded)) { _ in
             vm.noteInterruptionEnded(shouldResume: true)
+        }
+        .onDisappear {
+            singleTapTask?.cancel()
         }
         .sheet(isPresented: $vm.showSourceSheet) {
             SourceManagementSheet().environmentObject(vm)
@@ -218,12 +223,25 @@ struct ContentView: View {
 
     private func doubleTapGesture() -> some Gesture {
         TapGesture(count: 2).onEnded {
+            singleTapTask?.cancel()
             let open = !vm.panelVisible
             vm.panelVisible = open
             if open {
                 WindowPanelSurface.shared.show()
             } else {
                 WindowPanelSurface.shared.hide()
+            }
+        }
+    }
+
+    private func singleTapGesture() -> some Gesture {
+        TapGesture(count: 1).onEnded {
+            // 给双击识别留出短暂窗口，避免双击打开面板后又被单击暂停。
+            singleTapTask?.cancel()
+            singleTapTask = Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 280_000_000)
+                guard !Task.isCancelled, !vm.panelVisible else { return }
+                if vm.player.isPlaying { vm.pause() } else { vm.resume() }
             }
         }
     }
