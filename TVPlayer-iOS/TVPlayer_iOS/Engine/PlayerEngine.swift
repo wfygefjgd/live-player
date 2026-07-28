@@ -29,9 +29,11 @@ final class PlayerEngine: ObservableObject {
     /// 播放中非强失败需连续确认次数
     static let postReadyFailConfirmCount = 6
 
-    static var initialBufferSeconds: TimeInterval {
-        NetworkMonitor.shared.isCellular ? 8 : 6
-    }
+    /// 起播保持短缓冲，先拿到第一帧；出画后再切换到稳定缓冲。
+    static let initialBufferSeconds: TimeInterval = 4
+
+    static let startupExtensionNs: UInt64 = 6_000_000_000
+    static let maxStartupExtensions = 2
 
     static var steadyBufferSeconds: TimeInterval {
         NetworkMonitor.shared.isCellular ? 16 : 12
@@ -99,6 +101,7 @@ final class PlayerEngine: ObservableObject {
     private var lastQualitySampleAt: Date = .distantPast
     private var activePeakBitRate: Double = 0
     private var failureRecorded = false
+    private var startupExtensionCount = 0
 
     init() {
         player.actionAtItemEnd = .none
@@ -297,7 +300,7 @@ final class PlayerEngine: ObservableObject {
         scheduleTask(named: "startup", token: token, timeout: Self.startupHardTimeoutNs) { [weak self] in
             guard let self, self.lineTimeoutEnabled, self.playToken == token else { return }
             guard !self.isReady, !self.hasRendered else { return }
-            self.failStartup(token: token, reason: "起播超时")
+            self.handleStartupDeadline(token: token)
         }
 
         evidenceTask = Task { @MainActor [weak self] in
@@ -313,7 +316,9 @@ final class PlayerEngine: ObservableObject {
                 switch verdict {
                 case .ok:
                     self.markTrulyReady(token: token)
-                    return
+                    // READY/缓冲增长是正向信号，但没有解码帧时不能退出监控。
+                    if self.isReady { return }
+                    self.persistentNegativeScore = max(0, self.persistentNegativeScore - 2)
                 case .fail(let reason, let strong):
                     if strong {
                         self.failStartup(token: token, reason: reason)
@@ -345,6 +350,43 @@ final class PlayerEngine: ObservableObject {
         cancelTask(named: "startup")
         cancelAllTasks()
         onStartupTimeout?()
+    }
+
+    private func handleStartupDeadline(token: Int) {
+        guard playToken == token, !isReady, !hasRendered else { return }
+        let signals = collectSignals()
+
+        if signals.itemStatus == .failed || signals.errorLogHasFatal {
+            failStartup(token: token, reason: "线路明确失败")
+            return
+        }
+
+        let hasNetworkProgress = signals.itemStatus == .readyToPlay
+            || signals.hasVideoDimensions
+            || signals.speedKBps >= Self.deadSpeedKBps
+            || signals.loadedRangesCount > 0
+            || signals.loadedRangesGrowing
+            || signals.isLikelyToKeepUp
+
+        if hasNetworkProgress, startupExtensionCount < Self.maxStartupExtensions {
+            startupExtensionCount += 1
+            persistentNegativeScore = max(0, persistentNegativeScore - 2)
+            updateDiagnostics(
+                reason: "线路有数据，延长起播观察 \(startupExtensionCount)/\(Self.maxStartupExtensions)"
+            )
+            let taskName = "startupExtension\(startupExtensionCount)"
+            scheduleTask(named: taskName, token: token, timeout: Self.startupExtensionNs) { [weak self] in
+                guard let self, self.lineTimeoutEnabled, self.playToken == token else { return }
+                guard !self.isReady, !self.hasRendered else { return }
+                self.handleStartupDeadline(token: token)
+            }
+            return
+        }
+
+        let reason = startupExtensionCount >= Self.maxStartupExtensions
+            ? "起播超过 24 秒仍未出画"
+            : "起播无数据"
+        failStartup(token: token, reason: reason)
     }
 
     func pause() {
@@ -459,6 +501,7 @@ final class PlayerEngine: ObservableObject {
         lastQualitySampleAt = .distantPast
         activePeakBitRate = 0
         failureRecorded = false
+        startupExtensionCount = 0
         diagnostics = PlaybackDiagnostics(bufferSeconds: Self.initialBufferSeconds)
         isReady = false
         if let obs = timeObserver {
@@ -637,6 +680,8 @@ final class PlayerEngine: ObservableObject {
         cancelTask(named: "startup")
         cancelTask(named: "startupFast")
         cancelTask(named: "startupSoft")
+        cancelTask(named: "startupExtension1")
+        cancelTask(named: "startupExtension2")
         cancelTask(named: "confirmReady")
         cancelTask(named: "confirmReady2")
         cancelTask(named: "errorGrace")

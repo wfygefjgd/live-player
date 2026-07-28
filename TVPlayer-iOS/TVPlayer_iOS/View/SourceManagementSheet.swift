@@ -171,8 +171,9 @@ struct SourceManagementSheet: View {
 
                     Section {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("TVPlayer 1.9.2 正式版")
+                            Text("TVPlayer 1.9.3 正式版")
                                 .font(.headline)
+                            Text("• 起播恢复 4 秒短缓冲，有数据但未出画时最多观察 24 秒，避免误切")
                             Text("• 新增动态缓冲：出画后按 WiFi / 蜂窝网络扩大缓冲，降低直播抖动")
                             Text("• 连续卡顿时临时降低自适应码率，稳定 90 秒后自动恢复画质")
                             Text("• 记忆线路起播、卡顿和稳定播放质量，下次优先选择更稳定线路")

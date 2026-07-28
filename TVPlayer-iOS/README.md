@@ -1,15 +1,18 @@
-# TVPlayer iOS 1.9.2 正式版
+# TVPlayer iOS 1.9.3 正式版
 
 自签侧载版本的 **TVPlayer 正式版** 直播播放器。
 
 ## 版本
 
-- **Marketing Version:** 1.9.2
-- **Build:** 192
+- **Marketing Version:** 1.9.3
+- **Build:** 193
 - **显示名:** TVPlayer 正式版  
 
-## 新增功能 (v1.9.2)
+## 新增功能 (v1.9.3)
 
+- 起播恢复 4 秒短缓冲，避免稳定缓冲目标拖慢第一帧。
+- 12 秒到期仍有下载、缓冲、视频尺寸或 Ready 信号时有限延期，总观察时间最多 24 秒。
+- 明确失败或完全没有网络进展时仍按原逻辑自动换线，不无限等待。
 - 动态缓冲：快速起播后自动扩大缓冲，WiFi 与蜂窝网络采用不同目标。
 - 连续卡顿时临时限制 HLS 峰值码率，稳定后自动恢复自动画质。
 - 本地记录线路起播、卡顿、实际码率与稳定时长，下次优先稳定线路。
@@ -33,8 +36,8 @@
 ## 发布
 
 ```bash
-git tag v1.9.2-ios
-git push origin v1.9.2-ios
+git tag v1.9.3-ios
+git push origin v1.9.3-ios
 ```
 
 GitHub Actions 会构建 IPA 并创建 Release。
