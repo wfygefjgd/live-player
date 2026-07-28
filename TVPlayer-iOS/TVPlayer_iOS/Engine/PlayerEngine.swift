@@ -196,8 +196,8 @@ final class PlayerEngine: ObservableObject {
         guard let item = player.currentItem else {
             return PlaybackSignals(itemStatus: .unknown, hasRendered: false)
         }
-        let log = item.accessLog()
-        let lastEvent = log?.events.last
+        let accessLog = item.accessLog()
+        let errorLog = item.errorLog()
         let speed = sampleObservedSpeedKBps()
         let clockAdvancing = hasRendered
             && lastTimeProgressAt != .distantPast
@@ -208,7 +208,7 @@ final class PlayerEngine: ObservableObject {
         let rangesGrowing = rangesCount > lastLoadedRangesCount
         lastLoadedRangesCount = rangesCount
         // errorLog 条数
-        let errorCount = log?.events.count ?? 0
+        let errorCount = errorLog?.events.count ?? 0
         let newErrors = errorCount - lastErrorLogCount
         lastErrorLogCount = errorCount
 
@@ -224,7 +224,7 @@ final class PlayerEngine: ObservableObject {
             loadedRangesCount: rangesCount,
             loadedRangesGrowing: rangesGrowing,
             errorLogNewErrors: newErrors,
-            errorLogHasFatal: hasFatalError(log: log),
+            errorLogHasFatal: hasFatalError(log: errorLog),
             elapsed: playStartedAt == .distantPast ? 0 : Date().timeIntervalSince(playStartedAt)
         )
     }
@@ -894,10 +894,6 @@ final class PlayerEngine: ObservableObject {
         return .undetermined(pos: pos, neg: neg)
     }
 
-    private func stopSpeedCheck() {
-        speedCheckTask?.cancel()
-        speedCheckTask = nil
-    }
     private func stopSpeedCheck() {
         speedCheckTask?.cancel()
         speedCheckTask = nil
