@@ -53,24 +53,26 @@ final class NetworkMonitor {
 
     private func update(path: NWPath) {
         let satisfied = path.status == .satisfied
-        let previousType = connectionType
+        let type: ConnectionType
+        if path.usesInterfaceType(.wifi) {
+            type = .wifi
+        } else if path.usesInterfaceType(.cellular) {
+            type = .cellular
+        } else if path.usesInterfaceType(.wiredEthernet) {
+            type = .wired
+        } else {
+            type = .unknown
+        }
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
 
             let wasSatisfied = self.isSatisfied
+            let previousType = self.connectionType
             self.isSatisfied = satisfied
 
             // 推断网络类型
-            if path.usesInterfaceType(.wifi) {
-                self.connectionType = .wifi
-            } else if path.usesInterfaceType(.cellular) {
-                self.connectionType = .cellular
-            } else if path.usesInterfaceType(.wiredEthernet) {
-                self.connectionType = .wired
-            } else {
-                self.connectionType = satisfied ? .unknown : .unknown
-            }
+            self.connectionType = type
 
             // 网络恢复通知（无 → 有）
             if satisfied && !wasSatisfied {

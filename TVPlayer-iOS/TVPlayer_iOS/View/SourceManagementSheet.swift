@@ -92,8 +92,8 @@ struct SourceManagementSheet: View {
                                 Image(systemName: "timer")
                                     .foregroundColor(.orange)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text("自动跳过失败线路")
-                                    Text("仅线路失败/源错误/长时间无画面才换；卡顿与慢线不切")
+                                    Text("自动切换线路")
+                                    Text("线路确认失败后自动切换；每次切换会提醒，可在设置中关闭")
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }
@@ -124,8 +124,8 @@ struct SourceManagementSheet: View {
                                 Image(systemName: "forward.end.fill")
                                     .foregroundColor(.green)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text("线路耗尽后自动切台")
-                                    Text("当前频道所有线路失败后，自动尝试下一台")
+                                    Text("自动切换频道")
+                                    Text("当前频道线路全部不可用后自动切换；每次切换会提醒，可在设置中关闭")
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }
@@ -174,11 +174,11 @@ struct SourceManagementSheet: View {
                             Text("TVPlayer 1.9 正式版")
                                 .font(.headline)
                             Text("• 新增「加载最新线路」：GitHub 数据与软件发版分离")
-                            Text("• 新增自动跳过失败线路开关，可控制换线行为")
+                            Text("• 新增自动切换线路、自动切换频道开关，默认开启并支持关闭")
                             Text("• 新增失败线路黑名单功能，避免重复尝试失败线路")
                             Text("• 换源时自动清空黑名单，支持手动清空操作")
                             Text("• 源可以自定义，支持添加和切换 M3U / M3U8 地址")
-                            Text("• 支持多线路自动换线，遇到超时、卡顿、无声会自动切线")
+                            Text("• 支持多线路自动换线和自动换台，切换时会提示可在设置中关闭")
                             Text("• 支持收藏频道、隐藏线路、后台音频播放")
                         }
                         .font(.caption)

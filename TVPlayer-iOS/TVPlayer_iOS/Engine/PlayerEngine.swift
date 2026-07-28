@@ -43,8 +43,6 @@ final class PlayerEngine: ObservableObject {
     private var watchTasks: [String: Task<Void, Never>] = [:]
     private var playToken = 0
 
-    private var healthMonitor: PlaybackHealthMonitor?
-
     private var stallWatchEnabled = false
     private var continuousStall = false
     private var hasRendered = false
@@ -70,18 +68,13 @@ final class PlayerEngine: ObservableObject {
     var onError: (() -> Void)?
     var onReady: (() -> Void)?
     var onStartupTimeout: (() -> Void)?
-    var onPlaybackStall: (() -> Void)?
     var onSilentAudio: (() -> Void)?
-    var onExtendedStall: (() -> Void)?
-    var onHealthCritical: ((String) -> Void)?
     /// 网速过低/无网触发换线
     var onLowSpeed: ((String) -> Void)?
 
     /// 线路超时/卡顿/低速自动检测（设置可关，默认开）
     var lineTimeoutEnabled: Bool = true
 
-    private var consecutiveStallCount = 0
-    private var healthCheckTask: Task<Void, Never>?
     private var evidenceTask: Task<Void, Never>?
     private var itemErrorObserver: NSObjectProtocol?
     private var itemEndFailObserver: NSObjectProtocol?
@@ -95,7 +88,6 @@ final class PlayerEngine: ObservableObject {
     init() {
         player.actionAtItemEnd = .none
         player.automaticallyWaitsToMinimizeStalling = true
-        healthMonitor = PlaybackHealthMonitor(player: player)
         observeTimeControl()
         setupCacheCleanup()
         NotificationCenter.default.publisher(for: Notification.Name("tvPlayerVideoRendered"))
@@ -348,6 +340,32 @@ final class PlayerEngine: ObservableObject {
         WindowVideoSurface.shared.rebindPlayer()
     }
 
+    /// Re-arm line monitoring when the setting changes during playback.
+    func setLineTimeoutEnabled(_ enabled: Bool) {
+        lineTimeoutEnabled = enabled
+        guard enabled else {
+            evidenceTask?.cancel()
+            evidenceTask = nil
+            stopSpeedCheck()
+            cancelAllTasks()
+            return
+        }
+
+        guard player.currentItem != nil else { return }
+        if isReady {
+            if !stallWatchEnabled {
+                let token = playToken
+                scheduleTask(named: "readyProtect", token: token, timeout: Self.readyProtectNs) { [weak self] in
+                    guard let self, self.playToken == token else { return }
+                    self.stallWatchEnabled = true
+                }
+            }
+            startSpeedCheck(token: playToken)
+        } else {
+            armEvidenceDrivenWatch(token: playToken)
+        }
+    }
+
     func stop() {
         playToken += 1
         statusObserver?.invalidate()
@@ -360,7 +378,6 @@ final class PlayerEngine: ObservableObject {
         evidenceTask?.cancel()
         evidenceTask = nil
         clearItemNotificationObservers()
-        stopHealthCheck()
         stopSpeedCheck()
         player.replaceCurrentItem(with: nil)
         isPlaying = false
@@ -399,9 +416,7 @@ final class PlayerEngine: ObservableObject {
         evidenceTask?.cancel()
         evidenceTask = nil
         clearItemNotificationObservers()
-        stopHealthCheck()
         stopSpeedCheck()
-        consecutiveStallCount = 0
         persistentNegativeScore = 0
         stallWatchEnabled = false
         continuousStall = false
@@ -417,7 +432,6 @@ final class PlayerEngine: ObservableObject {
         lowSpeedSince = nil
         zeroSpeedSince = nil
         isReady = false
-        healthMonitor?.reset()
         if let obs = timeObserver {
             player.removeTimeObserver(obs)
             timeObserver = nil
@@ -541,8 +555,6 @@ final class PlayerEngine: ObservableObject {
                     self.hasRendered = true
                 }
 
-                // 🆕 更新健康度监控
-                self.healthMonitor?.updateVideoProgress(time: time, hasRendered: self.hasRendered)
             }
         }
     }
@@ -744,48 +756,6 @@ final class PlayerEngine: ObservableObject {
         return hasVideoTrackPresent()
     }
 
-    // MARK: - Private — Health Monitoring
-
-    /// 综合健康度检查（ready 后启动；连续确认才切线）
-    private func startHealthCheck(token: Int) {
-        stopHealthCheck()
-        guard lineTimeoutEnabled else { return }
-        consecutiveStallCount = 0
-        healthCheckTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: Self.readyProtectNs)
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 800_000_000)
-                guard let self, self.lineTimeoutEnabled, self.playToken == token, !Task.isCancelled else { return }
-                guard self.isReady, self.stallWatchEnabled else { continue }
-                if self.player.timeControlStatus == .paused {
-                    self.consecutiveStallCount = 0
-                    continue
-                }
-
-                // 有任何数据进来就不因卡顿/健康度换线（高峰拥堵正常）
-                let speed = self.sampleObservedSpeedKBps()
-                if speed >= Self.deadSpeedKBps {
-                    self.consecutiveStallCount = 0
-                    self.lowSpeedSince = nil
-                    self.zeroSpeedSince = nil
-                    continue
-                }
-
-                // 无数据时只累计，真正换线交给 startSpeedCheck / 起播超时
-                if self.isStalled() {
-                    self.consecutiveStallCount += 1
-                } else {
-                    self.consecutiveStallCount = 0
-                }
-            }
-        }
-    }
-
-    private func stopHealthCheck() {
-        healthCheckTask?.cancel()
-        healthCheckTask = nil
-    }
-
     // MARK: - 多信号融合「播放中」健康评估（统一采集 + 加权投票）
 
     /// 播放中健康评估：采集全部信号 → 融合投票 → 多信号一致才换线
@@ -925,35 +895,6 @@ final class PlayerEngine: ObservableObject {
         watchTasks[name] = nil
     }
 
-    /// 主动检测卡顿：仅在「应在播」却长期不推进时判定；用户暂停不算卡顿
-    func isStalled() -> Bool {
-        guard player.currentItem != nil else { return true }
-        if player.timeControlStatus == .paused {
-            return false
-        }
-        // 正在播且有速率 → 一定不是卡顿
-        if player.timeControlStatus == .playing && player.rate > 0.01 {
-            if hasRendered, lastTimeProgressAt != .distantPast,
-               Date().timeIntervalSince(lastTimeProgressAt) <= Self.progressStallThreshold {
-                return false
-            }
-        }
-        // 持续 waiting 且 rate=0
-        if player.timeControlStatus == .waitingToPlayAtSpecifiedRate && player.rate == 0 {
-            if lastTimeProgressAt == .distantPast {
-                return hasRendered
-            }
-            return Date().timeIntervalSince(lastTimeProgressAt) > Self.progressStallThreshold
-        }
-        if player.timeControlStatus == .playing && player.rate == 0 {
-            return true
-        }
-        if hasRendered, lastTimeProgressAt != .distantPast,
-           Date().timeIntervalSince(lastTimeProgressAt) > Self.progressStallThreshold {
-            return true
-        }
-        return false
-    }
 }
 
 // MARK: - 多信号融合数据结构

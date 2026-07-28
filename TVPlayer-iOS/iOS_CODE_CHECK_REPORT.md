@@ -29,11 +29,6 @@
   - 多维度健康度监控
   - 结构化并发优化
   
-- ✅ **健康度监控** (PlaybackHealthMonitor.swift)
-  - 视频健康度（画面冻结/黑屏检测）
-  - 音频健康度
-  - 网络健康度
-  
 - ✅ **多源融合引擎** (SmartFusionEngine.swift)
   - 支持多 M3U 源加载
   - 保持源站线路顺序
@@ -132,4 +127,3 @@ git push origin v1.8-ios
 1. 使用 GitHub Actions 云端编译（推荐）
 2. 在 macOS 设备上本地编译
 3. 使用 macOS 虚拟机编译
-

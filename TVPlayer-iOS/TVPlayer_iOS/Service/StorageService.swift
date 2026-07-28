@@ -234,7 +234,7 @@ final class StorageService {
     }
 
     func isLineBlacklisted(_ url: String) -> Bool {
-        queue.sync {
+        queue.sync(flags: .barrier) {
             let clean = url.trimmingCharacters(in: .whitespaces)
             guard let expiry = loadBlacklistRecords()[clean] else { return false }
             return expiry > Date()
@@ -243,9 +243,8 @@ final class StorageService {
 
     /// 清空黑名单（换源时调用）
     func clearBlacklist() {
-        queue.async(flags: .barrier) { [weak self] in
-            guard let self else { return }
-            self.defaults.removeObject(forKey: self.kBlacklistedLines)
+        queue.sync(flags: .barrier) {
+            defaults.removeObject(forKey: kBlacklistedLines)
         }
     }
 
@@ -308,7 +307,7 @@ final class StorageService {
     }
 
     func toggleFavorite(_ key: String) -> Bool {
-        queue.sync {
+        queue.sync(flags: .barrier) {
             var fav = Set(defaults.stringArray(forKey: kFavorites) ?? [])
             if fav.contains(key) {
                 fav.remove(key)

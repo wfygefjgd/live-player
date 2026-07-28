@@ -22,6 +22,7 @@ private let AUTO_SWITCH_COOLDOWN_NS: UInt64 = 1_200_000_000
 private let SILENT_AUDIO_GRACE_NS: UInt64 = 10_000_000_000
 /// 连续自动 hop 频道上限（线都试完才 hop）
 private let AUTO_RECOVER_MAX_CHANNELS = 15
+private let BLACKLIST_REFRESH_NS: UInt64 = 60_000_000_000
 
 // 精选列表 JSON（Bundle 快速启动 / 旁路刷新），勿当 m3u 源重复塞进 PRESET
 let VALIDATED_CHANNELS_MIRROR =
@@ -85,6 +86,7 @@ final class PlayerViewModel: ObservableObject {
     var sourceUrls: [String] = []
     var activeSourceUrl = DEFAULT_SOURCE_URL
     private var autoSwitchState: AutoSwitchState = .idle
+    private var pendingAutoSwitchReminder: String?
     private var started = false
     private var triedLineIndices = Set<Int>()
 
@@ -94,6 +96,7 @@ final class PlayerViewModel: ObservableObject {
     private var cooldownTask: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
     private var playTask: Task<Void, Never>?
+    private var blacklistRefreshTask: Task<Void, Never>?
 
     private var lastVolumeTranslation: CGFloat = 0
     private var lastSilentSwitchAt: Date = .distantPast
@@ -122,10 +125,7 @@ final class PlayerViewModel: ObservableObject {
         player.onReady = { [weak self] in self?.onPlayerReady() }
         player.onError = { [weak self] in self?.onPlayerError() }
         player.onStartupTimeout = { [weak self] in self?.onStartupTimeout() }
-        player.onPlaybackStall = { [weak self] in self?.onPlaybackStall() }
         player.onSilentAudio = { [weak self] in self?.onSilentAudio() }
-        player.onExtendedStall = { [weak self] in self?.onExtendedStall() }
-        player.onHealthCritical = { [weak self] reason in self?.onHealthCritical(reason) }
         player.onLowSpeed = { [weak self] reason in self?.onLowSpeed(reason) }
 
         NetworkMonitor.shared.onSatisfied = { [weak self] in self?.onNetworkBecameAvailable() }
@@ -398,6 +398,9 @@ final class PlayerViewModel: ObservableObject {
     func reloadActiveSource() {
         playGeneration &+= 1
         playTask?.cancel()
+        recoverGeneration &+= 1
+        pendingAutoSwitchReminder = nil
+        autoRecoverChannelHops = 0
         channels = []
         rawChannels = []
         currentIndex = 0
@@ -677,6 +680,7 @@ final class PlayerViewModel: ObservableObject {
         if userInitiated {
             // A user action must cancel a queued automatic channel hop.
             recoverGeneration &+= 1
+            pendingAutoSwitchReminder = nil
             let now = Date()
             if now.timeIntervalSince(lastChannelSwitchAt) < channelSwitchDebounceInterval { return }
             lastChannelSwitchAt = now
@@ -695,7 +699,10 @@ final class PlayerViewModel: ObservableObject {
         guard let idx = channels.firstIndex(where: { $0.key == next.key }) else { return }
         currentIndex = idx
         currentSourceIndex = 0
-        if userInitiated { panelVisible = false }
+        if userInitiated {
+            pendingAutoSwitchReminder = nil
+            panelVisible = false
+        }
         triedLineIndices.removeAll()
         playCurrent(resetTried: true)
     }
@@ -708,16 +715,65 @@ final class PlayerViewModel: ObservableObject {
     // MARK: - 数据规则
 
     func applyRules(_ input: [Channel]) -> [Channel] {
+        let hiddenLines = storage.loadHiddenLines()
+        let blacklistedLines = autoBlacklistEnabled ? storage.loadBlacklistedLines() : []
         input.compactMap { src in
             var filtered = Channel(name: src.name, group: src.group, key: src.key)
             for url in src.urls {
                 // 跳过手动隐藏的线路
-                if storage.isLineHidden(url) { continue }
+                if hiddenLines.contains(url.trimmingCharacters(in: .whitespaces)) { continue }
                 // 跳过黑名单中的线路
-                if autoBlacklistEnabled && storage.isLineBlacklisted(url) { continue }
+                if blacklistedLines.contains(url.trimmingCharacters(in: .whitespaces)) { continue }
                 filtered.addUrl(url)
             }
             return filtered.sourceCount > 0 ? filtered : nil
+        }
+    }
+
+    /// Rebuilds the filtered list while keeping the selected channel and URL when possible.
+    private func reapplyChannelRules(restartIfCurrentLineRemoved: Bool) {
+        let oldKey = currentChannel?.key
+        let oldURL = currentUrl
+        let oldIndex = currentIndex
+        let oldSourceIndex = currentSourceIndex
+
+        channels = applyRules(rawChannels)
+        guard !channels.isEmpty else {
+            currentIndex = 0
+            currentSourceIndex = 0
+            return
+        }
+
+        if let oldKey, let index = channels.firstIndex(where: { $0.key == oldKey }) {
+            currentIndex = index
+            if let oldURL, let sourceIndex = channels[index].urls.firstIndex(of: oldURL) {
+                currentSourceIndex = sourceIndex
+            } else {
+                currentSourceIndex = min(oldSourceIndex, max(0, channels[index].sourceCount - 1))
+            }
+        } else {
+            currentIndex = min(oldIndex, channels.count - 1)
+            currentSourceIndex = min(oldSourceIndex, max(0, channels[currentIndex].sourceCount - 1))
+        }
+
+        let currentLineChanged = oldKey != currentChannel?.key ||
+            (oldURL != nil && oldURL != currentUrl)
+        if restartIfCurrentLineRemoved && currentLineChanged {
+            playbackStable = false
+            triedLineIndices.removeAll()
+            playCurrent(showOSD: false, resetTried: true)
+        }
+    }
+
+    private func startBlacklistRefreshTask() {
+        blacklistRefreshTask?.cancel()
+        guard autoBlacklistEnabled else { return }
+        blacklistRefreshTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: BLACKLIST_REFRESH_NS)
+                guard let self, !Task.isCancelled, self.autoBlacklistEnabled else { return }
+                self.reapplyChannelRules(restartIfCurrentLineRemoved: true)
+            }
         }
     }
 
@@ -867,17 +923,22 @@ final class PlayerViewModel: ObservableObject {
 
             guard let u = URL(string: raw), let scheme = u.scheme?.lowercased(),
                   scheme == "http" || scheme == "https" || scheme == "rtmp" || scheme == "rtsp" else {
-                triedLineIndices.insert(idx)
-                currentSourceIndex = (idx + 1) % max(ch.sourceCount, 1)
-                continue
+                if lineTimeoutEnabled {
+                    triedLineIndices.insert(idx)
+                    currentSourceIndex = (idx + 1) % max(ch.sourceCount, 1)
+                    continue
+                }
+                autoSwitchState = .idle
+                showIndicator("当前线路地址无效，请手动切换")
+                return
             }
 
             // 预检：只有 hardFail 才跳；超时/慢线 unknown 仍播放
-            if scheme == "http" || scheme == "https" {
+            if lineTimeoutEnabled && (scheme == "http" || scheme == "https") {
                 let result = await LineSpeedTester.shared.quickPreflight(raw, timeout: 2.5)
                 guard !Task.isCancelled, playGeneration == gen else { return }
                 guard currentChannel?.key == ch.key else { return }
-                if result == .hardFail {
+                if lineTimeoutEnabled && result == .hardFail {
                     triedLineIndices.insert(idx)
                     if autoBlacklistEnabled { storage.blacklistLine(raw) }
                     currentSourceIndex = (idx + 1) % max(ch.sourceCount, 1)
@@ -910,7 +971,14 @@ final class PlayerViewModel: ObservableObject {
         autoRecoverChannelHops = 0
         isBootstrapping = false
         userPaused = false
-        if !indicatorText.isEmpty { showIndicator("") }
+        if let reminder = pendingAutoSwitchReminder {
+            pendingAutoSwitchReminder = nil
+            if !indicatorText.contains("可在设置中关闭") {
+                showIndicator(reminder)
+            }
+        } else if !indicatorText.isEmpty {
+            showIndicator("")
+        }
         bumpPlayerLayout()
         WindowVideoSurface.shared.rebindPlayer()
         updateNowPlaying()
@@ -944,17 +1012,6 @@ final class PlayerViewModel: ObservableObject {
         if player.isReady || playbackStable { return }
         autoSwitchLine(hint: "线路不可用", reason: .noData)
     }
-    private func onPlaybackStall() {
-        // 卡顿本身不换线（高峰拥堵正常）
-    }
-    private func onExtendedStall() {
-        // 同上
-    }
-
-    private func onHealthCritical(_ reason: String) {
-        // 健康度仅作观测；真正换线由硬失败 / 无数据 / 确认无声 驱动
-    }
-
     private func onLowSpeed(_ reason: String) {
         // 仅引擎多信号确认后的无数据；画面仍在播则忽略
         guard lineTimeoutEnabled, !userPaused, !panelVisible else { return }
@@ -1031,7 +1088,9 @@ final class PlayerViewModel: ObservableObject {
                 }
                 _ = u
                 currentSourceIndex = nxt
-                showIndicator("\(hint) · 线路 \(nxt + 1)/\(ch.sourceCount)")
+                let reminder = "已自动切换线路 \(nxt + 1)/\(ch.sourceCount)，可在设置中关闭"
+                pendingAutoSwitchReminder = reminder
+                showIndicator(reminder)
                 // 统一走 playCurrent 路径（含 generation + 预检），不直接 player.play
                 playGeneration &+= 1
                 let gen = playGeneration
@@ -1046,17 +1105,21 @@ final class PlayerViewModel: ObservableObject {
 
         autoSwitchState = .idle
         guard autoAdvanceOnExhaustion else {
+            pendingAutoSwitchReminder = nil
             showIndicator("本台线路不可用，请手动换台")
             beginCooldown()
             return
         }
         if autoRecoverChannelHops >= AUTO_RECOVER_MAX_CHANNELS {
+            pendingAutoSwitchReminder = nil
             showIndicator("连续多台无可用线路，请手动换台或换源")
             beginCooldown()
             return
         }
         autoRecoverChannelHops += 1
-        showIndicator("\(hint) · 本台线路不可用，切下一台")
+        let reminder = "已自动切换频道，可在设置中关闭"
+        pendingAutoSwitchReminder = reminder
+        showIndicator(reminder)
         recoverGeneration += 1
         let gen = recoverGeneration
         Task { @MainActor [weak self] in
@@ -1096,6 +1159,7 @@ final class PlayerViewModel: ObservableObject {
 
     func selectChannel(_ ch: Channel) {
         guard let idx = channels.firstIndex(where: { $0.key == ch.key }) else { return }
+        pendingAutoSwitchReminder = nil
         // 取消进行中的自动恢复，避免选台后又被 hop 拉走
         recoverGeneration += 1
         autoRecoverChannelHops = 0
@@ -1125,6 +1189,7 @@ final class PlayerViewModel: ObservableObject {
             return
         }
         recoverGeneration += 1
+        pendingAutoSwitchReminder = nil
         autoSwitchState = .idle
         autoRecoverChannelHops = 0
         playbackStable = false
@@ -1224,6 +1289,7 @@ final class PlayerViewModel: ObservableObject {
         cooldownTask?.cancel()
         retryTask?.cancel()
         playTask?.cancel()
+        blacklistRefreshTask?.cancel()
         DispatchQueue.main.async {
             UIApplication.shared.isIdleTimerDisabled = false
         }
@@ -1232,31 +1298,44 @@ final class PlayerViewModel: ObservableObject {
     /// 线路超时开关
     func setLineTimeoutEnabled(_ enabled: Bool) {
         lineTimeoutEnabled = enabled
-        player.lineTimeoutEnabled = enabled
+        if !enabled {
+            recoverGeneration &+= 1
+            pendingAutoSwitchReminder = nil
+            cooldownTask?.cancel()
+            autoSwitchState = .idle
+        }
+        player.setLineTimeoutEnabled(enabled)
         storage.saveLineTimeoutEnabled(enabled)
-        showIndicator(enabled ? "已开启自动跳过失败线路" : "已关闭自动跳过失败线路")
+        showIndicator(enabled ? "已开启自动切换线路" : "已关闭自动切换线路")
     }
 
     func restoreLineTimeoutEnabled() {
         lineTimeoutEnabled = storage.loadLineTimeoutEnabled()
-        player.lineTimeoutEnabled = lineTimeoutEnabled
+        player.setLineTimeoutEnabled(lineTimeoutEnabled)
     }
 
     /// 失败线路黑名单开关
     func setAutoBlacklistEnabled(_ enabled: Bool) {
         autoBlacklistEnabled = enabled
         storage.saveAutoBlacklistEnabled(enabled)
+        reapplyChannelRules(restartIfCurrentLineRemoved: enabled)
+        startBlacklistRefreshTask()
         showIndicator(enabled ? "已开启失败线路黑名单" : "已关闭失败线路黑名单")
     }
 
     func restoreAutoBlacklistEnabled() {
         autoBlacklistEnabled = storage.loadAutoBlacklistEnabled()
+        startBlacklistRefreshTask()
     }
 
     func setAutoAdvanceOnExhaustion(_ enabled: Bool) {
         autoAdvanceOnExhaustion = enabled
+        if !enabled {
+            recoverGeneration &+= 1
+            pendingAutoSwitchReminder = nil
+        }
         storage.saveAutoAdvanceOnExhaustion(enabled)
-        showIndicator(enabled ? "线路耗尽后自动切下一台" : "线路耗尽后等待手动换台")
+        showIndicator(enabled ? "已开启自动切换频道" : "已关闭自动切换频道")
     }
 
     func restoreAutoAdvanceOnExhaustion() {
@@ -1266,8 +1345,7 @@ final class PlayerViewModel: ObservableObject {
     /// 手动清空黑名单
     func clearBlacklist() {
         storage.clearBlacklist()
-        // 重新应用规则，黑名单清空后线路会恢复
-        channels = applyRules(rawChannels)
+        reapplyChannelRules(restartIfCurrentLineRemoved: false)
         showIndicator("黑名单已清空")
     }
 }

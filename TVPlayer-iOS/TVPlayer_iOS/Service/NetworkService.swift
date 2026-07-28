@@ -95,10 +95,10 @@ final class NetworkService {
             self.isNetworkAvailable = available
 
             if available && wasUnavailable {
-                // 网络恢复，触发重试
-                DispatchQueue.main.async { [weak self] in
-                    self?.pendingRetry?()
-                    self?.pendingRetry = nil
+                let retry = self.pendingRetry
+                self.pendingRetry = nil
+                DispatchQueue.main.async {
+                    retry?()
                 }
             }
         }
@@ -107,12 +107,12 @@ final class NetworkService {
 
     /// 注册网络恢复时的重试回调
     func onNetworkAvailable(_ retry: @escaping () -> Void) {
-        if isNetworkAvailable {
-            retry()
-        } else {
-            pendingRetry = { [weak self] in
-                guard let self, self.isNetworkAvailable else { return }
-                retry()
+        monitorQueue.async { [weak self] in
+            guard let self else { return }
+            if self.isNetworkAvailable {
+                DispatchQueue.main.async { retry() }
+            } else {
+                self.pendingRetry = { retry() }
             }
         }
     }
@@ -122,7 +122,8 @@ final class NetworkService {
             throw NetworkFetchError.invalidURL
         }
 
-        if !isNetworkAvailable {
+        let available = monitorQueue.sync { isNetworkAvailable }
+        if !available {
             throw NetworkFetchError.noNetwork
         }
 
